@@ -9,10 +9,10 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 export function ConnectionStatus() {
-  const { credentials, status } = useConnection((s) => ({
-    credentials: s.credentials,
-    status: s.status,
-  }));
+  // Select primitives independently — returning a fresh object literal would
+  // cause an infinite render loop in zustand v5.
+  const credentials = useConnection((s) => s.credentials);
+  const status = useConnection((s) => s.status);
   const meta = STATUS_LABELS[status] ?? STATUS_LABELS.disconnected;
 
   if (!credentials) {
