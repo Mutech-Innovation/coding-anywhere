@@ -7,3 +7,4 @@
 export * from './envelope.js';
 export * from './pair.js';
 export * from './relay-ws-client.js';
+export * from './terminal.js';

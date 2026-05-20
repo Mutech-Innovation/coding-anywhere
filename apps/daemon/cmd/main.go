@@ -19,6 +19,7 @@ import (
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/credentials"
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/initcmd"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/terminalrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 )
@@ -135,11 +136,17 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride st
 		AccessToken: bundle.AccessToken,
 	}, logger)
 
-	// P2 / P3 / P4 will register handlers for terminal / chat / sessions /
-	// files / ports here. P1.4 keeps the surface minimal: meta is
-	// implicit (handled inside the client) but a no-op handler keeps
-	// inbound meta envelopes from being dropped at debug level.
+	// Channel handlers. meta is implicit (handled inside the client) but a
+	// no-op handler keeps debug logs quiet.
 	cli.Handle(wire.ChannelMeta, func(wire.Envelope) error { return nil })
+
+	// terminal: PTY-backed shell sessions exposed to remote clients.
+	tr := terminalrouter.New(cli, logger)
+	defer func() {
+		if err := tr.CloseAll(); err != nil {
+			logger.Warn("close terminal sessions", "err", err)
+		}
+	}()
 
 	return cli.Run(ctx)
 }
