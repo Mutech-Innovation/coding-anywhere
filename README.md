@@ -117,7 +117,7 @@ Linux, web client paired in your browser — see
 | P6    | Listening-port detection + service preview reverse proxy | ✅        |
 | P7    | VAPID Web Push when agent turns finish                   | ✅        |
 | P8    | docs / launchd / systemd / docker-compose smoke          | ✅        |
-| P4+   | Slash commands, agent plan view, multi-agent             | follow-up |
+| P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot | ✅ |
 | v2    | Claude Code / Codex / cursor-agent adapters              | future    |
 | v3    | React Native iOS + Android sharing `packages/*`          | future    |
 

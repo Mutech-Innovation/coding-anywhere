@@ -10,13 +10,19 @@ import (
 // ACP session/update model — we forward the agent's update payload mostly
 // verbatim and let the client decide how to render it.
 const (
-	ChatMethodListSessions   = "list_sessions"
-	ChatMethodCreateSession  = "create_session"
-	ChatMethodPrompt         = "prompt"
-	ChatMethodCancel         = "cancel"
-	ChatMethodCloseSession   = "close_session"
-	ChatMethodAgents         = "agents"
-	ChatMethodResolvePermit  = "resolve_permission"
+	ChatMethodListSessions  = "list_sessions"
+	ChatMethodCreateSession = "create_session"
+	ChatMethodPrompt        = "prompt"
+	ChatMethodCancel        = "cancel"
+	ChatMethodCloseSession  = "close_session"
+	ChatMethodAgents        = "agents"
+	ChatMethodResolvePermit = "resolve_permission"
+	// ChatMethodGetHistory returns the persisted state for a session
+	// (messages, tool calls, plan, mode, available commands). Lets the
+	// web client repopulate after a reconnect or initial page load.
+	ChatMethodGetHistory = "get_history"
+	// ChatMethodSetMode forwards an ACP `session/set_mode` to the agent.
+	ChatMethodSetMode = "set_mode"
 
 	ChatEventSessionCreated     = "session_created"
 	ChatEventSessionClosed      = "session_closed"
@@ -42,13 +48,21 @@ type ChatAgentsResponse struct {
 // ChatSession is the wire-shape of a conversation. We carry both the daemon's
 // internal session id and the agent's native session id (e.g. ACP sessionId).
 type ChatSession struct {
-	ID        string    `json:"id"`         // daemon-side ulid
-	AgentID   string    `json:"agent_id"`   // "devin", "claude-code", ...
-	NativeID  string    `json:"native_id"`  // agent-specific id
+	ID        string    `json:"id"`        // daemon-side ulid
+	AgentID   string    `json:"agent_id"`  // "devin", "claude-code", ...
+	NativeID  string    `json:"native_id"` // agent-specific id
 	Cwd       string    `json:"cwd"`
 	Title     string    `json:"title,omitempty"`
-	Status    string    `json:"status"`     // "idle" | "thinking" | "awaiting_permission" | "closed"
+	Status    string    `json:"status"` // "idle" | "thinking" | "awaiting_permission" | "closed"
 	StartedAt time.Time `json:"started_at"`
+}
+
+// SessionMode mirrors the ACP `SessionMode` value type. We surface modes
+// from `session/new` so the client UI can show a mode selector.
+type SessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // --- Requests ---
@@ -65,6 +79,10 @@ type ChatCreateSessionRequest struct {
 
 type ChatCreateSessionResponse struct {
 	Session ChatSession `json:"session"`
+	// Modes the agent advertised at session/new. Empty when the agent
+	// doesn't expose modes.
+	AvailableModes []SessionMode `json:"available_modes,omitempty"`
+	CurrentModeID  string        `json:"current_mode_id,omitempty"`
 }
 
 type ChatPromptRequest struct {
@@ -89,6 +107,41 @@ type ChatResolvePermissionRequest struct {
 	Decision  json.RawMessage `json:"decision"`
 }
 
+// ChatSetModeRequest forwards `session/set_mode` to the agent.
+type ChatSetModeRequest struct {
+	SessionID string `json:"session_id"`
+	ModeID    string `json:"mode_id"`
+}
+
+// ChatGetHistoryRequest fetches the daemon's persisted snapshot of one
+// session — every session/update we've seen, replayed in order. The web
+// UI calls this on attach so a refresh / new browser doesn't lose state.
+type ChatGetHistoryRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// ChatGetHistoryResponse carries the persisted snapshot. Updates are the
+// raw `update` bodies we forwarded as ChatEventUpdate, in order.
+type ChatGetHistoryResponse struct {
+	Session         ChatSession       `json:"session"`
+	Updates         []json.RawMessage `json:"updates"`
+	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`
+	CurrentModeID   string            `json:"current_mode_id,omitempty"`
+	UserPrompts     []ChatPromptEntry `json:"user_prompts,omitempty"`
+}
+
+// ChatPromptEntry is a persisted user turn. We replay these alongside
+// agent updates so the chat transcript matches what the user originally
+// saw.
+type ChatPromptEntry struct {
+	Text      string    `json:"text"`
+	CreatedAt time.Time `json:"created_at"`
+	// SequenceID gives a strict relative ordering vs. the updates list.
+	// Updates have a parallel sequence id; the client interleaves both
+	// streams by sequence to reconstruct the timeline.
+	SequenceID uint64 `json:"sequence_id"`
+}
+
 // --- Events ---
 
 type ChatSessionCreatedEvent struct {
@@ -110,6 +163,10 @@ type ChatSessionStatusEvent struct {
 type ChatUpdateEvent struct {
 	SessionID string          `json:"session_id"`
 	Update    json.RawMessage `json:"update"`
+	// SequenceID is a monotonically increasing counter per session that
+	// orders this update against any user prompts that arrive before/after
+	// it. Used by the client when rebuilding history.
+	SequenceID uint64 `json:"sequence_id,omitempty"`
 }
 
 // ChatPermissionRequestEvent surfaces an ACP session/request_permission to

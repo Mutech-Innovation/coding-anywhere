@@ -5,24 +5,49 @@ import {
   Box,
   Button,
   Card,
+  Code,
   Group,
+  List,
+  Menu,
   Modal,
+  Paper,
+  Progress,
   ScrollArea,
+  SegmentedControl,
   Stack,
   Text,
   Textarea,
   TextInput,
-  Title,
+  ThemeIcon,
   Tooltip,
 } from '@mantine/core';
+import type {
+  AvailableCommand,
+  PlanEntry,
+  ToolCallContentBlock,
+} from '@coding-anywhere/protocol';
 import {
+  IconArrowRight,
+  IconBolt,
+  IconBrain,
   IconCheck,
+  IconCircle,
+  IconCircleDashed,
   IconCirclePlus,
+  IconCommand,
+  IconEdit,
+  IconFileSearch,
+  IconFileText,
   IconMessageCircle,
   IconPlayerStop,
+  IconRoute,
+  IconSearch,
   IconSend,
   IconShieldCheck,
+  IconTerminal2,
   IconTool,
+  IconTrash,
+  IconWorld,
   IconX,
 } from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -251,6 +276,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
   const session = useChat((s) => s.sessions[sessionId]);
   const sendPrompt = useChat((s) => s.sendPrompt);
   const cancel = useChat((s) => s.cancel);
+  const setMode = useChat((s) => s.setMode);
   const resolvePermission = useChat((s) => s.resolvePermission);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -260,7 +286,18 @@ function ChatView({ sessionId }: { sessionId: string }) {
   // Auto-scroll on new content.
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [session?.messages.length, session?.session.status]);
+  }, [
+    session?.messages.length,
+    session?.session.status,
+    Object.keys(session?.toolCalls ?? {}).length,
+    session?.plan?.length,
+  ]);
+
+  // Sort tool calls by insertion order so the timeline is stable.
+  const orderedToolCalls = useMemo(
+    () => Object.values(session?.toolCalls ?? {}).sort((a, b) => a.order - b.order),
+    [session?.toolCalls],
+  );
 
   if (!session) return null;
 
@@ -294,6 +331,15 @@ function ChatView({ sessionId }: { sessionId: string }) {
           </Text>
         </Stack>
         <Group gap="xs">
+          {session.modes.length > 0 ? (
+            <SegmentedControl
+              size="xs"
+              data={session.modes.map((m) => ({ label: m.name, value: m.id }))}
+              value={session.currentModeId ?? session.modes[0]?.id}
+              onChange={(value) => void setMode(sessionId, value)}
+              transitionDuration={0}
+            />
+          ) : null}
           <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
             {status}
           </Badge>
@@ -306,6 +352,8 @@ function ChatView({ sessionId }: { sessionId: string }) {
           ) : null}
         </Group>
       </Group>
+
+      {session.plan && session.plan.length > 0 ? <PlanCard entries={session.plan} /> : null}
 
       <ScrollArea
         viewportRef={scrollRef}
@@ -325,7 +373,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
           {session.messages.map((m) => (
             <MessageBubble key={m.id} message={m} />
           ))}
-          {Object.values(session.toolCalls).map((tc) => (
+          {orderedToolCalls.map((tc) => (
             <ToolCallCard key={tc.id} call={tc} />
           ))}
         </Stack>
@@ -337,23 +385,165 @@ function ChatView({ sessionId }: { sessionId: string }) {
         </Alert>
       ) : null}
 
-      <Group gap="xs" px="xs" align="flex-end">
+      <CommandInput
+        commands={session.availableCommands}
+        value={draft}
+        onChange={setDraft}
+        onSubmit={onSend}
+        busy={busy}
+      />
+    </Stack>
+  );
+}
+
+function PlanCard({ entries }: { entries: PlanEntry[] }) {
+  const total = entries.length || 1;
+  const done = entries.filter((e) => e.status === 'completed').length;
+  const inProgress = entries.find((e) => e.status === 'in_progress');
+  return (
+    <Paper p="xs" radius="md" withBorder>
+      <Group justify="space-between" mb={6}>
+        <Group gap="xs">
+          <ThemeIcon size="sm" variant="light" color="brand">
+            <IconRoute size={14} />
+          </ThemeIcon>
+          <Text fw={600} size="sm">
+            Plan
+          </Text>
+          <Text size="xs" c="dimmed">
+            {done}/{entries.length} done
+          </Text>
+        </Group>
+        {inProgress ? (
+          <Text size="xs" c="dimmed" lineClamp={1}>
+            {inProgress.content}
+          </Text>
+        ) : null}
+      </Group>
+      <Progress value={(done / total) * 100} size="xs" radius="xs" mb={6} color="brand" />
+      <List size="xs" spacing={4} icon={<IconCircle size={10} />} center>
+        {entries.map((e, i) => (
+          <List.Item
+            key={i}
+            icon={planIcon(e.status)}
+            style={{
+              opacity: e.status === 'completed' ? 0.6 : 1,
+              textDecoration: e.status === 'completed' ? 'line-through' : undefined,
+              fontWeight: e.status === 'in_progress' ? 600 : 400,
+            }}
+          >
+            {e.content}
+            {e.priority === 'high' ? (
+              <Badge size="xs" color="red" variant="light" ml={6}>
+                high
+              </Badge>
+            ) : null}
+          </List.Item>
+        ))}
+      </List>
+    </Paper>
+  );
+}
+
+function planIcon(status: PlanEntry['status']) {
+  switch (status) {
+    case 'completed':
+      return (
+        <ThemeIcon size="xs" color="green" variant="light">
+          <IconCheck size={10} />
+        </ThemeIcon>
+      );
+    case 'in_progress':
+      return (
+        <ThemeIcon size="xs" color="yellow" variant="light">
+          <IconCircleDashed size={10} />
+        </ThemeIcon>
+      );
+    default:
+      return (
+        <ThemeIcon size="xs" color="gray" variant="light">
+          <IconCircle size={10} />
+        </ThemeIcon>
+      );
+  }
+}
+
+function CommandInput({
+  commands,
+  value,
+  onChange,
+  onSubmit,
+  busy,
+}: {
+  commands: AvailableCommand[];
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void | Promise<void>;
+  busy: boolean;
+}) {
+  // Show the typeahead only when the user has typed `/` as the very first
+  // non-whitespace character and the cursor sits in the command word.
+  const trimmed = value.trimStart();
+  const slashOpen = trimmed.startsWith('/') && !trimmed.includes(' ');
+  const filter = slashOpen ? trimmed.slice(1).toLowerCase() : '';
+  const matches = useMemo(
+    () =>
+      slashOpen
+        ? commands.filter((c) => c.name.toLowerCase().startsWith(filter)).slice(0, 8)
+        : [],
+    [commands, slashOpen, filter],
+  );
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  return (
+    <Stack gap={4} px="xs">
+      {matches.length > 0 ? (
+        <Paper withBorder radius="md" p="xs">
+          <Stack gap={2}>
+            {matches.map((c) => (
+              <Group
+                key={c.name}
+                gap="xs"
+                py={4}
+                px={6}
+                style={{ cursor: 'pointer', borderRadius: 4 }}
+                onClick={() => {
+                  onChange(`/${c.name}${c.input ? ' ' : ''}`);
+                  ref.current?.focus();
+                }}
+              >
+                <ThemeIcon size="xs" variant="light">
+                  <IconCommand size={10} />
+                </ThemeIcon>
+                <Text size="xs" fw={600}>
+                  /{c.name}
+                </Text>
+                <Text size="xs" c="dimmed" truncate>
+                  {c.description}
+                  {c.input?.hint ? <Text component="span" c="dimmed">{` — ${c.input.hint}`}</Text> : null}
+                </Text>
+              </Group>
+            ))}
+          </Stack>
+        </Paper>
+      ) : null}
+      <Group gap="xs" align="flex-end">
         <Textarea
-          placeholder="Ask Devin..."
+          ref={ref}
+          placeholder="Ask Devin... (try /plan, /clear, /fork)"
           autosize
           minRows={1}
           maxRows={6}
-          value={draft}
+          value={value}
           style={{ flex: 1 }}
-          onChange={(e) => setDraft(e.currentTarget.value)}
+          onChange={(e) => onChange(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              void onSend();
+              void onSubmit();
             }
           }}
         />
-        <Button leftSection={<IconSend size={14} />} onClick={onSend} loading={busy}>
+        <Button leftSection={<IconSend size={14} />} onClick={() => void onSubmit()} loading={busy}>
           Send
         </Button>
       </Group>
@@ -393,41 +583,168 @@ function MessageBubble({ message }: { message: import('../store/chat.js').ChatMe
   );
 }
 
+const TOOL_STATUS_COLOR: Record<string, string> = {
+  pending: 'gray',
+  in_progress: 'yellow',
+  completed: 'green',
+  failed: 'red',
+};
+
 function ToolCallCard({ call }: { call: ChatToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
+  const status = call.status ?? 'pending';
+  const hasDetails =
+    call.rawInput != null ||
+    call.rawOutput != null ||
+    (call.content && call.content.length > 0);
   return (
     <Card padding="sm" radius="md" withBorder>
-      <Group gap="xs">
-        <IconTool size={14} />
-        <Text size="sm" fw={500}>
-          {call.name ?? '(tool)'}
-        </Text>
-        {call.status ? (
-          <Badge size="xs" variant="light">
-            {call.status}
+      <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+          <ThemeIcon size="sm" variant="light" color={TOOL_STATUS_COLOR[status] ?? 'gray'}>
+            {iconForKind(call.kind)}
+          </ThemeIcon>
+          <Text size="sm" fw={500} truncate>
+            {title}
+          </Text>
+          <Badge size="xs" color={TOOL_STATUS_COLOR[status] ?? 'gray'} variant="light">
+            {status}
           </Badge>
+        </Group>
+        {hasDetails ? (
+          <Tooltip label={expanded ? 'Hide details' : 'Show details'}>
+            <ActionIcon variant="subtle" size="sm" onClick={() => setExpanded((x) => !x)}>
+              <IconArrowRight
+                size={12}
+                style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }}
+              />
+            </ActionIcon>
+          </Tooltip>
         ) : null}
       </Group>
-      {call.input != null ? (
-        <Box mt="xs">
-          <Text size="xs" c="dimmed">
-            input
-          </Text>
-          <Text size="xs" ff="monospace" style={{ whiteSpace: 'pre-wrap' }}>
-            {safeStringify(call.input)}
-          </Text>
-        </Box>
+      {call.locations && call.locations.length > 0 ? (
+        <Group gap={4} mt={6} wrap="wrap">
+          {call.locations.map((loc, i) => (
+            <Badge key={i} size="xs" variant="light" color="blue" leftSection={<IconFileText size={10} />}>
+              {shortenPath(loc.path)}
+              {loc.line ? `:${loc.line}` : ''}
+            </Badge>
+          ))}
+        </Group>
       ) : null}
-      {call.output != null ? (
-        <Box mt="xs">
-          <Text size="xs" c="dimmed">
-            output
-          </Text>
-          <Text size="xs" ff="monospace" style={{ whiteSpace: 'pre-wrap' }}>
-            {safeStringify(call.output)}
-          </Text>
-        </Box>
+      {expanded ? (
+        <Stack gap="xs" mt="sm">
+          {call.content?.map((c, i) => <ToolContentBlockView key={i} block={c} />)}
+          {call.rawInput != null ? (
+            <Box>
+              <Text size="xs" c="dimmed">
+                input
+              </Text>
+              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
+                {safeStringify(call.rawInput)}
+              </Code>
+            </Box>
+          ) : null}
+          {call.rawOutput != null ? (
+            <Box>
+              <Text size="xs" c="dimmed">
+                output
+              </Text>
+              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
+                {safeStringify(call.rawOutput)}
+              </Code>
+            </Box>
+          ) : null}
+        </Stack>
       ) : null}
     </Card>
+  );
+}
+
+function iconForKind(kind: ChatToolCall['kind']) {
+  switch (kind) {
+    case 'read':
+      return <IconFileSearch size={12} />;
+    case 'edit':
+      return <IconEdit size={12} />;
+    case 'delete':
+      return <IconTrash size={12} />;
+    case 'search':
+      return <IconSearch size={12} />;
+    case 'execute':
+      return <IconTerminal2 size={12} />;
+    case 'fetch':
+      return <IconWorld size={12} />;
+    case 'think':
+      return <IconBrain size={12} />;
+    case 'switch_mode':
+      return <IconBolt size={12} />;
+    case 'move':
+      return <IconArrowRight size={12} />;
+    default:
+      return <IconTool size={12} />;
+  }
+}
+
+/** Best-effort title from rawInput when the agent didn't send one. */
+function humanizeToolFromInput(call: ChatToolCall): string | null {
+  if (!call.rawInput || typeof call.rawInput !== 'object') return null;
+  const input = call.rawInput as Record<string, unknown>;
+  if (typeof input.command === 'string') return `$ ${input.command}`;
+  if (typeof input.path === 'string') return input.path as string;
+  if (typeof input.file_path === 'string') return input.file_path as string;
+  if (typeof input.url === 'string') return input.url as string;
+  if (typeof input.query === 'string') return `“${input.query}”`;
+  return null;
+}
+
+function shortenPath(p: string): string {
+  if (p.length <= 40) return p;
+  const idx = p.lastIndexOf('/');
+  if (idx < 0) return p.slice(-40);
+  return '…/' + p.slice(idx + 1);
+}
+
+function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
+  if (block.type === 'content') {
+    const inner = (block as { content?: { type?: string; text?: string } }).content;
+    if (inner?.type === 'text' && typeof inner.text === 'string') {
+      return (
+        <Text size="xs" ff="monospace" style={{ whiteSpace: 'pre-wrap' }}>
+          {inner.text}
+        </Text>
+      );
+    }
+  }
+  if (block.type === 'diff') {
+    const d = block as { path: string; oldText?: string | null; newText: string };
+    return (
+      <Box>
+        <Text size="xs" c="dimmed">
+          diff · {d.path}
+        </Text>
+        <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
+          {d.newText}
+        </Code>
+      </Box>
+    );
+  }
+  if (block.type === 'terminal') {
+    const t = block as { terminalId: string };
+    return (
+      <Group gap="xs">
+        <IconTerminal2 size={12} />
+        <Text size="xs" c="dimmed">
+          terminal {t.terminalId}
+        </Text>
+      </Group>
+    );
+  }
+  return (
+    <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
+      {safeStringify(block)}
+    </Code>
   );
 }
 

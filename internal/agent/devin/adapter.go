@@ -184,10 +184,11 @@ func (a *Adapter) Capabilities() acp.AgentCapabilities {
 	return a.initRes.AgentCapabilities
 }
 
-// NewSession creates a new conversation in `cwd` and returns the session id.
-func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServer) (string, error) {
+// NewSession creates a new conversation in `cwd` and returns the session
+// id along with the modes the agent advertised (may be nil).
+func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServer) (string, *acp.SessionModeState, error) {
 	if err := a.Start(ctx); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if mcp == nil {
 		// ACP requires `mcpServers` to be present; an explicit empty slice
@@ -199,9 +200,17 @@ func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServe
 		Cwd:        cwd,
 		MCPServers: mcp,
 	}, &res); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return res.SessionID, nil
+	return res.SessionID, res.Modes, nil
+}
+
+// SetMode forwards an ACP `session/set_mode` request to the agent.
+func (a *Adapter) SetMode(ctx context.Context, sessionID, modeID string) error {
+	return a.cli.Call(ctx, acp.MethodSessionSetMode, acp.SessionSetModeRequest{
+		SessionID: sessionID,
+		ModeID:    modeID,
+	}, nil)
 }
 
 // LoadSession resumes a previously persisted session. Requires the agent

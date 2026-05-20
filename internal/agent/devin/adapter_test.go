@@ -26,12 +26,18 @@ type mockACPServer struct {
 
 	mu sync.Mutex
 	// Last params seen for assertions.
-	lastInit       *acp.InitializeRequest
-	lastNewCwd     string
-	lastPrompt     []acp.ContentBlock
-	lastCancel     string
-	cancelCh       chan struct{}
-	promptResp     string
+	lastInit   *acp.InitializeRequest
+	lastNewCwd string
+	lastPrompt []acp.ContentBlock
+	lastCancel string
+	lastSetMode struct {
+		sessionID string
+		modeID    string
+	}
+	cancelCh   chan struct{}
+	promptResp string
+	// modesOnNew is returned in the session/new response when set.
+	modesOnNew *acp.SessionModeState
 }
 
 func newMockACPServer(t *testing.T) (*mockACPServer, *io.PipeReader, *io.PipeWriter) {
@@ -87,8 +93,22 @@ func (s *mockACPServer) run() {
 			_ = json.Unmarshal(b, &req)
 			s.mu.Lock()
 			s.lastNewCwd = req.Cwd
+			modes := s.modesOnNew
 			s.mu.Unlock()
-			s.respond(idVal, map[string]any{"sessionId": "sess-mock-1"})
+			result := map[string]any{"sessionId": "sess-mock-1"}
+			if modes != nil {
+				result["modes"] = modes
+			}
+			s.respond(idVal, result)
+		case "session/set_mode":
+			b, _ := json.Marshal(msg["params"])
+			var req acp.SessionSetModeRequest
+			_ = json.Unmarshal(b, &req)
+			s.mu.Lock()
+			s.lastSetMode.sessionID = req.SessionID
+			s.lastSetMode.modeID = req.ModeID
+			s.mu.Unlock()
+			s.respond(idVal, map[string]any{})
 		case "session/prompt":
 			b, _ := json.Marshal(msg["params"])
 			var req acp.SessionPromptRequest
@@ -193,13 +213,14 @@ func TestDevinAdapterNewSessionAndPrompt(t *testing.T) {
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	sessID, err := a.NewSession(ctx, "/Users/me/app", nil)
+	sessID, modes, err := a.NewSession(ctx, "/Users/me/app", nil)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	if sessID != "sess-mock-1" {
 		t.Fatalf("sessionID: %q", sessID)
 	}
+	_ = modes // covered separately
 	stop, err := a.PromptText(ctx, sessID, "hello")
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -246,6 +267,50 @@ func TestDevinAdapterCancel(t *testing.T) {
 	defer srv.mu.Unlock()
 	if srv.lastCancel != "sess-x" {
 		t.Fatalf("session id: %s", srv.lastCancel)
+	}
+}
+
+func TestDevinAdapterNewSessionReturnsModes(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	srv.modesOnNew = &acp.SessionModeState{
+		CurrentModeID: "ask",
+		AvailableModes: []acp.SessionMode{
+			{ID: "ask", Name: "Ask", Description: "Plan first"},
+			{ID: "code", Name: "Code"},
+		},
+	}
+	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, modes, err := a.NewSession(ctx, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if modes == nil || modes.CurrentModeID != "ask" || len(modes.AvailableModes) != 2 {
+		t.Fatalf("modes not parsed: %+v", modes)
+	}
+}
+
+func TestDevinAdapterSetMode(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetMode(ctx, "sess-x", "code"); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.lastSetMode.sessionID != "sess-x" || srv.lastSetMode.modeID != "code" {
+		t.Fatalf("set_mode not seen: %+v", srv.lastSetMode)
 	}
 }
 

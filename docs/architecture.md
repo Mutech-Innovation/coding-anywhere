@@ -109,6 +109,33 @@ ACP `session/update` payloads are forwarded verbatim as `chat.update`
 events; permission requests become `chat.permission_request` events
 that the user resolves with `chat.resolve_permission`.
 
+In addition to the streaming chat surface, the chatrouter persists every
+session/update it forwards (plus the user prompts it accepts) into a
+per-session in-memory snapshot tagged with a monotonically-increasing
+sequence id. Two chat methods read this state:
+
+- `chat.get_history` returns the snapshot — a list of raw ACP `update`
+  bodies and the user-prompt entries — so a fresh client (browser
+  refresh, second device, etc.) can replay the timeline. The web store
+  interleaves prompts and updates by sequence id when rebuilding.
+- `chat.set_mode` round-trips an ACP `session/set_mode`, letting the
+  client switch between agent modes (e.g. `ask` ↔ `code` ↔ `plan`).
+  The agent's `current_mode_update` notifications mutate the session
+  back to the latest authoritative mode.
+
+The chatrouter also captures the `availableModes` field that ACP agents
+return on `session/new`, surfaces them in the `chat.create_session`
+response, and folds `current_mode_update` / `available_commands_update`
+/ `session_info_update` notifications into the persisted session state.
+
+The web client decodes ACP `tool_call` / `tool_call_update` updates into
+a strongly-typed view (`title`, `kind`, `status`, `content[]`,
+`locations[]`, `rawInput`, `rawOutput`) — the older "(tool)" placeholder
+is gone. Slash commands the agent advertises via
+`available_commands_update` show up in a typeahead in the chat input.
+`/clear` and `/new` additionally wipe the local UI session state so the
+transcript matches what Devin reports after starting a fresh session.
+
 ## Web Push
 
 The relay generates a VAPID keypair lazily (on first

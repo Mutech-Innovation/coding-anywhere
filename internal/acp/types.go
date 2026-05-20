@@ -145,7 +145,27 @@ type KV struct {
 
 // SessionNewResponse returns the new session id.
 type SessionNewResponse struct {
+	SessionID string            `json:"sessionId"`
+	Modes     *SessionModeState `json:"modes,omitempty"`
+}
+
+// SessionMode is one mode the agent can operate in (e.g. "ask", "code").
+type SessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// SessionModeState is the modes payload on a session/new response.
+type SessionModeState struct {
+	CurrentModeID  string        `json:"currentModeId"`
+	AvailableModes []SessionMode `json:"availableModes"`
+}
+
+// SessionSetModeRequest switches the active mode for a session.
+type SessionSetModeRequest struct {
 	SessionID string `json:"sessionId"`
+	ModeID    string `json:"modeId"`
 }
 
 // SessionPromptRequest sends a user turn into a session.

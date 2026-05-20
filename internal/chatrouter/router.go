@@ -58,6 +58,53 @@ type Router struct {
 type session struct {
 	wire.ChatSession
 	cancelCtx context.CancelFunc
+
+	// modes captured from session/new, updated by current_mode_update.
+	modes         []wire.SessionMode
+	currentModeID string
+
+	// snapshot of every session/update we've forwarded, plus the user
+	// prompts we've sent into the session. Both share a per-session
+	// monotonically increasing sequence so the client can interleave
+	// them when rebuilding the timeline.
+	mu        sync.Mutex
+	seq       uint64
+	updates   []json.RawMessage
+	updateSeq []uint64
+	prompts   []wire.ChatPromptEntry
+}
+
+func (s *session) appendUpdate(update json.RawMessage) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq++
+	s.updates = append(s.updates, append([]byte(nil), update...))
+	s.updateSeq = append(s.updateSeq, s.seq)
+	return s.seq
+}
+
+func (s *session) appendPrompt(text string) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq++
+	s.prompts = append(s.prompts, wire.ChatPromptEntry{
+		Text:       text,
+		CreatedAt:  time.Now().UTC(),
+		SequenceID: s.seq,
+	})
+	return s.seq
+}
+
+func (s *session) snapshot() ([]json.RawMessage, []wire.ChatPromptEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	upd := make([]json.RawMessage, len(s.updates))
+	for i, u := range s.updates {
+		upd[i] = append([]byte(nil), u...)
+	}
+	prompts := make([]wire.ChatPromptEntry, len(s.prompts))
+	copy(prompts, s.prompts)
+	return upd, prompts
 }
 
 type pendingPermission struct {
@@ -149,6 +196,18 @@ func (r *Router) handle(env wire.Envelope) error {
 			return nil
 		}
 		r.handleResolvePermission(env, req)
+	case wire.ChatMethodSetMode:
+		var req wire.ChatSetModeRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		r.handleSetMode(env, req)
+	case wire.ChatMethodGetHistory:
+		var req wire.ChatGetHistoryRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		r.handleGetHistory(env, req)
 	default:
 		r.respondErr(env, "unknown_method", fmt.Sprintf("unknown chat method %q", env.Method))
 	}
@@ -198,7 +257,7 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	// long-lived router context.
 	callCtx, cancel := context.WithTimeout(r.runCtx, 30*time.Second)
 	defer cancel()
-	nativeID, err := a.NewSession(callCtx, req.Cwd, nil)
+	nativeID, modes, err := a.NewSession(callCtx, req.Cwd, nil)
 	if err != nil {
 		r.respondErr(env, "agent_new_session_failed", err.Error())
 		return
@@ -215,11 +274,22 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			StartedAt: time.Now().UTC(),
 		},
 	}
+	if modes != nil {
+		s.modes = make([]wire.SessionMode, len(modes.AvailableModes))
+		for i, m := range modes.AvailableModes {
+			s.modes[i] = wire.SessionMode{ID: m.ID, Name: m.Name, Description: m.Description}
+		}
+		s.currentModeID = modes.CurrentModeID
+	}
 	r.mu.Lock()
 	r.sessions[id] = s
 	r.mu.Unlock()
 
-	r.respondOK(env, wire.ChatCreateSessionResponse{Session: s.ChatSession})
+	r.respondOK(env, wire.ChatCreateSessionResponse{
+		Session:        s.ChatSession,
+		AvailableModes: s.modes,
+		CurrentModeID:  s.currentModeID,
+	})
 	r.broadcastEvent(wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
 }
 
@@ -235,6 +305,10 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
 		return
 	}
+
+	// Record the user prompt before sending so the snapshot retains the
+	// originating message even if the agent closes mid-turn.
+	s.appendPrompt(req.Text)
 
 	r.setStatus(s, "thinking")
 	go func() {
@@ -320,10 +394,7 @@ func (r *Router) ensureDevin() (*devin.Adapter, error) {
 	a, err := r.devinBuilder(devin.Options{
 		Logger: r.logger,
 		OnSessionUpdate: func(sessionID string, update json.RawMessage) {
-			r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
-				SessionID: r.daemonSessionID(sessionID),
-				Update:    update,
-			})
+			r.handleAgentUpdate(sessionID, update)
 		},
 		OnPermissionRequest: func(_ context.Context, sessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
 			return r.handleAgentPermissionRequest(sessionID, params)
@@ -352,6 +423,97 @@ func (r *Router) daemonSessionID(nativeID string) string {
 		}
 	}
 	return nativeID
+}
+
+// handleAgentUpdate persists a session/update notification on the matching
+// session and broadcasts it to clients. Updates that mutate session-level
+// state (e.g. current_mode_update) are also folded into the session struct
+// so chat.list_sessions and chat.get_history reflect the latest values.
+func (r *Router) handleAgentUpdate(nativeSessionID string, update json.RawMessage) {
+	daemonID := r.daemonSessionID(nativeSessionID)
+	r.mu.Lock()
+	s, ok := r.sessions[daemonID]
+	r.mu.Unlock()
+	var seq uint64
+	if ok {
+		seq = s.appendUpdate(update)
+		// Best-effort decode of the discriminator so we can pick out
+		// state-mutating updates without forcing a full schema.
+		var head struct {
+			Kind  string `json:"sessionUpdate"`
+			Mode  string `json:"currentModeId"`
+			Title *string `json:"title"`
+		}
+		if err := json.Unmarshal(update, &head); err == nil {
+			switch head.Kind {
+			case "current_mode_update":
+				if head.Mode != "" {
+					r.mu.Lock()
+					s.currentModeID = head.Mode
+					r.mu.Unlock()
+				}
+			case "session_info_update":
+				if head.Title != nil {
+					r.mu.Lock()
+					s.Title = *head.Title
+					r.mu.Unlock()
+				}
+			}
+		}
+	}
+	r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+		SessionID:  daemonID,
+		Update:     update,
+		SequenceID: seq,
+	})
+}
+
+func (r *Router) handleSetMode(env wire.Envelope, req wire.ChatSetModeRequest) {
+	r.mu.Lock()
+	s, ok := r.sessions[req.SessionID]
+	r.mu.Unlock()
+	if !ok {
+		r.respondErr(env, "not_found", "unknown session")
+		return
+	}
+	if r.devin == nil {
+		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
+		return
+	}
+	if req.ModeID == "" {
+		r.respondErr(env, "bad_request", "mode_id required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
+	defer cancel()
+	if err := r.devin.SetMode(ctx, s.NativeID, req.ModeID); err != nil {
+		r.respondErr(env, "agent_set_mode_failed", err.Error())
+		return
+	}
+	// Optimistically reflect the client's choice. The agent will likely
+	// also send a current_mode_update which will overwrite if different.
+	r.mu.Lock()
+	s.currentModeID = req.ModeID
+	r.mu.Unlock()
+	r.respondOK(env, map[string]string{"mode_id": req.ModeID})
+}
+
+func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequest) {
+	r.mu.Lock()
+	s, ok := r.sessions[req.SessionID]
+	r.mu.Unlock()
+	if !ok {
+		r.respondErr(env, "not_found", "unknown session")
+		return
+	}
+	updates, prompts := s.snapshot()
+	r.respondOK(env, wire.ChatGetHistoryResponse{
+		Session:        s.ChatSession,
+		Updates:        updates,
+		AvailableModes: s.modes,
+		CurrentModeID:  s.currentModeID,
+		UserPrompts:    prompts,
+	})
 }
 
 func (r *Router) handleAgentPermissionRequest(nativeSessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {

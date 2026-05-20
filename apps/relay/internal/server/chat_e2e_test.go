@@ -357,6 +357,243 @@ func TestChatEndToEnd(t *testing.T) {
 	_ = mock
 }
 
+// TestChatHistoryAndSetMode exercises the persistence + mode controls added
+// in P4 deepening. It wires up a mock that returns initial modes from
+// session/new, pushes a sequence of session/update notifications, and
+// asserts that:
+//   - chat.create_session surfaces the modes,
+//   - chat.set_mode round-trips into ACP session/set_mode,
+//   - chat.get_history returns the prompts and updates we recorded.
+func TestChatHistoryAndSetMode(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	mock := &snapshotMockACP{
+		t:           t,
+		respWaiters: map[string]chan map[string]any{},
+		modes: map[string]any{
+			"currentModeId": "ask",
+			"availableModes": []map[string]any{
+				{"id": "ask", "name": "Ask"},
+				{"id": "code", "name": "Code"},
+			},
+		},
+	}
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	mock.in = stdinR
+	mock.wr = bufio.NewWriter(stdoutW)
+	go mock.run()
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clientWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+	awaitResp := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for response %s", id)
+			}
+		}
+	}
+	awaitEvent := func(method string, sessionID string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.Channel == wire.ChannelChat && env.Method == method &&
+					(sessionID == "" || strings.Contains(string(env.Payload), sessionID)) {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for chat event %q", method)
+			}
+		}
+	}
+
+	// 1. create_session — modes must come back.
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res := awaitResp("c-1")
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	sessionID := createRes.Session.ID
+	if len(createRes.AvailableModes) != 2 || createRes.CurrentModeID != "ask" {
+		t.Fatalf("modes not surfaced: %+v", createRes)
+	}
+
+	// 2. set_mode — mock must see the call.
+	req, _ = wire.MakeRequest("m-1", wire.ChannelChat, wire.ChatMethodSetMode,
+		wire.ChatSetModeRequest{SessionID: sessionID, ModeID: "code"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("m-1")
+	if res.Error != nil {
+		t.Fatalf("set_mode error: %+v", res.Error)
+	}
+	mock.mu.Lock()
+	if mock.lastSetModeID != "code" {
+		mock.mu.Unlock()
+		t.Fatalf("mock didn't see set_mode: %s", mock.lastSetModeID)
+	}
+	mock.mu.Unlock()
+
+	// 3. send a prompt; mock pushes two updates and a current_mode_update.
+	req, _ = wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: sessionID, Text: "hello"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	awaitEvent(wire.ChatEventUpdate, sessionID) // chunk #1
+	awaitEvent(wire.ChatEventUpdate, sessionID) // chunk #2 / mode update
+	awaitResp("p-1")
+
+	// 4. get_history: must contain >=2 updates + 1 prompt + the current mode.
+	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: sessionID})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("h-1")
+	var hist wire.ChatGetHistoryResponse
+	if err := json.Unmarshal(res.Payload, &hist); err != nil {
+		t.Fatalf("history payload: %v", err)
+	}
+	if len(hist.Updates) < 2 {
+		t.Fatalf("expected >=2 updates in history, got %d", len(hist.Updates))
+	}
+	if len(hist.UserPrompts) != 1 || hist.UserPrompts[0].Text != "hello" {
+		t.Fatalf("user prompts: %+v", hist.UserPrompts)
+	}
+	if hist.CurrentModeID != "code" {
+		t.Fatalf("expected mode 'code' after current_mode_update, got %q", hist.CurrentModeID)
+	}
+}
+
+// snapshotMockACP is a slimmer ACP mock used by TestChatHistoryAndSetMode.
+type snapshotMockACP struct {
+	t  *testing.T
+	in *io.PipeReader
+	wr *bufio.Writer
+
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	modes         map[string]any
+	lastSetModeID string
+	respWaiters   map[string]chan map[string]any
+}
+
+func (m *snapshotMockACP) run() {
+	dec := json.NewDecoder(m.in)
+	for {
+		var msg map[string]any
+		if err := dec.Decode(&msg); err != nil {
+			return
+		}
+		method, _ := msg["method"].(string)
+		idVal := msg["id"]
+		switch method {
+		case "initialize":
+			m.respond(idVal, map[string]any{
+				"protocolVersion":   1,
+				"agentCapabilities": map[string]any{"loadSession": false},
+				"agentInfo":         map[string]any{"name": "mock", "version": "0"},
+			})
+		case "session/new":
+			result := map[string]any{"sessionId": "sess-acp-snap"}
+			m.mu.Lock()
+			modes := m.modes
+			m.mu.Unlock()
+			if modes != nil {
+				result["modes"] = modes
+			}
+			m.respond(idVal, result)
+		case "session/set_mode":
+			params, _ := msg["params"].(map[string]any)
+			m.mu.Lock()
+			m.lastSetModeID, _ = params["modeId"].(string)
+			m.mu.Unlock()
+			m.respond(idVal, map[string]any{})
+		case "session/prompt":
+			go func() {
+				m.notify("session/update", map[string]any{
+					"sessionId": "sess-acp-snap",
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "hi"},
+					},
+				})
+				m.notify("session/update", map[string]any{
+					"sessionId": "sess-acp-snap",
+					"update": map[string]any{
+						"sessionUpdate": "current_mode_update",
+						"currentModeId": "code",
+					},
+				})
+				m.respond(idVal, map[string]any{"stopReason": "end_turn"})
+			}()
+		case "session/cancel":
+			// notification, no reply
+		}
+	}
+}
+
+func (m *snapshotMockACP) respond(id any, result map[string]any) {
+	m.write(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+func (m *snapshotMockACP) notify(method string, params map[string]any) {
+	m.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+func (m *snapshotMockACP) write(v any) {
+	buf, _ := json.Marshal(v)
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	_, _ = m.wr.Write(buf)
+	_, _ = m.wr.Write([]byte("\n"))
+	_ = m.wr.Flush()
+}
+
 func TestChatAgentsLists(t *testing.T) {
 	hs, _ := newPairingTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

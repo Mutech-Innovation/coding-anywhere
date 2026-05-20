@@ -15,6 +15,10 @@ export const ChatMethod = {
   CloseSession: 'close_session',
   Agents: 'agents',
   ResolvePermission: 'resolve_permission',
+  /** Fetch the persisted state for one session (messages, tool calls, plan, mode, etc). */
+  GetHistory: 'get_history',
+  /** Switch the agent's session mode (ACP `session/set_mode`). */
+  SetMode: 'set_mode',
 } as const;
 export type ChatMethod = (typeof ChatMethod)[keyof typeof ChatMethod];
 
@@ -119,6 +123,7 @@ export const SessionUpdateKind = {
   Plan: 'plan',
   CurrentMode: 'current_mode_update',
   AvailableCommandsUpdate: 'available_commands_update',
+  SessionInfoUpdate: 'session_info_update',
 } as const;
 
 /** Decoded text content from an ACP message-chunk update, if any. */
@@ -127,4 +132,103 @@ export function extractChunkText(update: Record<string, unknown>): string | null
   if (!content || typeof content.type !== 'string') return null;
   if (content.type === 'text' && typeof content.text === 'string') return content.text;
   return null;
+}
+
+// --- ACP value types we render directly ---
+
+/** ACP `ToolKind`. Drives icon selection. */
+export const ToolKind = {
+  Read: 'read',
+  Edit: 'edit',
+  Delete: 'delete',
+  Move: 'move',
+  Search: 'search',
+  Execute: 'execute',
+  Think: 'think',
+  Fetch: 'fetch',
+  SwitchMode: 'switch_mode',
+  Other: 'other',
+} as const;
+export type ToolKind = (typeof ToolKind)[keyof typeof ToolKind];
+
+/** ACP `ToolCallStatus`. */
+export const ToolCallStatus = {
+  Pending: 'pending',
+  InProgress: 'in_progress',
+  Completed: 'completed',
+  Failed: 'failed',
+} as const;
+export type ToolCallStatus = (typeof ToolCallStatus)[keyof typeof ToolCallStatus];
+
+export interface ToolCallLocation {
+  path: string;
+  line?: number | null;
+}
+
+/** Subset of ACP `ToolCallContent` we render. Other variants are kept raw. */
+export type ToolCallContentBlock =
+  | { type: 'content'; content: { type: string; text?: string; uri?: string; [k: string]: unknown } }
+  | { type: 'diff'; path: string; oldText?: string | null; newText: string }
+  | { type: 'terminal'; terminalId: string }
+  | { type: string; [k: string]: unknown };
+
+/** ACP `PlanEntryStatus`. */
+export const PlanEntryStatus = {
+  Pending: 'pending',
+  InProgress: 'in_progress',
+  Completed: 'completed',
+} as const;
+export type PlanEntryStatus = (typeof PlanEntryStatus)[keyof typeof PlanEntryStatus];
+
+/** ACP `PlanEntryPriority`. */
+export const PlanEntryPriority = {
+  High: 'high',
+  Medium: 'medium',
+  Low: 'low',
+} as const;
+export type PlanEntryPriority = (typeof PlanEntryPriority)[keyof typeof PlanEntryPriority];
+
+export interface PlanEntry {
+  content: string;
+  priority: PlanEntryPriority;
+  status: PlanEntryStatus;
+}
+
+export interface SessionMode {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface AvailableCommand {
+  name: string;
+  description: string;
+  input?: { hint: string };
+}
+
+/** Strongly-typed view of an ACP `tool_call` / `tool_call_update` body. */
+export interface ToolCallView {
+  toolCallId: string;
+  title?: string;
+  kind?: ToolKind;
+  status?: ToolCallStatus;
+  content?: ToolCallContentBlock[];
+  locations?: ToolCallLocation[];
+  rawInput?: unknown;
+  rawOutput?: unknown;
+}
+
+/** Decode the relevant tool-call fields from a raw ACP update. */
+export function decodeToolCallUpdate(update: Record<string, unknown>): ToolCallView | null {
+  const id = update.toolCallId;
+  if (typeof id !== 'string') return null;
+  const out: ToolCallView = { toolCallId: id };
+  if (typeof update.title === 'string') out.title = update.title;
+  if (typeof update.kind === 'string') out.kind = update.kind as ToolKind;
+  if (typeof update.status === 'string') out.status = update.status as ToolCallStatus;
+  if (Array.isArray(update.content)) out.content = update.content as ToolCallContentBlock[];
+  if (Array.isArray(update.locations)) out.locations = update.locations as ToolCallLocation[];
+  if ('rawInput' in update) out.rawInput = update.rawInput;
+  if ('rawOutput' in update) out.rawOutput = update.rawOutput;
+  return out;
 }

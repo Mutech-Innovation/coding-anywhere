@@ -1,4 +1,5 @@
 import {
+  type AvailableCommand,
   type ChatAgentDescriptor,
   ChatEvent,
   ChatMethod,
@@ -6,10 +7,17 @@ import {
   type ChatSession,
   type ChatSessionStatus,
   type ChatUpdateEvent,
+  decodeToolCallUpdate,
   extractChunkText,
   makeRequest,
   type Envelope,
+  type PlanEntry,
   type RelayWSClient,
+  type SessionMode,
+  type ToolCallContentBlock,
+  type ToolCallLocation,
+  type ToolCallStatus,
+  type ToolKind,
 } from '@coding-anywhere/protocol';
 import { newId } from '@coding-anywhere/utils';
 import { create } from 'zustand';
@@ -29,11 +37,20 @@ export interface ChatMessage {
 
 export interface ChatToolCall {
   id: string;
-  name?: string;
-  input?: unknown;
-  output?: unknown;
-  status?: string;
-  raw: Record<string, unknown>;
+  /** Human-readable title from ACP `title` (e.g. "Read package.json"). */
+  title?: string;
+  /** ACP `kind` — drives icon selection. */
+  kind?: ToolKind;
+  status?: ToolCallStatus;
+  /** Tool-emitted content blocks. */
+  content?: ToolCallContentBlock[];
+  /** Files the tool is touching. */
+  locations?: ToolCallLocation[];
+  /** Raw input/output payloads. Useful for debugging. */
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  /** Insertion order, so the UI can render tool calls in event order. */
+  order: number;
 }
 
 export interface ChatPermission {
@@ -46,6 +63,15 @@ export interface SessionState {
   session: ChatSession;
   messages: ChatMessage[];
   toolCalls: Record<string, ChatToolCall>;
+  /** Insertion counter — increments for each new tool call. */
+  toolCallOrder: number;
+  /** Latest agent plan, if any. */
+  plan: PlanEntry[] | null;
+  /** Mode-related state (set if the agent advertised modes at session/new). */
+  modes: SessionMode[];
+  currentModeId: string | null;
+  /** Slash commands the agent advertises for this session. */
+  availableCommands: AvailableCommand[];
   permissions: Record<string, ChatPermission>;
   // Convenience: id of the in-progress streaming agent message (if any) so we
   // know which one to append to.
@@ -69,6 +95,11 @@ interface ChatStore {
   cancel(sessionId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
   resolvePermission(sessionId: string, requestId: string, decision: unknown): Promise<void>;
+  setMode(sessionId: string, modeId: string): Promise<void>;
+  /** Reload one session's full snapshot (updates + prompts + modes) from the daemon. */
+  refreshHistory(sessionId: string): Promise<void>;
+  /** Locally clear messages/tool calls/plan for the session — used by /clear etc. */
+  resetLocalSession(sessionId: string): void;
 }
 
 const pending = new Map<
@@ -220,6 +251,13 @@ export const useChat = create<ChatStore>((set, get) => ({
         list.map((sess) => [sess.id, s.sessions[sess.id] ?? emptySession(sess)]),
       ),
     }));
+    // Eagerly fetch the snapshot for any session we don't have content for
+    // yet — covers the "open another browser tab" case. Failures are
+    // non-fatal; we just keep the empty placeholder.
+    const tasks = list
+      .filter((sess) => (get().sessions[sess.id]?.messages.length ?? 0) === 0)
+      .map((sess) => get().refreshHistory(sess.id).catch(() => {}));
+    await Promise.all(tasks);
   },
 
   async createSession({ cwd, agentId = 'devin', title }) {
@@ -228,9 +266,20 @@ export const useChat = create<ChatStore>((set, get) => ({
       agent_id: agentId,
       title,
     });
-    const payload = env.payload as { session: ChatSession };
+    const payload = env.payload as {
+      session: ChatSession;
+      available_modes?: SessionMode[];
+      current_mode_id?: string;
+    };
     set((s) => ({
-      sessions: { ...s.sessions, [payload.session.id]: emptySession(payload.session) },
+      sessions: {
+        ...s.sessions,
+        [payload.session.id]: {
+          ...emptySession(payload.session),
+          modes: payload.available_modes ?? [],
+          currentModeId: payload.current_mode_id ?? null,
+        },
+      },
       activeId: payload.session.id,
     }));
     return payload.session;
@@ -263,6 +312,16 @@ export const useChat = create<ChatStore>((set, get) => ({
         },
       };
     });
+    // /clear and /new ask Devin to start a fresh conversation. We don't
+    // know what session id the agent will hand us back over ACP, so for
+    // now we simply wipe the local view; the agent will resume sending
+    // updates against the new logical thread.
+    const trimmed = text.trim();
+    if (trimmed === '/clear' || trimmed === '/new') {
+      // Run after the optimistic user message above so the user can still
+      // see what they typed in the transcript.
+      setTimeout(() => get().resetLocalSession(sessionId), 0);
+    }
     await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text });
   },
 
@@ -298,6 +357,93 @@ export const useChat = create<ChatStore>((set, get) => ({
       decision,
     });
   },
+
+  async setMode(sessionId, modeId) {
+    // Optimistic — daemon will broadcast a current_mode_update if the agent
+    // confirms. If it errors, the agent's true mode is whatever the daemon
+    // reports; we leave the optimistic value in place.
+    set((s) => {
+      const cur = s.sessions[sessionId];
+      if (!cur) return {};
+      return {
+        sessions: {
+          ...s.sessions,
+          [sessionId]: { ...cur, currentModeId: modeId },
+        },
+      };
+    });
+    await sendRequest(ChatMethod.SetMode, { session_id: sessionId, mode_id: modeId });
+  },
+
+  async refreshHistory(sessionId) {
+    const env = await sendRequest(ChatMethod.GetHistory, { session_id: sessionId });
+    const hist = env.payload as {
+      session: ChatSession;
+      updates?: Array<Record<string, unknown>>;
+      user_prompts?: Array<{ text: string; created_at: string; sequence_id?: number }>;
+      available_modes?: SessionMode[];
+      current_mode_id?: string;
+    };
+    set((s) => ({
+      sessions: {
+        ...s.sessions,
+        [sessionId]: {
+          ...emptySession(hist.session),
+          modes: hist.available_modes ?? [],
+          currentModeId: hist.current_mode_id ?? null,
+        },
+      },
+    }));
+    // Replay user prompts and updates in order using the sequence id where
+    // available so the timeline is reconstructed faithfully.
+    const promptEvents = (hist.user_prompts ?? []).map((p) => ({
+      kind: 'prompt' as const,
+      seq: p.sequence_id ?? 0,
+      text: p.text,
+      createdAt: Date.parse(p.created_at) || Date.now(),
+    }));
+    const updateEvents = (hist.updates ?? []).map((u, i) => ({
+      kind: 'update' as const,
+      seq: ((u as { sequence_id?: number }).sequence_id as number | undefined) ?? i + 1,
+      update: u,
+    }));
+    const merged = [...promptEvents, ...updateEvents].sort((a, b) => a.seq - b.seq);
+    for (const ev of merged) {
+      if (ev.kind === 'prompt') {
+        set((s) => {
+          const cur = s.sessions[sessionId];
+          if (!cur) return {};
+          return {
+            sessions: {
+              ...s.sessions,
+              [sessionId]: {
+                ...cur,
+                messages: [
+                  ...cur.messages,
+                  { id: newId(), role: 'user', text: ev.text, createdAt: ev.createdAt },
+                ],
+              },
+            },
+          };
+        });
+      } else {
+        ingestUpdate(set, get, { session_id: sessionId, update: ev.update });
+      }
+    }
+  },
+
+  resetLocalSession(sessionId) {
+    set((s) => {
+      const cur = s.sessions[sessionId];
+      if (!cur) return {};
+      return {
+        sessions: {
+          ...s.sessions,
+          [sessionId]: { ...emptySession(cur.session), modes: cur.modes, currentModeId: cur.currentModeId, availableCommands: cur.availableCommands },
+        },
+      };
+    });
+  },
 }));
 
 function emptySession(session: ChatSession): SessionState {
@@ -305,6 +451,11 @@ function emptySession(session: ChatSession): SessionState {
     session,
     messages: [],
     toolCalls: {},
+    toolCallOrder: 0,
+    plan: null,
+    modes: [],
+    currentModeId: null,
+    availableCommands: [],
     permissions: {},
     liveAgentMessageId: null,
   };
@@ -387,22 +538,71 @@ function ingestUpdate(
       }
       case 'tool_call':
       case 'tool_call_update': {
-        const toolCallId = (update.toolCallId as string) ?? newId();
-        const next: ChatToolCall = {
-          id: toolCallId,
-          name: update.name as string | undefined,
-          input: (update as { input?: unknown }).input,
-          output: (update as { output?: unknown }).output,
-          status: update.status as string | undefined,
-          raw: update,
+        const view = decodeToolCallUpdate(update);
+        if (!view) return {};
+        const existing = cur.toolCalls[view.toolCallId];
+        const order = existing?.order ?? cur.toolCallOrder + 1;
+        const merged: ChatToolCall = {
+          id: view.toolCallId,
+          title: view.title ?? existing?.title,
+          kind: view.kind ?? existing?.kind,
+          status: view.status ?? existing?.status,
+          content: view.content ?? existing?.content,
+          locations: view.locations ?? existing?.locations,
+          rawInput: 'rawInput' in view ? view.rawInput : existing?.rawInput,
+          rawOutput: 'rawOutput' in view ? view.rawOutput : existing?.rawOutput,
+          order,
         };
-        const merged = { ...cur.toolCalls[toolCallId], ...next };
         return {
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
               ...cur,
-              toolCalls: { ...cur.toolCalls, [toolCallId]: merged },
+              toolCalls: { ...cur.toolCalls, [view.toolCallId]: merged },
+              toolCallOrder: existing ? cur.toolCallOrder : order,
+            },
+          },
+        };
+      }
+      case 'plan': {
+        const entries = update.entries as PlanEntry[] | undefined;
+        if (!Array.isArray(entries)) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: { ...cur, plan: entries },
+          },
+        };
+      }
+      case 'current_mode_update': {
+        const id = update.currentModeId as string | undefined;
+        if (typeof id !== 'string') return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: { ...cur, currentModeId: id },
+          },
+        };
+      }
+      case 'available_commands_update': {
+        const cmds = update.availableCommands as AvailableCommand[] | undefined;
+        if (!Array.isArray(cmds)) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: { ...cur, availableCommands: cmds },
+          },
+        };
+      }
+      case 'session_info_update': {
+        const title = update.title as string | null | undefined;
+        if (title === undefined) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: {
+              ...cur,
+              session: { ...cur.session, title: title ?? '' },
             },
           },
         };
