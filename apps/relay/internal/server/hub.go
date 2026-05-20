@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,13 @@ type Conn struct {
 	// closed is set once the conn has been unregistered, preventing repeat
 	// Hub.Unregister calls from interfering with each other.
 	closed atomic.Bool
+
+	// serverPending tracks responses the relay itself is waiting for
+	// (e.g. injected from the HTTP proxy endpoint). When the read loop
+	// sees a `res` envelope whose id is in this map, it delivers it to
+	// the channel and skips peer fan-out.
+	serverPendingMu sync.Mutex
+	serverPending   map[string]chan wire.Envelope
 }
 
 // Account aggregates all connections for one account.
@@ -109,6 +117,75 @@ func (h *Hub) CountDevices(accountID string) (int, int) {
 	}
 	return len(acc.daemons), len(acc.clients)
 }
+
+// pickDaemon returns any one connected daemon for the given account.
+func (h *Hub) pickDaemon(accountID string) *Conn {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	acc, ok := h.accs[accountID]
+	if !ok {
+		return nil
+	}
+	for _, c := range acc.daemons {
+		return c
+	}
+	return nil
+}
+
+// ServerRequest sends an envelope from the relay itself to a daemon and
+// awaits the response. Used by HTTP shims (e.g. the ports proxy endpoint)
+// that need to round-trip through the daemon synchronously. The envelope's
+// `ID` must be unique. Returns ErrNoDaemon if no daemon is connected for
+// the account, or context.DeadlineExceeded on timeout.
+func (h *Hub) ServerRequest(ctx context.Context, accountID string, env wire.Envelope) (wire.Envelope, error) {
+	conn := h.pickDaemon(accountID)
+	if conn == nil {
+		return wire.Envelope{}, ErrNoDaemon
+	}
+	ch := make(chan wire.Envelope, 1)
+	conn.serverPendingMu.Lock()
+	if conn.serverPending == nil {
+		conn.serverPending = map[string]chan wire.Envelope{}
+	}
+	conn.serverPending[env.ID] = ch
+	conn.serverPendingMu.Unlock()
+	defer func() {
+		conn.serverPendingMu.Lock()
+		delete(conn.serverPending, env.ID)
+		conn.serverPendingMu.Unlock()
+	}()
+	select {
+	case conn.send <- env:
+	case <-ctx.Done():
+		return wire.Envelope{}, ctx.Err()
+	}
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-ctx.Done():
+		return wire.Envelope{}, ctx.Err()
+	}
+}
+
+// takeServerPending returns the chan registered for `id` (if any) and
+// removes it. Called by wsReadLoop on every `res` envelope to redirect
+// server-injected responses away from the broadcast path.
+func (c *Conn) takeServerPending(id string) (chan wire.Envelope, bool) {
+	c.serverPendingMu.Lock()
+	defer c.serverPendingMu.Unlock()
+	if c.serverPending == nil {
+		return nil, false
+	}
+	ch, ok := c.serverPending[id]
+	if ok {
+		delete(c.serverPending, id)
+	}
+	return ch, ok
+}
+
+// ErrNoDaemon is returned by ServerRequest when no daemon is currently
+// connected for the requested account.
+var ErrNoDaemon = errors.New("no daemon connected for account")
 
 // Broadcast forwards env to peers on the same account, with kind-aware
 // fan-out: a daemon's envelope goes to every client; a client's envelope

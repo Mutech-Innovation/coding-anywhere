@@ -19,6 +19,7 @@ import {
   IconHome,
   IconLogout,
   IconMessageCircle,
+  IconServer,
   IconTerminal2,
 } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
@@ -30,6 +31,7 @@ import { ConnectionStatus } from './components/ConnectionStatus.js';
 import { DiffPanel } from './components/DiffPanel.js';
 import { FilesPanel } from './components/FilesPanel.js';
 import { PairScreen } from './components/PairScreen.js';
+import { PortsPanel } from './components/PortsPanel.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
 import { useConnection } from './store/connection.js';
 
@@ -63,7 +65,7 @@ function MainShell() {
               Coding Anywhere
             </Title>
             <Badge size="xs" variant="light">
-              P5 wired
+              P6 wired
             </Badge>
           </Group>
           <Group gap="xs">
@@ -101,6 +103,9 @@ function MainShell() {
             <Tabs.Tab value="diff" leftSection={<IconGitCompare size={14} />}>
               Diff
             </Tabs.Tab>
+            <Tabs.Tab value="ports" leftSection={<IconServer size={14} />}>
+              Ports
+            </Tabs.Tab>
             <Tabs.Tab value="agents" leftSection={<IconCode size={14} />}>
               Agents
             </Tabs.Tab>
@@ -120,6 +125,9 @@ function MainShell() {
             </Tabs.Panel>
             <Tabs.Panel value="diff">
               <DiffPanel />
+            </Tabs.Panel>
+            <Tabs.Panel value="ports">
+              <PortsPanel />
             </Tabs.Panel>
             <Tabs.Panel value="agents">
               <AgentsTab />

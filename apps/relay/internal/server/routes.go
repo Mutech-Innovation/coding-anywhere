@@ -25,6 +25,9 @@ func (s *Server) routes() http.Handler {
 	// WebSocket
 	mux.HandleFunc("GET /v1/ws/connect", s.handleWSConnect)
 
+	// HTTP proxy to the daemon's localhost ports.
+	mux.HandleFunc("/v1/proxy/", s.handleProxy)
+
 	return s.withRecover(s.withRequestLog(mux))
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/diffrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/filesrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/portsrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/terminalrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
@@ -179,6 +180,9 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 	if _, err := diffrouter.New(cli, logger, workspace); err != nil {
 		return fmt.Errorf("diffrouter: %w", err)
 	}
+
+	// ports: localhost listener detection + HTTP forwarder.
+	portsrouter.New(cli, logger)
 
 	return cli.Run(ctx)
 }

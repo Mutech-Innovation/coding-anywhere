@@ -9,5 +9,6 @@ export * from './diff.js';
 export * from './envelope.js';
 export * from './files.js';
 export * from './pair.js';
+export * from './ports.js';
 export * from './relay-ws-client.js';
 export * from './terminal.js';

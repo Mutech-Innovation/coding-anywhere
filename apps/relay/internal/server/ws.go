@@ -118,6 +118,15 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 			continue
 		}
 
+		// Server-injected requests (e.g. from the ports proxy endpoint)
+		// register a waiter for their response id. Deliver and short-circuit.
+		if env.Type == wire.TypeResponse {
+			if ch, ok := conn.takeServerPending(env.ID); ok {
+				ch <- env
+				continue
+			}
+		}
+
 		// Fan out to peers. Senders never see their own message.
 		s.hub.Broadcast(conn, env)
 	}
