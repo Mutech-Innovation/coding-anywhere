@@ -12,6 +12,9 @@ linters:
     - gosec
     - misspell
   exclusions:
+    paths:
+      - bin
+      - dist
     rules:
       - path: _test\.go
         linters:
@@ -44,7 +47,3 @@ linters:
         text: 'G117:'
         linters:
           - gosec
-issues:
-  exclude-dirs:
-    - bin
-    - dist
