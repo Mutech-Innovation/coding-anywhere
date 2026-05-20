@@ -16,12 +16,14 @@ import {
   IconDotsVertical,
   IconHome,
   IconLogout,
+  IconMessageCircle,
   IconTerminal2,
 } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 
 import { AGENTS, listAgents } from '@coding-anywhere/agents';
 
+import { ChatPanel } from './components/ChatPanel.js';
 import { ConnectionStatus } from './components/ConnectionStatus.js';
 import { PairScreen } from './components/PairScreen.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
@@ -45,7 +47,7 @@ export function App() {
 function MainShell() {
   const credentials = useConnection((s) => s.credentials);
   const signOut = useConnection((s) => s.signOut);
-  const [activeTab, setActiveTab] = useState<string | null>('terminals');
+  const [activeTab, setActiveTab] = useState<string | null>('chat');
 
   return (
     <AppShell padding="md" header={{ height: 56 }}>
@@ -57,7 +59,7 @@ function MainShell() {
               Coding Anywhere
             </Title>
             <Badge size="xs" variant="light">
-              P2 wired
+              P3 wired
             </Badge>
           </Group>
           <Group gap="xs">
@@ -83,6 +85,9 @@ function MainShell() {
       <AppShell.Main>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
+            <Tabs.Tab value="chat" leftSection={<IconMessageCircle size={14} />}>
+              Chat
+            </Tabs.Tab>
             <Tabs.Tab value="terminals" leftSection={<IconTerminal2 size={14} />}>
               Terminals
             </Tabs.Tab>
@@ -94,6 +99,9 @@ function MainShell() {
             </Tabs.Tab>
           </Tabs.List>
           <Box pt="md">
+            <Tabs.Panel value="chat">
+              <ChatPanel />
+            </Tabs.Panel>
             <Tabs.Panel value="terminals">
               <TerminalsPanel />
             </Tabs.Panel>

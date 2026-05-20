@@ -4,6 +4,7 @@
 // WebSocket envelope format and channel payloads. Schemas are kept in sync
 // with internal/wire on the Go side via codegen from proto/*.json.
 
+export * from './chat.js';
 export * from './envelope.js';
 export * from './pair.js';
 export * from './relay-ws-client.js';

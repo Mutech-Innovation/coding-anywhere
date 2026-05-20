@@ -18,6 +18,7 @@ import (
 
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/credentials"
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/initcmd"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/terminalrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
@@ -145,6 +146,16 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride st
 	defer func() {
 		if err := tr.CloseAll(); err != nil {
 			logger.Warn("close terminal sessions", "err", err)
+		}
+	}()
+
+	// chat: AI coding agent conversations (Devin first; Claude Code, Codex,
+	// cursor-agent in v2). The Devin adapter spins up `devin acp` lazily on
+	// first session create.
+	cr := chatrouter.New(cli, logger, nil)
+	defer func() {
+		if err := cr.Close(); err != nil {
+			logger.Warn("close chat router", "err", err)
 		}
 	}()
 
