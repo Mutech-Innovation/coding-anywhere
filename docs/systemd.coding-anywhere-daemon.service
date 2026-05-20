@@ -1,0 +1,14 @@
+[Unit]
+Description=Coding Anywhere daemon
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/coding-anywhere-daemon -workspace %h/projects
+Restart=on-failure
+RestartSec=5
+# Optional: set CA_CREDENTIALS_FILE if you keep credentials elsewhere.
+# Environment=CA_CREDENTIALS_FILE=%h/.config/coding-anywhere/credentials.json
+
+[Install]
+WantedBy=default.target
