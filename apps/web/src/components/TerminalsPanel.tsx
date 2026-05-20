@@ -26,7 +26,6 @@ import { TerminalView } from './TerminalView.js';
 export function TerminalsPanel() {
   const status = useConnection((s) => s.status);
   const client = useConnection((s) => s.client);
-  const attached = useTerminals((s) => s.attached);
   const attach = useTerminals((s) => s.attach);
   const refreshList = useTerminals((s) => s.refreshList);
   const sessions = useTerminals((s) => s.sessions);
@@ -41,8 +40,8 @@ export function TerminalsPanel() {
   // Wire the store to the relay WS client whenever we reconnect.
   useEffect(() => {
     if (!client) return;
-    if (!attached) attach(client);
-  }, [client, attached, attach]);
+    attach(client);
+  }, [client, attach]);
 
   // Refresh session list when we come online.
   useEffect(() => {

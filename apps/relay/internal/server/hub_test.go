@@ -151,6 +151,72 @@ func TestHubClientRequestNoDaemonGetsError(t *testing.T) {
 	}
 }
 
+func TestHubClientReconnectReplacesStaleConn(t *testing.T) {
+	hs, srv := newTestServer(t)
+	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "daemon", auth.DeviceDaemon)
+	// Same device_id as a browser tab reconnecting after a drop.
+	client1 := dialWS(t, hs.URL, srv.Signer(), "acc-1", "browser", auth.DeviceClient)
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := wire.MakeRequest("req-1", wire.ChannelSessions, "list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, client1, req); err != nil {
+		t.Fatalf("client1 Write: %v", err)
+	}
+	var got wire.Envelope
+	if err := wsjson.Read(ctx, daemon, &got); err != nil {
+		t.Fatalf("daemon Read after client1: %v", err)
+	}
+	if got.ID != "req-1" {
+		t.Fatalf("unexpected envelope: %+v", got)
+	}
+
+	// Simulate auto-reconnect: second socket for the same device_id.
+	client2, _, err := websocket.Dial(ctx, strings.Replace(hs.URL, "http", "ws", 1)+"/v1/ws/connect?token="+mustToken(t, srv.Signer(), "acc-1", "browser", auth.DeviceClient), nil)
+	if err != nil {
+		t.Fatalf("client2 Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client2.Close(websocket.StatusNormalClosure, "") })
+	time.Sleep(50 * time.Millisecond)
+
+	// Close the superseded socket; hub must keep routing to client2.
+	if err := client1.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("client1 Close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	req2, err := wire.MakeRequest("req-2", wire.ChannelSessions, "list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, client2, req2); err != nil {
+		t.Fatalf("client2 Write: %v", err)
+	}
+	var got2 wire.Envelope
+	if err := wsjson.Read(ctx, daemon, &got2); err != nil {
+		t.Fatalf("daemon Read after client2: %v", err)
+	}
+	if got2.ID != "req-2" {
+		t.Fatalf("unexpected envelope: %+v", got2)
+	}
+}
+
+func mustToken(t *testing.T, signer interface {
+	Issue(string, string, auth.DeviceKind, time.Duration) (string, error)
+}, account, device string, kind auth.DeviceKind) string {
+	t.Helper()
+	tok, err := signer.Issue(account, device, kind, time.Hour)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	return tok
+}
+
 func TestHubMultipleClientsFanOut(t *testing.T) {
 	hs, srv := newTestServer(t)
 	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "daemon", auth.DeviceDaemon)

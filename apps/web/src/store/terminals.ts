@@ -17,6 +17,7 @@ import { useConnection } from './connection.js';
 // In-flight request bookkeeping: id → resolver/rejecter pair.
 type PendingMap = Map<string, { resolve: (env: Envelope) => void; reject: (err: Error) => void }>;
 const pending: PendingMap = new Map();
+let handlerClient: RelayWSClient | null = null;
 
 /** Subscribers to live terminal data, keyed by session id. */
 type DataListener = (chunk: Uint8Array) => void;
@@ -61,7 +62,8 @@ export const useTerminals = create<TerminalsStore>((set, get) => ({
   attached: false,
 
   attach(client) {
-    if (get().attached) return;
+    if (get().attached && handlerClient === client) return;
+    handlerClient = client;
     set({ attached: true });
 
     client.handle('terminal', (env) => {
@@ -124,6 +126,7 @@ export const useTerminals = create<TerminalsStore>((set, get) => ({
   },
 
   detach() {
+    handlerClient = null;
     set({ attached: false, sessions: {}, activeId: null });
     pending.clear();
     dataListeners.clear();

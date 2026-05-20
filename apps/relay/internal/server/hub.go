@@ -79,8 +79,14 @@ func (h *Hub) Register(c *Conn) {
 	}
 	switch c.kind {
 	case auth.DeviceDaemon:
+		if old := acc.daemons[c.deviceID]; old != nil && old != c {
+			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
+		}
 		acc.daemons[c.deviceID] = c
 	case auth.DeviceClient:
+		if old := acc.clients[c.deviceID]; old != nil && old != c {
+			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
+		}
 		acc.clients[c.deviceID] = c
 	}
 }
@@ -98,9 +104,13 @@ func (h *Hub) Unregister(c *Conn) {
 	}
 	switch c.kind {
 	case auth.DeviceDaemon:
-		delete(acc.daemons, c.deviceID)
+		if acc.daemons[c.deviceID] == c {
+			delete(acc.daemons, c.deviceID)
+		}
 	case auth.DeviceClient:
-		delete(acc.clients, c.deviceID)
+		if acc.clients[c.deviceID] == c {
+			delete(acc.clients, c.deviceID)
+		}
 	}
 	if len(acc.daemons) == 0 && len(acc.clients) == 0 {
 		delete(h.accs, c.accountID)
