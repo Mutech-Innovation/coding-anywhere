@@ -23,7 +23,7 @@ type refreshResponse struct {
 // Refresh tokens are stored hashed; we look up by SHA-256 hex digest. If the
 // token is missing, expired or revoked we return 401 with a stable code.
 func (s *Server) handleAuthRefresh(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req refreshRequest
 	if err := decodeJSON(r.Body, &req, 1024); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())

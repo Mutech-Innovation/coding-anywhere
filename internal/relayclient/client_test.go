@@ -49,7 +49,7 @@ func (m *mockRelay) handler() http.Handler {
 			m.t.Logf("Accept: %v", err)
 			return
 		}
-		defer ws.Close(websocket.StatusNormalClosure, "")
+		defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
 		ctx := r.Context()
 		for {

@@ -107,19 +107,19 @@ Linux, web client paired in your browser — see
 
 ## Roadmap
 
-| Phase | Scope                                                    | Status    |
-| ----- | -------------------------------------------------------- | --------- |
-| P0    | Repo scaffold, CI, codegen pipeline, Mantine UI shell    | ✅        |
-| P1    | WS envelope, device pairing, JWT, echo loop              | ✅        |
-| P2    | PTY multiplexer + xterm.js standalone terminal           | ✅        |
-| P3    | Devin for Terminal adapter via `devin acp` (chat)        | ✅        |
-| P5    | File browser + diff viewer (CodeMirror 6)                | ✅        |
-| P6    | Listening-port detection + service preview reverse proxy | ✅        |
-| P7    | VAPID Web Push when agent turns finish                   | ✅        |
-| P8    | docs / launchd / systemd / docker-compose smoke          | ✅        |
-| P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot | ✅ |
-| v2    | Claude Code / Codex / cursor-agent adapters              | future    |
-| v3    | React Native iOS + Android sharing `packages/*`          | future    |
+| Phase | Scope                                                                 | Status |
+| ----- | --------------------------------------------------------------------- | ------ |
+| P0    | Repo scaffold, CI, codegen pipeline, Mantine UI shell                 | ✅     |
+| P1    | WS envelope, device pairing, JWT, echo loop                           | ✅     |
+| P2    | PTY multiplexer + xterm.js standalone terminal                        | ✅     |
+| P3    | Devin for Terminal adapter via `devin acp` (chat)                     | ✅     |
+| P5    | File browser + diff viewer (CodeMirror 6)                             | ✅     |
+| P6    | Listening-port detection + service preview reverse proxy              | ✅     |
+| P7    | VAPID Web Push when agent turns finish                                | ✅     |
+| P8    | docs / launchd / systemd / docker-compose smoke                       | ✅     |
+| P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot | ✅     |
+| v2    | Claude Code / Codex / cursor-agent adapters                           | future |
+| v3    | React Native iOS + Android sharing `packages/*`                       | future |
 
 ## License
 

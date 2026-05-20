@@ -31,7 +31,7 @@ import (
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "init" {
 		if err := runInit(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "init: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "init: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -65,7 +65,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(flag.CommandLine.Output(), `Usage: coding-anywhere-daemon [flags]
+	_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage: coding-anywhere-daemon [flags]
        coding-anywhere-daemon init [flags]
 
 Subcommands:

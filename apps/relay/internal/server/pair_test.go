@@ -51,6 +51,10 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 	return res
 }
 
+func closeBody(c io.Closer) {
+	_ = c.Close()
+}
+
 func TestPairFlowHappyPath(t *testing.T) {
 	hs, _ := newPairingTestServer(t)
 
@@ -58,7 +62,7 @@ func TestPairFlowHappyPath(t *testing.T) {
 	initRes := postJSON(t, hs.URL+"/v1/pair/init", map[string]string{
 		"device_kind": "daemon", "device_label": "laptop",
 	})
-	defer initRes.Body.Close()
+	defer closeBody(initRes.Body)
 	if initRes.StatusCode != 200 {
 		t.Fatalf("init status: %d", initRes.StatusCode)
 	}
@@ -79,7 +83,7 @@ func TestPairFlowHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	defer statusRes.Body.Close()
+	defer closeBody(statusRes.Body)
 	var statusBody struct{ Status string }
 	if err := json.NewDecoder(statusRes.Body).Decode(&statusBody); err != nil {
 		t.Fatal(err)
@@ -92,7 +96,7 @@ func TestPairFlowHappyPath(t *testing.T) {
 	claimRes := postJSON(t, hs.URL+"/v1/pair/claim", map[string]string{
 		"code": initBody.Code, "device_kind": "client", "device_label": "iphone",
 	})
-	defer claimRes.Body.Close()
+	defer closeBody(claimRes.Body)
 	if claimRes.StatusCode != 200 {
 		t.Fatalf("claim status: %d", claimRes.StatusCode)
 	}
@@ -115,7 +119,7 @@ func TestPairFlowHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status #2: %v", err)
 	}
-	defer statusRes2.Body.Close()
+	defer closeBody(statusRes2.Body)
 	var statusBody2 struct {
 		Status      string
 		Credentials *server.CredentialBundle
@@ -145,7 +149,7 @@ func TestPairFlowHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status #3: %v", err)
 	}
-	defer statusRes3.Body.Close()
+	defer closeBody(statusRes3.Body)
 	if statusRes3.StatusCode != 404 {
 		t.Fatalf("status #3 code: %d", statusRes3.StatusCode)
 	}
@@ -165,7 +169,7 @@ func TestPairInitValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := postJSON(t, hs.URL+"/v1/pair/init", tc.body)
-			defer res.Body.Close()
+			defer closeBody(res.Body)
 			if res.StatusCode != tc.want {
 				t.Fatalf("status: got %d want %d", res.StatusCode, tc.want)
 			}
@@ -178,7 +182,7 @@ func TestPairClaimUnknownCode(t *testing.T) {
 	res := postJSON(t, hs.URL+"/v1/pair/claim", map[string]string{
 		"code": "999999", "device_kind": "client", "device_label": "phone",
 	})
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 404 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -189,7 +193,7 @@ func TestPairClaimAlreadyClaimed(t *testing.T) {
 	initRes := postJSON(t, hs.URL+"/v1/pair/init", map[string]string{
 		"device_kind": "daemon", "device_label": "laptop",
 	})
-	defer initRes.Body.Close()
+	defer closeBody(initRes.Body)
 	var init struct{ Code string }
 	if err := json.NewDecoder(initRes.Body).Decode(&init); err != nil {
 		t.Fatal(err)
@@ -197,14 +201,14 @@ func TestPairClaimAlreadyClaimed(t *testing.T) {
 	first := postJSON(t, hs.URL+"/v1/pair/claim", map[string]string{
 		"code": init.Code, "device_kind": "client", "device_label": "phone",
 	})
-	first.Body.Close()
+	closeBody(first.Body)
 	if first.StatusCode != 200 {
 		t.Fatalf("first claim status: %d", first.StatusCode)
 	}
 	second := postJSON(t, hs.URL+"/v1/pair/claim", map[string]string{
 		"code": init.Code, "device_kind": "client", "device_label": "phone-2",
 	})
-	defer second.Body.Close()
+	defer closeBody(second.Body)
 	if second.StatusCode != 409 {
 		t.Fatalf("second claim should be 409, got %d", second.StatusCode)
 	}
@@ -216,7 +220,7 @@ func TestRefreshTokenFlow(t *testing.T) {
 	initRes := postJSON(t, hs.URL+"/v1/pair/init", map[string]string{
 		"device_kind": "daemon", "device_label": "laptop",
 	})
-	defer initRes.Body.Close()
+	defer closeBody(initRes.Body)
 	var init struct{ Code string }
 	if err := json.NewDecoder(initRes.Body).Decode(&init); err != nil {
 		t.Fatal(err)
@@ -224,7 +228,7 @@ func TestRefreshTokenFlow(t *testing.T) {
 	claimRes := postJSON(t, hs.URL+"/v1/pair/claim", map[string]string{
 		"code": init.Code, "device_kind": "client", "device_label": "phone",
 	})
-	defer claimRes.Body.Close()
+	defer closeBody(claimRes.Body)
 	var claim struct {
 		Credentials server.CredentialBundle
 	}
@@ -236,7 +240,7 @@ func TestRefreshTokenFlow(t *testing.T) {
 	refreshRes := postJSON(t, hs.URL+"/v1/auth/refresh", map[string]string{
 		"refresh_token": claim.Credentials.RefreshToken,
 	})
-	defer refreshRes.Body.Close()
+	defer closeBody(refreshRes.Body)
 	if refreshRes.StatusCode != 200 {
 		t.Fatalf("refresh: %d", refreshRes.StatusCode)
 	}
@@ -253,7 +257,7 @@ func TestRefreshTokenFlow(t *testing.T) {
 
 	// 2. Bad token → 401.
 	bad := postJSON(t, hs.URL+"/v1/auth/refresh", map[string]string{"refresh_token": "totally-fake"})
-	bad.Body.Close()
+	closeBody(bad.Body)
 	if bad.StatusCode != 401 {
 		t.Fatalf("bad token status: %d", bad.StatusCode)
 	}
@@ -266,7 +270,7 @@ func TestPairingExpiry(t *testing.T) {
 	initRes := postJSON(t, hs.URL+"/v1/pair/init", map[string]string{
 		"device_kind": "daemon", "device_label": "laptop",
 	})
-	defer initRes.Body.Close()
+	defer closeBody(initRes.Body)
 	var init struct {
 		PairingToken string `json:"pairing_token"`
 	}
@@ -284,7 +288,7 @@ func TestPairingExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 410 {
 		t.Fatalf("status code: %d", res.StatusCode)
 	}

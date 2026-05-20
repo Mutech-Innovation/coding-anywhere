@@ -104,7 +104,7 @@ func Save(path string, b *Bundle) error {
 	}
 	tmpName := tmp.Name()
 	defer func() {
-		tmp.Close()
+		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 	}()
 	if _, err := tmp.Write(append(buf, '\n')); err != nil {

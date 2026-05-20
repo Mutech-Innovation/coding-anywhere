@@ -173,7 +173,7 @@ func (a *API) Read(relPath string, opts ReadOptions) (*ReadResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if opts.Offset > 0 {
 		if _, err := f.Seek(opts.Offset, 0); err != nil {

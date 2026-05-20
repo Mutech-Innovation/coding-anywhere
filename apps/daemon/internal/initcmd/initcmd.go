@@ -89,8 +89,8 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("save credentials: %w", err)
 	}
 
-	fmt.Fprintf(opts.Out, "\nPaired! Saved credentials to %s\n", opts.CredentialsPath)
-	fmt.Fprintf(opts.Out, "Account: %s  Device: %s (%s)\n", saved.AccountID, saved.DeviceID, saved.DeviceLabel)
+	_, _ = fmt.Fprintf(opts.Out, "\nPaired! Saved credentials to %s\n", opts.CredentialsPath)
+	_, _ = fmt.Fprintf(opts.Out, "Account: %s  Device: %s (%s)\n", saved.AccountID, saved.DeviceID, saved.DeviceLabel)
 	return nil
 }
 
@@ -114,11 +114,11 @@ func bundleFromPairing(relayURL string, c pairingclient.CredentialBundle) *crede
 // the writer doesn't look like a TTY (no ANSI assumed).
 func printCode(w io.Writer, init *pairingclient.InitResponse) {
 	bar := strings.Repeat("─", 16)
-	fmt.Fprintf(w, "\n┌%s┐\n", bar)
-	fmt.Fprintf(w, "│   %s   │\n", spaced(init.Code))
-	fmt.Fprintf(w, "└%s┘\n", bar)
-	fmt.Fprintf(w, "\nEnter this code on the Coding Anywhere web/mobile app to finish pairing.\n")
-	fmt.Fprintf(w, "(Code expires in %ds)\n", init.ExpiresIn)
+	_, _ = fmt.Fprintf(w, "\n┌%s┐\n", bar)
+	_, _ = fmt.Fprintf(w, "│   %s   │\n", spaced(init.Code))
+	_, _ = fmt.Fprintf(w, "└%s┘\n", bar)
+	_, _ = fmt.Fprintf(w, "\nEnter this code on the Coding Anywhere web/mobile app to finish pairing.\n")
+	_, _ = fmt.Fprintf(w, "(Code expires in %ds)\n", init.ExpiresIn)
 }
 
 func spaced(code string) string {

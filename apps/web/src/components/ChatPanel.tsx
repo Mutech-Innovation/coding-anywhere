@@ -21,11 +21,7 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core';
-import type {
-  AvailableCommand,
-  PlanEntry,
-  ToolCallContentBlock,
-} from '@coding-anywhere/protocol';
+import type { AvailableCommand, PlanEntry, ToolCallContentBlock } from '@coding-anywhere/protocol';
 import {
   IconArrowRight,
   IconBolt,
@@ -488,9 +484,7 @@ function CommandInput({
   const filter = slashOpen ? trimmed.slice(1).toLowerCase() : '';
   const matches = useMemo(
     () =>
-      slashOpen
-        ? commands.filter((c) => c.name.toLowerCase().startsWith(filter)).slice(0, 8)
-        : [],
+      slashOpen ? commands.filter((c) => c.name.toLowerCase().startsWith(filter)).slice(0, 8) : [],
     [commands, slashOpen, filter],
   );
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -519,7 +513,9 @@ function CommandInput({
                 </Text>
                 <Text size="xs" c="dimmed" truncate>
                   {c.description}
-                  {c.input?.hint ? <Text component="span" c="dimmed">{` — ${c.input.hint}`}</Text> : null}
+                  {c.input?.hint ? (
+                    <Text component="span" c="dimmed">{` — ${c.input.hint}`}</Text>
+                  ) : null}
                 </Text>
               </Group>
             ))}
@@ -595,9 +591,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';
   const hasDetails =
-    call.rawInput != null ||
-    call.rawOutput != null ||
-    (call.content && call.content.length > 0);
+    call.rawInput != null || call.rawOutput != null || (call.content && call.content.length > 0);
   return (
     <Card padding="sm" radius="md" withBorder>
       <Group gap="xs" justify="space-between" wrap="nowrap">
@@ -617,7 +611,10 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
             <ActionIcon variant="subtle" size="sm" onClick={() => setExpanded((x) => !x)}>
               <IconArrowRight
                 size={12}
-                style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }}
+                style={{
+                  transform: expanded ? 'rotate(90deg)' : undefined,
+                  transition: 'transform 120ms',
+                }}
               />
             </ActionIcon>
           </Tooltip>
@@ -626,7 +623,13 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
       {call.locations && call.locations.length > 0 ? (
         <Group gap={4} mt={6} wrap="wrap">
           {call.locations.map((loc, i) => (
-            <Badge key={i} size="xs" variant="light" color="blue" leftSection={<IconFileText size={10} />}>
+            <Badge
+              key={i}
+              size="xs"
+              variant="light"
+              color="blue"
+              leftSection={<IconFileText size={10} />}
+            >
               {shortenPath(loc.path)}
               {loc.line ? `:${loc.line}` : ''}
             </Badge>
@@ -635,7 +638,9 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
       ) : null}
       {expanded ? (
         <Stack gap="xs" mt="sm">
-          {call.content?.map((c, i) => <ToolContentBlockView key={i} block={c} />)}
+          {call.content?.map((c, i) => (
+            <ToolContentBlockView key={i} block={c} />
+          ))}
           {call.rawInput != null ? (
             <Box>
               <Text size="xs" c="dimmed">

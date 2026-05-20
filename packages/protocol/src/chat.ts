@@ -167,7 +167,10 @@ export interface ToolCallLocation {
 
 /** Subset of ACP `ToolCallContent` we render. Other variants are kept raw. */
 export type ToolCallContentBlock =
-  | { type: 'content'; content: { type: string; text?: string; uri?: string; [k: string]: unknown } }
+  | {
+      type: 'content';
+      content: { type: string; text?: string; uri?: string; [k: string]: unknown };
+    }
   | { type: 'diff'; path: string; oldText?: string | null; newText: string }
   | { type: 'terminal'; terminalId: string }
   | { type: string; [k: string]: unknown };

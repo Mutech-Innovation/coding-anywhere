@@ -49,7 +49,7 @@ func TestHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 200 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -71,7 +71,7 @@ func TestWSConnectRequiresAuth(t *testing.T) {
 
 	conn, res, err := websocket.Dial(ctx, wsURL, nil)
 	if err == nil {
-		conn.Close(websocket.StatusNormalClosure, "")
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 		t.Fatalf("expected auth error, got accepted connection")
 	}
 	if res == nil || res.StatusCode != http.StatusUnauthorized {
@@ -95,7 +95,7 @@ func TestWSPingPong(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	req, err := wire.MakeRequest("req-1", wire.ChannelMeta, "ping", map[string]string{"nonce": "n1"})
 	if err != nil {
@@ -142,7 +142,7 @@ func TestWSUnknownChannelReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	// Bypass MakeRequest's channel validation by hand-writing the envelope.
 	bad := wire.Envelope{ID: "req-2", Type: wire.TypeRequest, Channel: "mystery", Method: "x"}

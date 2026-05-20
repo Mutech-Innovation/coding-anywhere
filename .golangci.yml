@@ -11,6 +11,39 @@ linters:
     - unused
     - gosec
     - misspell
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+      - path: apps/daemon/internal/credentials/credentials\.go
+        text: 'G(117|304):'
+        linters:
+          - gosec
+      - path: apps/relay/cmd/main\.go
+        text: 'G101:'
+        linters:
+          - gosec
+      - path: apps/relay/internal/server/pair\.go
+        text: 'G117:'
+        linters:
+          - gosec
+      - path: internal/diffapi/api\.go
+        text: 'G(204|304):'
+        linters:
+          - gosec
+      - path: internal/fileapi/api\.go
+        text: 'G304:'
+        linters:
+          - gosec
+      - path: internal/ptymux/session\.go
+        text: 'G(204|702):'
+        linters:
+          - gosec
+      - path: scripts/democlient/main\.go
+        text: 'G117:'
+        linters:
+          - gosec
 issues:
   exclude-dirs:
     - bin

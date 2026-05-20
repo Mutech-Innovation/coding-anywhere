@@ -22,14 +22,14 @@ import (
 // `?token=` query param fallback (browsers can't set custom headers on WS).
 //
 // Per-connection lifecycle:
-//   1. Validate the JWT (account, device, kind).
-//   2. Accept the WebSocket.
-//   3. Register the conn with the hub.
-//   4. Spawn a writer goroutine pumping conn.send → ws.
-//   5. Read loop:
-//        - meta channel  → handle locally (ping/pong).
-//        - other channels → fan-out to peer devices via Hub.Broadcast.
-//   6. On exit: cancel writer, unregister, close ws.
+//  1. Validate the JWT (account, device, kind).
+//  2. Accept the WebSocket.
+//  3. Register the conn with the hub.
+//  4. Spawn a writer goroutine pumping conn.send → ws.
+//  5. Read loop:
+//     - meta channel  → handle locally (ping/pong).
+//     - other channels → fan-out to peer devices via Hub.Broadcast.
+//  6. On exit: cancel writer, unregister, close ws.
 func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.authenticateWS(r)
 	if err != nil {
@@ -132,7 +132,7 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 		if conn.kind == auth.DeviceDaemon &&
 			env.Type == wire.TypeEvent &&
 			env.Channel == wire.ChannelNotifications {
-			go s.dispatchEnvelopePush(context.Background(), conn.accountID, env, logger)
+			go s.dispatchEnvelopePush(ctx, conn.accountID, env, logger)
 		}
 
 		// Fan out to peers. Senders never see their own message.

@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/Mutech-Innovation/coding-anywhere/apps/relay/internal/store"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -77,7 +77,7 @@ func (s *Server) handleVAPIDPublicKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	claims, err := s.authenticateBearer(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())
@@ -93,14 +93,14 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub := store.PushSubscription{
-		ID:         ulid.Make().String(),
-		AccountID:  claims.AccountID,
-		DeviceID:   claims.DeviceID,
-		Endpoint:   req.Endpoint,
-		P256DHKey:  req.Keys.P256DH,
-		AuthKey:    req.Keys.Auth,
-		UserAgent:  req.UserAgent,
-		CreatedAt:  time.Now().UTC(),
+		ID:        ulid.Make().String(),
+		AccountID: claims.AccountID,
+		DeviceID:  claims.DeviceID,
+		Endpoint:  req.Endpoint,
+		P256DHKey: req.Keys.P256DH,
+		AuthKey:   req.Keys.Auth,
+		UserAgent: req.UserAgent,
+		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.UpsertPushSubscription(r.Context(), sub); err != nil {
 		s.logger.Error("UpsertPushSubscription", "err", err)
@@ -111,7 +111,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	claims, err := s.authenticateBearer(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())
@@ -131,7 +131,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	claims, err := s.authenticateBearer(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", err.Error())

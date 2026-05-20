@@ -18,7 +18,7 @@ func TestVAPIDPublicKeyIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 200 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -37,7 +37,7 @@ func TestVAPIDPublicKeyIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res2.Body.Close()
+	defer closeBody(res2.Body)
 	var body2 struct {
 		PublicKey string `json:"public_key"`
 	}
@@ -55,7 +55,7 @@ func TestPushSubscribeRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 401 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -92,7 +92,7 @@ func TestPushSubscribeAndUnsubscribeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 200 {
 		body, _ := io.ReadAll(res.Body)
 		t.Fatalf("subscribe: %d %s", res.StatusCode, body)
@@ -107,7 +107,7 @@ func TestPushSubscribeAndUnsubscribeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tRes.Body.Close()
+	defer closeBody(tRes.Body)
 	if tRes.StatusCode != 200 {
 		t.Fatalf("test status: %d", tRes.StatusCode)
 	}
@@ -121,7 +121,7 @@ func TestPushSubscribeAndUnsubscribeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer uRes.Body.Close()
+	defer closeBody(uRes.Body)
 	if uRes.StatusCode != 200 {
 		t.Fatalf("unsubscribe: %d", uRes.StatusCode)
 	}

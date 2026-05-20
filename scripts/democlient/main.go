@@ -44,7 +44,7 @@ func main() {
 	case "-h", "--help", "help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
@@ -52,13 +52,13 @@ func main() {
 
 func mustRun(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `democlient — manual smoke-test client for the coding-anywhere relay.
+	_, _ = fmt.Fprintf(os.Stderr, `democlient — manual smoke-test client for the coding-anywhere relay.
 
 Usage:
   democlient claim   --relay-url <url> --code <6-digit> [--label <name>]
@@ -119,7 +119,7 @@ func runConnect(args []string) error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-	defer ws.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 	fmt.Println("✓ ws connected")
 
 	// Reader: print every envelope the server pushes.

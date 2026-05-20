@@ -50,14 +50,14 @@ func (s *Store) LatestVAPIDKey(ctx context.Context) (VAPIDKey, error) {
 
 // PushSubscription is one stored Web Push subscription belonging to a device.
 type PushSubscription struct {
-	ID         string
-	AccountID  string
-	DeviceID   string
-	Endpoint   string
-	P256DHKey  string
-	AuthKey    string
-	UserAgent  string
-	CreatedAt  time.Time
+	ID        string
+	AccountID string
+	DeviceID  string
+	Endpoint  string
+	P256DHKey string
+	AuthKey   string
+	UserAgent string
+	CreatedAt time.Time
 }
 
 // UpsertPushSubscription stores a subscription, deduplicating by
@@ -89,7 +89,7 @@ func (s *Store) ListPushSubscriptionsForAccount(ctx context.Context, accountID s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []PushSubscription
 	for rows.Next() {
 		var sub PushSubscription

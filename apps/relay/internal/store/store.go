@@ -34,7 +34,7 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, errors.New("dbPath required")
 	}
 	if dir := filepath.Dir(dbPath); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("mkdir data dir: %w", err)
 		}
 	}

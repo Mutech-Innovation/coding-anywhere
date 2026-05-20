@@ -29,7 +29,7 @@ type pairInitResponse struct {
 }
 
 func (s *Server) handlePairInit(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req pairInitRequest
 	if err := decodeJSON(r.Body, &req, 1024); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -154,7 +154,7 @@ type pairClaimResponse struct {
 }
 
 func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	var req pairClaimRequest
 	if err := decodeJSON(r.Body, &req, 1024); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -272,7 +272,12 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "issue")
 		return
 	}
-	credJSON, _ := json.Marshal(initiatorCreds)
+	credJSON, err := json.Marshal(initiatorCreds)
+	if err != nil {
+		s.logger.Error("encode initiator credentials", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "encode")
+		return
+	}
 	if err := s.store.MarkPairingClaimed(r.Context(), p.PairingToken,
 		initiator.ID, accountID, claimer.ID, string(credJSON)); err != nil {
 		s.logger.Error("MarkPairingClaimed", "err", err)
@@ -331,5 +336,3 @@ func isUniqueConflict(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE") || strings.Contains(msg, "unique")
 }
-
-

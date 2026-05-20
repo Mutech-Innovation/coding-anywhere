@@ -31,10 +31,10 @@ func TestPortsProxyEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/json" && r.Header.Get("X-From-Client") != "" {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"echo":%q,"client_header":%q}`, r.URL.Path, r.Header.Get("X-From-Client"))
+			_, _ = fmt.Fprintf(w, `{"echo":%q,"client_header":%q}`, r.URL.Path, r.Header.Get("X-From-Client"))
 			return
 		}
-		fmt.Fprintln(w, "Hello "+r.URL.Path)
+		_, _ = fmt.Fprintln(w, "Hello "+r.URL.Path)
 	}))
 	t.Cleanup(upstream.Close)
 	upstreamPort := portFromHTTPTestURL(t, upstream.URL)
@@ -77,7 +77,7 @@ func TestPortsProxyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy request: %v", err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 200 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -96,7 +96,7 @@ func TestPortsProxyRejectsMissingToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 401 {
 		t.Fatalf("status: %d", res.StatusCode)
 	}
@@ -112,7 +112,7 @@ func TestPortsProxyReturnsBadGatewayWhenNoDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer closeBody(res.Body)
 	if res.StatusCode != 502 {
 		t.Fatalf("status: %d (want 502)", res.StatusCode)
 	}

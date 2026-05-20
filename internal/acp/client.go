@@ -288,15 +288,15 @@ func (c *Client) writeRaw(msg rpcMessage) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if _, err := c.rw.Writer.Write(buf); err != nil {
+	if _, err := c.rw.Write(buf); err != nil {
 		c.markDone(err)
 		return err
 	}
-	if _, err := c.rw.Writer.Write([]byte{'\n'}); err != nil {
+	if _, err := c.rw.Write([]byte{'\n'}); err != nil {
 		c.markDone(err)
 		return err
 	}
-	if err := c.rw.Writer.Flush(); err != nil {
+	if err := c.rw.Flush(); err != nil {
 		c.markDone(err)
 		return err
 	}

@@ -110,7 +110,7 @@ func (c *Client) Status(ctx context.Context, pairingToken string) (*StatusRespon
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	switch res.StatusCode {
 	case 200:
@@ -203,7 +203,7 @@ func (c *Client) post(ctx context.Context, path string, body any, bearer string,
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode >= 400 {
 		return decodeError(res)
 	}

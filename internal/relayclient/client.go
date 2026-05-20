@@ -15,10 +15,11 @@ package relayclient
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -320,9 +321,20 @@ func backoff(attempt int, max time.Duration) time.Duration {
 		d = max
 	}
 	// Apply +/- 20% jitter.
-	jitter := time.Duration(rand.Int64N(int64(d) / 5))
-	if rand.IntN(2) == 0 {
+	jitter := time.Duration(randomInt64(int64(d) / 5))
+	if randomInt64(2) == 0 {
 		return d - jitter
 	}
 	return d + jitter
+}
+
+func randomInt64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(max))
+	if err != nil {
+		return 0
+	}
+	return n.Int64()
 }

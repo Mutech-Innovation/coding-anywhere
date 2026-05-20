@@ -41,7 +41,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	headers := []wire.PortsHeader{}
 	for k, vs := range r.Header {

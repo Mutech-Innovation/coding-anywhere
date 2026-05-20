@@ -256,7 +256,11 @@ export const useChat = create<ChatStore>((set, get) => ({
     // non-fatal; we just keep the empty placeholder.
     const tasks = list
       .filter((sess) => (get().sessions[sess.id]?.messages.length ?? 0) === 0)
-      .map((sess) => get().refreshHistory(sess.id).catch(() => {}));
+      .map((sess) =>
+        get()
+          .refreshHistory(sess.id)
+          .catch(() => {}),
+      );
     await Promise.all(tasks);
   },
 
@@ -439,7 +443,12 @@ export const useChat = create<ChatStore>((set, get) => ({
       return {
         sessions: {
           ...s.sessions,
-          [sessionId]: { ...emptySession(cur.session), modes: cur.modes, currentModeId: cur.currentModeId, availableCommands: cur.availableCommands },
+          [sessionId]: {
+            ...emptySession(cur.session),
+            modes: cur.modes,
+            currentModeId: cur.currentModeId,
+            availableCommands: cur.availableCommands,
+          },
         },
       };
     });

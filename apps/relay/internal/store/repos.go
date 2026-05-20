@@ -91,7 +91,7 @@ func (s *Store) ListDevices(ctx context.Context, accountID string) ([]Device, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Device
 	for rows.Next() {
 		var d Device
@@ -146,13 +146,27 @@ func (s *Store) GetPairingByCode(ctx context.Context, code string) (Pairing, err
 }
 
 func (s *Store) getPairing(ctx context.Context, col, value string) (Pairing, error) {
-	q := fmt.Sprintf(`
+	var q string
+	switch col {
+	case "pairing_token":
+		q = `
 		SELECT pairing_token, code, initiator_account_id,
 			   initiator_device_kind, initiator_device_label,
 			   initiator_device_id, created_at, expires_at,
 			   claimed, claimed_account_id, claimed_device_id,
 			   claimed_credentials_json
-		FROM pairings WHERE %s = ?`, col)
+		FROM pairings WHERE pairing_token = ?`
+	case "code":
+		q = `
+		SELECT pairing_token, code, initiator_account_id,
+			   initiator_device_kind, initiator_device_label,
+			   initiator_device_id, created_at, expires_at,
+			   claimed, claimed_account_id, claimed_device_id,
+			   claimed_credentials_json
+		FROM pairings WHERE code = ?`
+	default:
+		return Pairing{}, fmt.Errorf("invalid pairing lookup column: %s", col)
+	}
 	var p Pairing
 	var initAcc, initDev, claimedAcc, claimedDev, credJSON sql.NullString
 	var kind, label string

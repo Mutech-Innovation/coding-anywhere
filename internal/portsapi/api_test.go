@@ -20,7 +20,7 @@ func TestListListeningSeesOurOwnSocket(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	port := tcpPort(t, ln.Addr())
 
 	api := portsapi.New()
 	// Tiny retry loop because gopsutil snapshots the kernel state and may
@@ -94,9 +94,22 @@ func portFromURL(t *testing.T, raw string) uint16 {
 	// Crude parse — httptest URLs always look like http://127.0.0.1:NNN.
 	parts := strings.Split(raw, ":")
 	last := parts[len(parts)-1]
-	var p uint16
+	var p int
 	if _, err := fmt.Sscanf(last, "%d", &p); err != nil {
 		t.Fatalf("port parse: %v", err)
 	}
-	return p
+	return checkedPort(t, p)
+}
+
+func tcpPort(t *testing.T, addr net.Addr) uint16 {
+	t.Helper()
+	return checkedPort(t, addr.(*net.TCPAddr).Port)
+}
+
+func checkedPort(t *testing.T, p int) uint16 {
+	t.Helper()
+	if p < 0 || p > 65535 {
+		t.Fatalf("port out of range: %d", p)
+	}
+	return uint16(p)
 }

@@ -69,6 +69,9 @@ func (a *API) ListListening(ctx context.Context) ([]PortInfo, error) {
 		if !isLoopbackOrAnyAddr(ip) {
 			continue
 		}
+		if c.Laddr.Port > 65535 {
+			continue
+		}
 		port := uint16(c.Laddr.Port)
 		if existing, ok := seen[port]; ok {
 			// Prefer the entry whose listener is loopback (127.* / ::1) over a
@@ -163,7 +166,7 @@ func (a *API) Fetch(ctx context.Context, req FetchRequest) (*FetchResponse, erro
 	if err != nil {
 		return nil, fmt.Errorf("upstream: %w", err)
 	}
-	defer hres.Body.Close()
+	defer func() { _ = hres.Body.Close() }()
 
 	limited := io.LimitReader(hres.Body, req.MaxBodyBytes+1)
 	body, err := io.ReadAll(limited)

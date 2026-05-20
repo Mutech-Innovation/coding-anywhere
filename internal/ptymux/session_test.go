@@ -195,7 +195,7 @@ func TestManagerListIncludesRunningSessions(t *testing.T) {
 	}
 	ids := []string{infos[0].ID, infos[1].ID}
 	wantA, wantB := s1.ID, s2.ID
-	if !(strings.Contains(ids[0]+ids[1], wantA) && strings.Contains(ids[0]+ids[1], wantB)) {
+	if !strings.Contains(ids[0]+ids[1], wantA) || !strings.Contains(ids[0]+ids[1], wantB) {
 		t.Fatalf("missing ids; got %+v want %s,%s", ids, wantA, wantB)
 	}
 }
