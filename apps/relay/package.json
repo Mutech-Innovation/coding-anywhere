@@ -1,0 +1,13 @@
+{
+  "name": "@coding-anywhere/relay",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "cd ../.. && go build -o bin/coding-anywhere-relay ./apps/relay/cmd",
+    "dev": "cd ../.. && go run ./apps/relay/cmd",
+    "test": "cd ../.. && go test ./apps/relay/...",
+    "lint": "cd ../.. && go vet ./apps/relay/...",
+    "typecheck": "cd ../.. && go build -o /dev/null ./apps/relay/cmd",
+    "clean": "rm -rf ../../bin .turbo"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+.turbo
+.next
+coverage
+pnpm-lock.yaml
+.devin/
+.golangci.yml
+**/generated/**
+docker/relay/Caddyfile

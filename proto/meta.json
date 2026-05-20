@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://coding-anywhere.dev/proto/meta.json",
+  "title": "Meta channel",
+  "description": "Connection-level handshake, ping/pong, and version negotiation.",
+  "type": "object",
+  "$defs": {
+    "Hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "client_kind"],
+      "properties": {
+        "protocol_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Bumped on incompatible wire changes."
+        },
+        "client_kind": {
+          "type": "string",
+          "enum": ["daemon", "web", "mobile-ios", "mobile-android"]
+        },
+        "client_version": {
+          "type": "string"
+        }
+      }
+    },
+    "Ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nonce"],
+      "properties": {
+        "nonce": { "type": "string" }
+      }
+    },
+    "Pong": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nonce", "server_time_ms"],
+      "properties": {
+        "nonce": { "type": "string" },
+        "server_time_ms": { "type": "integer" }
+      }
+    }
+  }
+}

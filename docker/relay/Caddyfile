@@ -1,0 +1,23 @@
+{
+	# Set ACME email for Let's Encrypt to get expiry notices.
+	# email you@example.com
+}
+
+{$CA_DOMAIN} {
+	encode zstd gzip
+
+	# WebSocket endpoints used by daemon and clients
+	@ws {
+		path /v1/ws/*
+	}
+	reverse_proxy @ws relay:8443
+
+	# Plain HTTP endpoints (pairing, health)
+	reverse_proxy relay:8443
+
+	# Don't keep access logs of WS frames; only log meaningful events.
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,38 @@
+{
+  "name": "coding-anywhere",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Remote-control your dev terminal and AI coding agents (Devin for Terminal, Claude Code, Codex, cursor-agent) from any phone or computer.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.9.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\" --ignore-path .gitignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\" --ignore-path .gitignore",
+    "codegen": "tsx tools/codegen/src/index.ts",
+    "go:build": "go build ./...",
+    "go:test": "go test ./...",
+    "go:lint": "golangci-lint run ./..."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@coding-anywhere/codegen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src",
+    "clean": "rm -rf dist .turbo"
+  },
+  "bin": {
+    "coding-anywhere-codegen": "./src/index.ts"
+  },
+  "dependencies": {
+    "json-schema-to-typescript": "^15.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

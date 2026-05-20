@@ -1,0 +1,48 @@
+# Node
+node_modules/
+.pnpm-store/
+*.log
+.DS_Store
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+coverage/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Go
+bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+
+# Generated
+**/generated/
+!tools/codegen/generated.template.*
+
+# Devin/runtime data
+.devin-runtime/
+relay-data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

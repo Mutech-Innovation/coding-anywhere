@@ -1,0 +1,13 @@
+{
+  "name": "@coding-anywhere/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "cd ../.. && go build -o bin/coding-anywhere-daemon ./apps/daemon/cmd",
+    "dev": "cd ../.. && go run ./apps/daemon/cmd",
+    "test": "cd ../.. && go test ./apps/daemon/... ./internal/...",
+    "lint": "cd ../.. && go vet ./apps/daemon/... ./internal/...",
+    "typecheck": "cd ../.. && go build -o /dev/null ./apps/daemon/cmd",
+    "clean": "rm -rf ../../bin .turbo"
+  }
+}

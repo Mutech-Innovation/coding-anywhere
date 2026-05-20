@@ -1,0 +1,44 @@
+# Self-hosted Coding Anywhere relay.
+#
+# Bring up:
+#   1. Copy `.env.example` to `.env` and fill in CA_DOMAIN + CA_RELAY_JWT_SECRET.
+#   2. Point an A/AAAA record for $CA_DOMAIN at this host.
+#   3. `docker compose up -d`
+#
+# Caddy will fetch a Let's Encrypt cert automatically on first request.
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: docker/relay/Dockerfile
+    image: coding-anywhere/relay:latest
+    restart: unless-stopped
+    environment:
+      - CA_LISTEN_ADDR=:8443
+      - CA_RELAY_JWT_SECRET=${CA_RELAY_JWT_SECRET}
+      - CA_RELAY_DATA_DIR=/data
+    volumes:
+      - relay-data:/data
+    expose:
+      - '8443'
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - relay
+    environment:
+      - CA_DOMAIN=${CA_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:
