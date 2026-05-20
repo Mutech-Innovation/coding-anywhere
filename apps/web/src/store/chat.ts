@@ -1,13 +1,17 @@
 import {
   type AvailableCommand,
   type ChatAgentDescriptor,
+  type ChatConfigOption,
   ChatEvent,
   ChatMethod,
   type ChatPermissionRequestEvent,
   type ChatSession,
   type ChatSessionStatus,
+  type ChatUsage,
   type ChatUpdateEvent,
+  decodeConfigOptionUpdate,
   decodeToolCallUpdate,
+  decodeUsageUpdate,
   extractChunkText,
   makeRequest,
   type Envelope,
@@ -33,6 +37,7 @@ export interface ChatMessage {
   /** Set when the chunk stream is still appending. */
   streaming?: boolean;
   createdAt: number;
+  order: number;
 }
 
 export interface ChatToolCall {
@@ -49,7 +54,7 @@ export interface ChatToolCall {
   /** Raw input/output payloads. Useful for debugging. */
   rawInput?: unknown;
   rawOutput?: unknown;
-  /** Insertion order, so the UI can render tool calls in event order. */
+  /** Transcript order, so the UI can render tool calls alongside messages. */
   order: number;
 }
 
@@ -63,8 +68,8 @@ export interface SessionState {
   session: ChatSession;
   messages: ChatMessage[];
   toolCalls: Record<string, ChatToolCall>;
-  /** Insertion counter — increments for each new tool call. */
-  toolCallOrder: number;
+  /** Insertion counter — increments for each new transcript item. */
+  transcriptOrder: number;
   /** Latest agent plan, if any. */
   plan: PlanEntry[] | null;
   /** Mode-related state (set if the agent advertised modes at session/new). */
@@ -72,6 +77,8 @@ export interface SessionState {
   currentModeId: string | null;
   /** Slash commands the agent advertises for this session. */
   availableCommands: AvailableCommand[];
+  usage: ChatUsage | null;
+  configOptions: ChatConfigOption[];
   permissions: Record<string, ChatPermission>;
   // Convenience: id of the in-progress streaming agent message (if any) so we
   // know which one to append to.
@@ -106,6 +113,7 @@ const pending = new Map<
   string,
   { resolve: (env: Envelope) => void; reject: (err: Error) => void }
 >();
+let handlerClient: RelayWSClient | null = null;
 
 export const useChat = create<ChatStore>((set, get) => ({
   attached: false,
@@ -115,7 +123,8 @@ export const useChat = create<ChatStore>((set, get) => ({
   lastError: null,
 
   attach(client) {
-    if (get().attached) return;
+    if (get().attached && handlerClient === client) return;
+    handlerClient = client;
     set({ attached: true });
 
     client.handle('chat', (env) => {
@@ -226,6 +235,7 @@ export const useChat = create<ChatStore>((set, get) => ({
   },
 
   detach() {
+    handlerClient = null;
     set({
       attached: false,
       agents: [],
@@ -298,6 +308,7 @@ export const useChat = create<ChatStore>((set, get) => ({
     set((s) => {
       const cur = s.sessions[sessionId];
       if (!cur) return {};
+      const order = cur.transcriptOrder + 1;
       return {
         sessions: {
           ...s.sessions,
@@ -310,8 +321,10 @@ export const useChat = create<ChatStore>((set, get) => ({
                 role: 'user',
                 text,
                 createdAt: Date.now(),
+                order,
               },
             ],
+            transcriptOrder: order,
           },
         },
       };
@@ -417,6 +430,7 @@ export const useChat = create<ChatStore>((set, get) => ({
         set((s) => {
           const cur = s.sessions[sessionId];
           if (!cur) return {};
+          const order = cur.transcriptOrder + 1;
           return {
             sessions: {
               ...s.sessions,
@@ -424,8 +438,9 @@ export const useChat = create<ChatStore>((set, get) => ({
                 ...cur,
                 messages: [
                   ...cur.messages,
-                  { id: newId(), role: 'user', text: ev.text, createdAt: ev.createdAt },
+                  { id: newId(), role: 'user', text: ev.text, createdAt: ev.createdAt, order },
                 ],
+                transcriptOrder: order,
               },
             },
           };
@@ -448,6 +463,7 @@ export const useChat = create<ChatStore>((set, get) => ({
             modes: cur.modes,
             currentModeId: cur.currentModeId,
             availableCommands: cur.availableCommands,
+            configOptions: cur.configOptions,
           },
         },
       };
@@ -460,11 +476,13 @@ function emptySession(session: ChatSession): SessionState {
     session,
     messages: [],
     toolCalls: {},
-    toolCallOrder: 0,
+    transcriptOrder: 0,
     plan: null,
     modes: [],
     currentModeId: null,
     availableCommands: [],
+    usage: null,
+    configOptions: [],
     permissions: {},
     liveAgentMessageId: null,
   };
@@ -503,23 +521,27 @@ function ingestUpdate(
             },
           };
         }
+        const base = closeLiveMessage(cur);
         const id = newId();
+        const order = base.transcriptOrder + 1;
         return {
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
-              ...cur,
+              ...base,
               messages: [
-                ...cur.messages,
+                ...base.messages,
                 {
                   id,
                   role,
                   text,
                   streaming: true,
                   createdAt: Date.now(),
+                  order,
                 },
               ],
               liveAgentMessageId: id,
+              transcriptOrder: order,
             },
           },
         };
@@ -527,20 +549,24 @@ function ingestUpdate(
       case 'user_message_chunk': {
         const text = extractChunkText(update);
         if (text == null) return {};
+        const base = closeLiveMessage(cur);
+        const order = base.transcriptOrder + 1;
         return {
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
-              ...cur,
+              ...base,
               messages: [
-                ...cur.messages,
+                ...base.messages,
                 {
                   id: newId(),
                   role: 'user',
                   text,
                   createdAt: Date.now(),
+                  order,
                 },
               ],
+              transcriptOrder: order,
             },
           },
         };
@@ -549,8 +575,9 @@ function ingestUpdate(
       case 'tool_call_update': {
         const view = decodeToolCallUpdate(update);
         if (!view) return {};
-        const existing = cur.toolCalls[view.toolCallId];
-        const order = existing?.order ?? cur.toolCallOrder + 1;
+        const base = closeLiveMessage(cur);
+        const existing = base.toolCalls[view.toolCallId];
+        const order = existing?.order ?? base.transcriptOrder + 1;
         const merged: ChatToolCall = {
           id: view.toolCallId,
           title: view.title ?? existing?.title,
@@ -566,9 +593,9 @@ function ingestUpdate(
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
-              ...cur,
-              toolCalls: { ...cur.toolCalls, [view.toolCallId]: merged },
-              toolCallOrder: existing ? cur.toolCallOrder : order,
+              ...base,
+              toolCalls: { ...base.toolCalls, [view.toolCallId]: merged },
+              transcriptOrder: existing ? base.transcriptOrder : order,
             },
           },
         };
@@ -576,42 +603,66 @@ function ingestUpdate(
       case 'plan': {
         const entries = update.entries as PlanEntry[] | undefined;
         if (!Array.isArray(entries)) return {};
+        const base = closeLiveMessage(cur);
         return {
           sessions: {
             ...s.sessions,
-            [payload.session_id]: { ...cur, plan: entries },
+            [payload.session_id]: { ...base, plan: entries },
           },
         };
       }
       case 'current_mode_update': {
         const id = update.currentModeId as string | undefined;
         if (typeof id !== 'string') return {};
+        const base = closeLiveMessage(cur);
         return {
           sessions: {
             ...s.sessions,
-            [payload.session_id]: { ...cur, currentModeId: id },
+            [payload.session_id]: { ...base, currentModeId: id },
           },
         };
       }
       case 'available_commands_update': {
         const cmds = update.availableCommands as AvailableCommand[] | undefined;
         if (!Array.isArray(cmds)) return {};
+        const base = closeLiveMessage(cur);
         return {
           sessions: {
             ...s.sessions,
-            [payload.session_id]: { ...cur, availableCommands: cmds },
+            [payload.session_id]: { ...base, availableCommands: cmds },
+          },
+        };
+      }
+      case 'usage_update': {
+        const usage = decodeUsageUpdate(update);
+        if (!usage) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: { ...cur, usage },
+          },
+        };
+      }
+      case 'config_option_update': {
+        const configOptions = decodeConfigOptionUpdate(update);
+        if (!configOptions) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [payload.session_id]: { ...cur, configOptions },
           },
         };
       }
       case 'session_info_update': {
         const title = update.title as string | null | undefined;
         if (title === undefined) return {};
+        const base = closeLiveMessage(cur);
         return {
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
-              ...cur,
-              session: { ...cur.session, title: title ?? '' },
+              ...base,
+              session: { ...base.session, title: title ?? '' },
             },
           },
         };
@@ -619,29 +670,44 @@ function ingestUpdate(
       default:
         // Unknown update kinds keep the session ticking but we don't render
         // them yet. Add a system-level note for visibility during MVP.
+        const base = closeLiveMessage(cur);
+        const order = base.transcriptOrder + 1;
         return {
           sessions: {
             ...s.sessions,
             [payload.session_id]: {
-              ...cur,
+              ...base,
               messages: [
-                ...cur.messages,
+                ...base.messages,
                 {
                   id: newId(),
                   role: 'system',
                   text: `update: ${kind}`,
                   createdAt: Date.now(),
+                  order,
                 },
               ],
+              transcriptOrder: order,
             },
           },
         };
     }
   });
-  // When a chunk arrives, mark the previous live message as no longer
-  // streaming once a non-chunk event lands. We don't bother tracking that
-  // explicitly; it's fine for MVP.
+  // Non-chunk updates close the previous live message before entering the
+  // transcript, so later chunks start a new bubble after the intervening item.
   void get;
+}
+
+function closeLiveMessage(cur: SessionState): SessionState {
+  if (!cur.liveAgentMessageId) return cur;
+  const liveId = cur.liveAgentMessageId;
+  const live = cur.messages.find((m) => m.id === liveId);
+  if (!live?.streaming) return { ...cur, liveAgentMessageId: null };
+  return {
+    ...cur,
+    messages: cur.messages.map((m) => (m.id === liveId ? { ...m, streaming: false } : m)),
+    liveAgentMessageId: null,
+  };
 }
 
 async function sendRequest(method: string, payload: unknown = {}): Promise<Envelope> {

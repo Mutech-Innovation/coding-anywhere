@@ -123,6 +123,8 @@ export const SessionUpdateKind = {
   Plan: 'plan',
   CurrentMode: 'current_mode_update',
   AvailableCommandsUpdate: 'available_commands_update',
+  UsageUpdate: 'usage_update',
+  ConfigOptionUpdate: 'config_option_update',
   SessionInfoUpdate: 'session_info_update',
 } as const;
 
@@ -209,6 +211,33 @@ export interface AvailableCommand {
   input?: { hint: string };
 }
 
+export interface ChatUsageCost {
+  amount: number;
+  currency: string;
+}
+
+export interface ChatUsage {
+  used: number;
+  size: number;
+  cost?: ChatUsageCost;
+}
+
+export interface ChatConfigOptionChoice {
+  value?: unknown;
+  label?: string;
+  name?: string;
+  [k: string]: unknown;
+}
+
+export interface ChatConfigOption {
+  id: string;
+  name?: string;
+  type?: string;
+  currentValue?: unknown;
+  options?: ChatConfigOptionChoice[];
+  [k: string]: unknown;
+}
+
 /** Strongly-typed view of an ACP `tool_call` / `tool_call_update` body. */
 export interface ToolCallView {
   toolCallId: string;
@@ -234,4 +263,39 @@ export function decodeToolCallUpdate(update: Record<string, unknown>): ToolCallV
   if ('rawInput' in update) out.rawInput = update.rawInput;
   if ('rawOutput' in update) out.rawOutput = update.rawOutput;
   return out;
+}
+
+export function decodeUsageUpdate(update: Record<string, unknown>): ChatUsage | null {
+  const { used, size } = update;
+  if (typeof used !== 'number' || typeof size !== 'number') return null;
+  const usage: ChatUsage = { used, size };
+  if (isRecord(update.cost)) {
+    const { amount, currency } = update.cost;
+    if (typeof amount === 'number' && typeof currency === 'string') {
+      usage.cost = { amount, currency };
+    }
+  }
+  return usage;
+}
+
+export function decodeConfigOptionUpdate(
+  update: Record<string, unknown>,
+): ChatConfigOption[] | null {
+  if (!Array.isArray(update.configOptions)) return null;
+  const options: ChatConfigOption[] = [];
+  for (const raw of update.configOptions) {
+    if (!isRecord(raw) || typeof raw.id !== 'string') continue;
+    const option: ChatConfigOption = { ...raw, id: raw.id };
+    if (Array.isArray(raw.options)) {
+      option.options = raw.options
+        .filter(isRecord)
+        .map((choice) => ({ ...choice }) as ChatConfigOptionChoice);
+    }
+    options.push(option);
+  }
+  return options;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

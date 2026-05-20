@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { decodeToolCallUpdate, extractChunkText } from './chat.js';
+import {
+  decodeConfigOptionUpdate,
+  decodeToolCallUpdate,
+  decodeUsageUpdate,
+  extractChunkText,
+} from './chat.js';
 
 describe('extractChunkText', () => {
   it('returns inline text from an agent_message_chunk update', () => {
@@ -54,5 +59,49 @@ describe('decodeToolCallUpdate', () => {
 
   it('returns null without a toolCallId', () => {
     expect(decodeToolCallUpdate({ sessionUpdate: 'tool_call' })).toBeNull();
+  });
+});
+
+describe('decodeUsageUpdate', () => {
+  it('maps ACP usage_update fields', () => {
+    expect(
+      decodeUsageUpdate({
+        sessionUpdate: 'usage_update',
+        used: 53000,
+        size: 200000,
+        cost: { amount: 0.045, currency: 'USD' },
+      }),
+    ).toEqual({
+      used: 53000,
+      size: 200000,
+      cost: { amount: 0.045, currency: 'USD' },
+    });
+  });
+});
+
+describe('decodeConfigOptionUpdate', () => {
+  it('maps ACP config_option_update fields', () => {
+    expect(
+      decodeConfigOptionUpdate({
+        sessionUpdate: 'config_option_update',
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            currentValue: 'model-2',
+            options: [{ value: 'model-2', label: 'Model 2' }],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'model',
+        name: 'Model',
+        type: 'select',
+        currentValue: 'model-2',
+        options: [{ value: 'model-2', label: 'Model 2' }],
+      },
+    ]);
   });
 });

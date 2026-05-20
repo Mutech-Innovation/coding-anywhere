@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Box,
   Button,
@@ -23,8 +24,10 @@ import {
 } from '@mantine/core';
 import type {
   AvailableCommand,
+  ChatConfigOption,
   FilesEntry,
   PlanEntry,
+  ChatUsage,
   ToolCallContentBlock,
 } from '@coding-anywhere/protocol';
 import {
@@ -54,9 +57,9 @@ import {
   IconWorld,
   IconX,
 } from '@tabler/icons-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ChatToolCall } from '../store/chat.js';
+import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { useFiles } from '../store/files.js';
@@ -72,7 +75,6 @@ export function ChatPanel() {
   const status = useConnection((s) => s.status);
   const client = useConnection((s) => s.client);
   const attach = useChat((s) => s.attach);
-  const attached = useChat((s) => s.attached);
   const sessions = useChat((s) => s.sessions);
   const activeId = useChat((s) => s.activeId);
   const setActive = useChat((s) => s.setActive);
@@ -83,9 +85,9 @@ export function ChatPanel() {
   const [creatorOpen, setCreatorOpen] = useState(false);
 
   useEffect(() => {
-    if (!client || attached) return;
+    if (!client) return;
     attach(client);
-  }, [client, attached, attach]);
+  }, [client, attach]);
 
   useEffect(() => {
     if (status !== 'connected') return;
@@ -103,7 +105,7 @@ export function ChatPanel() {
   );
 
   return (
-    <Group align="stretch" gap="md" h="calc(100vh - 90px)" wrap="nowrap">
+    <Group align="stretch" gap="md" h="100%" wrap="nowrap" style={{ minHeight: 0 }}>
       <Stack
         gap="xs"
         miw={260}
@@ -193,6 +195,7 @@ export function ChatPanel() {
           display: 'flex',
           flexDirection: 'column',
           minWidth: 0,
+          minHeight: 0,
           padding: 8,
           border: '1px solid var(--mantine-color-default-border)',
           borderRadius: 8,
@@ -502,20 +505,34 @@ function ChatView({ sessionId }: { sessionId: string }) {
   }, [
     session?.messages.length,
     session?.session.status,
-    Object.keys(session?.toolCalls ?? {}).length,
+    session?.transcriptOrder,
     session?.plan?.length,
   ]);
 
-  // Sort tool calls by insertion order so the timeline is stable.
-  const orderedToolCalls = useMemo(
-    () => Object.values(session?.toolCalls ?? {}).sort((a, b) => a.order - b.order),
-    [session?.toolCalls],
+  const transcriptItems = useMemo(
+    () =>
+      [
+        ...(session?.messages ?? []).map((message) => ({
+          type: 'message' as const,
+          id: message.id,
+          order: message.order,
+          message,
+        })),
+        ...Object.values(session?.toolCalls ?? {}).map((call) => ({
+          type: 'tool' as const,
+          id: call.id,
+          order: call.order,
+          call,
+        })),
+      ].sort((a, b) => a.order - b.order),
+    [session?.messages, session?.toolCalls],
   );
 
   if (!session) return null;
 
   const status = session.session.status;
   const pendingPermissions = Object.values(session.permissions).filter((p) => p.pending);
+  const modelLabel = getConfigOptionDisplay(session.configOptions, 'model');
 
   async function onSend() {
     if (!draft.trim()) return;
@@ -553,6 +570,14 @@ function ChatView({ sessionId }: { sessionId: string }) {
               transitionDuration={0}
             />
           ) : null}
+          {modelLabel ? (
+            <Tooltip label="Current model">
+              <Badge color="violet" variant="light" maw={220} style={{ textTransform: 'none' }}>
+                Model · {modelLabel}
+              </Badge>
+            </Tooltip>
+          ) : null}
+          {session.usage ? <UsagePill usage={session.usage} /> : null}
           <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
             {status}
           </Badge>
@@ -583,12 +608,13 @@ function ChatView({ sessionId }: { sessionId: string }) {
               onDeny={() => void resolvePermission(sessionId, p.requestId, { decision: 'deny' })}
             />
           ))}
-          {session.messages.map((m) => (
-            <MessageBubble key={m.id} message={m} />
-          ))}
-          {orderedToolCalls.map((tc) => (
-            <ToolCallCard key={tc.id} call={tc} />
-          ))}
+          {transcriptItems.map((item) =>
+            item.type === 'message' ? (
+              <MessageBubble key={`message-${item.id}`} message={item.message} />
+            ) : (
+              <ToolCallCard key={`tool-${item.id}`} call={item.call} />
+            ),
+          )}
         </Stack>
       </ScrollArea>
 
@@ -681,6 +707,73 @@ function planIcon(status: PlanEntry['status']) {
   }
 }
 
+function UsagePill({ usage }: { usage: ChatUsage }) {
+  const used = Number.isFinite(usage.used) ? Math.max(0, usage.used) : 0;
+  const size = Number.isFinite(usage.size) ? Math.max(0, usage.size) : 0;
+  const remaining = Math.max(0, size - used);
+  const percent = size > 0 ? Math.min(100, Math.max(0, (used / size) * 100)) : 0;
+  const cost = usage.cost ? formatCost(usage.cost) : null;
+  const tooltip = [
+    `Context: ${formatTokens(used)} / ${formatTokens(size)} tokens`,
+    `${formatTokens(remaining)} remaining`,
+    cost ? `Cost: ${cost}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <Tooltip label={tooltip}>
+      <Paper withBorder radius="xl" px="xs" py={3} miw={128}>
+        <Group gap={6} wrap="nowrap" justify="space-between">
+          <Text size="xs" c="dimmed">
+            Context
+          </Text>
+          <Text size="xs" fw={600}>
+            {Math.round(percent)}%
+          </Text>
+        </Group>
+        <Progress value={percent} size={4} mt={3} radius="xl" color={usageColor(percent)} />
+      </Paper>
+    </Tooltip>
+  );
+}
+
+function getConfigOptionDisplay(options: ChatConfigOption[], id: string): string | null {
+  const option = options.find((o) => o.id.toLowerCase() === id);
+  if (!option) return null;
+  const value = option.currentValue;
+  const choice = option.options?.find((o) => o.value === value);
+  return stringValue(choice?.label) ?? stringValue(choice?.name) ?? stringValue(value);
+}
+
+function stringValue(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function usageColor(percent: number): string {
+  if (percent >= 90) return 'red';
+  if (percent >= 75) return 'yellow';
+  return 'green';
+}
+
+function formatTokens(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${trimFixed(n / 1_000_000, n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${trimFixed(n / 1_000, n >= 100_000 ? 0 : 1)}k`;
+  return `${Math.round(n)}`;
+}
+
+function trimFixed(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.0$/, '');
+}
+
+function formatCost(cost: NonNullable<ChatUsage['cost']>): string {
+  const digits = Math.abs(cost.amount) < 1 ? 4 : 2;
+  return `${cost.currency} ${cost.amount.toFixed(digits)}`;
+}
+
 function CommandInput({
   commands,
   value,
@@ -764,10 +857,14 @@ function CommandInput({
   );
 }
 
-function MessageBubble({ message }: { message: import('../store/chat.js').ChatMessage }) {
+function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const isThought = message.role === 'agent_thought';
   const isSystem = message.role === 'system';
+  const text = message.text || (message.streaming ? '…' : '');
+
+  if (isThought) return <ThoughtBubble message={message} />;
+
   return (
     <Group justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start">
       <Card
@@ -777,23 +874,229 @@ function MessageBubble({ message }: { message: import('../store/chat.js').ChatMe
         c={isUser ? 'white' : undefined}
         miw={isUser ? 100 : 200}
         maw="80%"
-        style={{
-          opacity: isThought ? 0.7 : 1,
-          fontStyle: isThought ? 'italic' : undefined,
-        }}
       >
         {isSystem ? (
           <Text size="xs" c="dimmed">
-            {message.text}
+            {text}
           </Text>
         ) : (
-          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-            {message.text || (message.streaming ? '…' : '')}
-          </Text>
+          <MarkdownBody text={text} c={isUser ? 'white' : undefined} />
         )}
       </Card>
     </Group>
   );
+}
+
+function ThoughtBubble({ message }: { message: ChatMessage }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = message.text || (message.streaming ? '…' : '');
+  return (
+    <Group justify="flex-start" align="flex-start">
+      <Card
+        radius="md"
+        padding="sm"
+        bg="dark.7"
+        miw={220}
+        maw="80%"
+        withBorder
+        style={{ opacity: 0.72 }}
+      >
+        <Group gap="xs" justify="space-between" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap">
+            <ThemeIcon size="sm" variant="light" color="gray">
+              <IconBrain size={12} />
+            </ThemeIcon>
+            <Text size="xs" c="dimmed" fw={600}>
+              Thought process
+            </Text>
+          </Group>
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            leftSection={expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+            onClick={() => setExpanded((x) => !x)}
+          >
+            {expanded ? 'Hide' : 'Show'}
+          </Button>
+        </Group>
+        {expanded ? (
+          <Box mt="xs" style={{ fontStyle: 'italic' }}>
+            <MarkdownBody text={text} size="xs" c="dimmed" />
+          </Box>
+        ) : null}
+      </Card>
+    </Group>
+  );
+}
+
+type MarkdownBlock =
+  | { type: 'paragraph'; text: string }
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'code'; language?: string; text: string };
+
+function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 'sm'; c?: string }) {
+  const blocks = parseMarkdownBlocks(text);
+  if (blocks.length === 0) return null;
+  return (
+    <Stack gap={6}>
+      {blocks.map((block, i) => {
+        if (block.type === 'code') {
+          return (
+            <Box key={i}>
+              {block.language ? (
+                <Text size="xs" c="dimmed" mb={2}>
+                  {block.language}
+                </Text>
+              ) : null}
+              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+                {block.text}
+              </Code>
+            </Box>
+          );
+        }
+        if (block.type === 'heading') {
+          return (
+            <Text key={i} size={block.level <= 2 ? 'md' : 'sm'} fw={700} c={c}>
+              {renderInlineMarkdown(block.text)}
+            </Text>
+          );
+        }
+        if (block.type === 'list') {
+          return (
+            <List
+              key={i}
+              type={block.ordered ? 'ordered' : 'unordered'}
+              size={size}
+              spacing={3}
+              c={c}
+            >
+              {block.items.map((item, j) => (
+                <List.Item key={j}>{renderInlineMarkdown(item)}</List.Item>
+              ))}
+            </List>
+          );
+        }
+        return (
+          <Text key={i} size={size} c={c} style={{ whiteSpace: 'pre-wrap' }}>
+            {renderInlineMarkdown(block.text)}
+          </Text>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function parseMarkdownBlocks(text: string): MarkdownBlock[] {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const blocks: MarkdownBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const fence = line.match(/^```([\w-]*)\s*$/);
+    if (fence) {
+      const language = fence[1] || undefined;
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !(lines[i] ?? '').match(/^```\s*$/)) {
+        body.push(lines[i] ?? '');
+        i++;
+      }
+      if (i < lines.length) i++;
+      blocks.push({ type: 'code', language, text: body.join('\n') });
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ type: 'heading', level: heading[1]!.length, text: heading[2]! });
+      i++;
+      continue;
+    }
+    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (unordered || ordered) {
+      const isOrdered = Boolean(ordered);
+      const items: string[] = [];
+      while (i < lines.length) {
+        const candidate = lines[i] ?? '';
+        const match = isOrdered
+          ? candidate.match(/^\s*\d+\.\s+(.+)$/)
+          : candidate.match(/^\s*[-*]\s+(.+)$/);
+        if (!match) break;
+        items.push(match[1]!);
+        i++;
+      }
+      blocks.push({ type: 'list', ordered: isOrdered, items });
+      continue;
+    }
+    const paragraph: string[] = [];
+    while (i < lines.length) {
+      const candidate = lines[i] ?? '';
+      if (!candidate.trim()) break;
+      if (
+        candidate.match(/^```/) ||
+        candidate.match(/^(#{1,4})\s+(.+)$/) ||
+        candidate.match(/^\s*[-*]\s+(.+)$/) ||
+        candidate.match(/^\s*\d+\.\s+(.+)$/)
+      ) {
+        break;
+      }
+      paragraph.push(candidate);
+      i++;
+    }
+    blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
+  }
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\))/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    const token = match[0];
+    const key = `${match.index}-${token}`;
+    if (token.startsWith('`')) {
+      nodes.push(
+        <Code key={key} fz="0.85em">
+          {token.slice(1, -1)}
+        </Code>,
+      );
+    } else if (token.startsWith('**')) {
+      nodes.push(
+        <Text key={key} span fw={700} inherit>
+          {token.slice(2, -2)}
+        </Text>,
+      );
+    } else if (token.startsWith('*')) {
+      nodes.push(
+        <Text key={key} span fs="italic" inherit>
+          {token.slice(1, -1)}
+        </Text>,
+      );
+    } else {
+      const link = token.match(/^\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)$/);
+      if (link) {
+        nodes.push(
+          <Anchor key={key} href={link[2]} target="_blank" rel="noreferrer">
+            {link[1]}
+          </Anchor>,
+        );
+      } else {
+        nodes.push(token);
+      }
+    }
+    last = match.index + token.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
 }
 
 const TOOL_STATUS_COLOR: Record<string, string> = {
@@ -810,7 +1113,16 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
   const hasDetails =
     call.rawInput != null || call.rawOutput != null || (call.content && call.content.length > 0);
   return (
-    <Card padding="sm" radius="md" withBorder>
+    <Card
+      padding="sm"
+      radius="md"
+      withBorder
+      maw="92%"
+      style={{
+        alignSelf: 'flex-start',
+        background: 'var(--mantine-color-dark-7)',
+      }}
+    >
       <Group gap="xs" justify="space-between" wrap="nowrap">
         <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
           <ThemeIcon size="sm" variant="light" color={TOOL_STATUS_COLOR[status] ?? 'gray'}>

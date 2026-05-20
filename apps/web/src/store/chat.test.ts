@@ -22,11 +22,13 @@ function seedSession() {
         session: { ...baseSession },
         messages: [],
         toolCalls: {},
-        toolCallOrder: 0,
+        transcriptOrder: 0,
         plan: null,
         modes: [],
         currentModeId: null,
         availableCommands: [],
+        usage: null,
+        configOptions: [],
         permissions: {},
         liveAgentMessageId: null,
       },
@@ -134,5 +136,73 @@ describe('chat store ingestUpdate', () => {
     });
     const cmds = useChat.getState().sessions['sess-1']!.availableCommands;
     expect(cmds.map((c) => c.name)).toEqual(['plan', 'web']);
+  });
+
+  it('stores usage and config updates without rendering debug messages', () => {
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'usage_update',
+      used: 53000,
+      size: 200000,
+      cost: { amount: 0.045, currency: 'USD' },
+    });
+    pushUpdate({
+      sessionUpdate: 'config_option_update',
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'model-2',
+          options: [{ value: 'model-2', label: 'Model 2' }],
+        },
+      ],
+    });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.messages).toHaveLength(0);
+    expect(state.usage).toEqual({
+      used: 53000,
+      size: 200000,
+      cost: { amount: 0.045, currency: 'USD' },
+    });
+    expect(state.configOptions[0]?.id).toBe('model');
+    expect(state.configOptions[0]?.currentValue).toBe('model-2');
+  });
+
+  it('keeps tool calls inline between surrounding message chunks', () => {
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'I will inspect the file.' },
+    });
+    pushUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_read',
+      title: 'Read file',
+      kind: 'read',
+      status: 'in_progress',
+    });
+    pushUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_read',
+      status: 'completed',
+    });
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'The file is straightforward.' },
+    });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    const tool = state.toolCalls['call_read']!;
+
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[0]!.streaming).toBe(false);
+    expect(state.messages[0]!.order).toBeLessThan(tool.order);
+    expect(tool.order).toBeLessThan(state.messages[1]!.order);
+    expect(state.messages.map((m) => m.text)).toEqual([
+      'I will inspect the file.',
+      'The file is straightforward.',
+    ]);
   });
 });
