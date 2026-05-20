@@ -54,7 +54,7 @@ coding-anywhere/
 
 - Node.js ≥ 22 (`.nvmrc` pins 22)
 - pnpm ≥ 10
-- Go ≥ 1.24
+- Go ≥ 1.25 (required by `modernc.org/sqlite`)
 - (Self-hosting the relay) Docker + docker-compose, plus a public DNS name
 
 ## Getting started
