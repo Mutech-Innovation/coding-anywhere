@@ -1,15 +1,37 @@
 import { Badge, Group, Tooltip } from '@mantine/core';
 
-// Placeholder connection status indicator. Real wiring lands in P1 (relay
-// auth + WS) and P3 (daemon presence).
+import { useConnection } from '../store/connection.js';
+
+const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  connecting: { label: 'Connecting…', color: 'yellow' },
+  connected: { label: 'Online', color: 'green' },
+  disconnected: { label: 'Offline', color: 'gray' },
+};
+
 export function ConnectionStatus() {
-  return (
-    <Tooltip label="Relay connection wires up in P1">
-      <Group gap={6}>
+  const { credentials, status } = useConnection((s) => ({
+    credentials: s.credentials,
+    status: s.status,
+  }));
+  const meta = STATUS_LABELS[status] ?? STATUS_LABELS.disconnected;
+
+  if (!credentials) {
+    return (
+      <Tooltip label="Not paired yet">
         <Badge color="gray" variant="light" radius="sm">
-          Offline
+          Not paired
         </Badge>
-      </Group>
-    </Tooltip>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Group gap="xs">
+      <Tooltip label={`${credentials.bundle.device_label} · ${credentials.relay_url}`}>
+        <Badge color={meta?.color ?? 'gray'} variant="light" radius="sm">
+          {meta?.label ?? status}
+        </Badge>
+      </Tooltip>
+    </Group>
   );
 }

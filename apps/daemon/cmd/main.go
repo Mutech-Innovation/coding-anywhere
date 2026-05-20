@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,14 +16,29 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/credentials"
+	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/initcmd"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "init" {
+		if err := runInit(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "init: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	var (
 		showVersion = flag.Bool("version", false, "Print version and exit")
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+		credPath    = flag.String("credentials", "", "Path to credentials file (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
+		relayURL    = flag.String("relay-url", "", "Override the relay URL stored in credentials")
 	)
+	flag.Usage = usage
 	flag.Parse()
 
 	if *showVersion {
@@ -36,18 +52,96 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := run(ctx); err != nil {
-		slog.Error("daemon exited with error", "err", err)
+	if err := run(ctx, logger, *credPath, *relayURL); err != nil {
+		logger.Error("daemon exited with error", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context) error {
-	slog.Info("coding-anywhere daemon starting", "version", version.String())
-	// TODO(P1): config load, relay connect, channel registration.
-	<-ctx.Done()
-	slog.Info("daemon shutting down")
-	return nil
+func usage() {
+	fmt.Fprintf(flag.CommandLine.Output(), `Usage: coding-anywhere-daemon [flags]
+       coding-anywhere-daemon init [flags]
+
+Subcommands:
+  init    Pair this machine with the relay (interactive, prints a 6-digit code)
+
+Flags:
+`)
+	flag.PrintDefaults()
+}
+
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	relayURL := fs.String("relay-url", "", "Relay URL, e.g. https://relay.example.com or ws://localhost:8443 (required)")
+	deviceLabel := fs.String("device-label", "", "Friendly label for this machine (defaults to hostname)")
+	credPath := fs.String("credentials", "", "Where to save credentials (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
+	logLevel := fs.String("log-level", "info", "Log level")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *relayURL == "" {
+		return errors.New("--relay-url required")
+	}
+	logger := newLogger(*logLevel)
+	slog.SetDefault(logger)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	return initcmd.Run(ctx, initcmd.Options{
+		RelayURL:        *relayURL,
+		DeviceLabel:     *deviceLabel,
+		CredentialsPath: *credPath,
+		Logger:          logger,
+		Out:             os.Stdout,
+	})
+}
+
+func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride string) error {
+	logger.Info("coding-anywhere daemon starting", "version", version.String())
+
+	if credPath == "" {
+		p, err := credentials.DefaultPath()
+		if err != nil {
+			return fmt.Errorf("default credentials path: %w", err)
+		}
+		credPath = p
+	}
+
+	bundle, err := credentials.Load(credPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			logger.Error(
+				"no credentials found; run `coding-anywhere init` to pair this machine",
+				"path", credPath,
+			)
+			return errors.New("no credentials")
+		}
+		return fmt.Errorf("load credentials: %w", err)
+	}
+
+	relayURL := bundle.RelayURL
+	if relayURLOverride != "" {
+		relayURL = relayURLOverride
+	}
+	logger.Info("loaded credentials",
+		"account_id", bundle.AccountID,
+		"device_id", bundle.DeviceID,
+		"device_kind", bundle.DeviceKind,
+		"relay_url", relayURL,
+	)
+
+	cli := relayclient.New(relayclient.Config{
+		RelayURL:    relayURL,
+		AccessToken: bundle.AccessToken,
+	}, logger)
+
+	// P2 / P3 / P4 will register handlers for terminal / chat / sessions /
+	// files / ports here. P1.4 keeps the surface minimal: meta is
+	// implicit (handled inside the client) but a no-op handler keeps
+	// inbound meta envelopes from being dropped at debug level.
+	cli.Handle(wire.ChannelMeta, func(wire.Envelope) error { return nil })
+
+	return cli.Run(ctx)
 }
 
 func newLogger(level string) *slog.Logger {

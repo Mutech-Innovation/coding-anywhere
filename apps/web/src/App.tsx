@@ -1,12 +1,43 @@
-import { AppShell, Badge, Box, Group, Stack, Text, Title } from '@mantine/core';
-import { IconCode, IconTerminal2 } from '@tabler/icons-react';
+import {
+  ActionIcon,
+  AppShell,
+  Badge,
+  Box,
+  Group,
+  Menu,
+  Stack,
+  Text,
+  Title,
+  Tooltip,
+} from '@mantine/core';
+import { IconCode, IconDotsVertical, IconLogout, IconTerminal2 } from '@tabler/icons-react';
+import { useEffect } from 'react';
 
 import { AGENTS, listAgents } from '@coding-anywhere/agents';
 
 import { ConnectionStatus } from './components/ConnectionStatus.js';
+import { PairScreen } from './components/PairScreen.js';
+import { useConnection } from './store/connection.js';
 
 export function App() {
+  const credentials = useConnection((s) => s.credentials);
+  const hydrate = useConnection((s) => s.hydrate);
+
+  // On first mount, attempt to load saved credentials and reconnect.
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  if (!credentials) {
+    return <PairScreen />;
+  }
+  return <MainShell />;
+}
+
+function MainShell() {
   const agents = listAgents();
+  const credentials = useConnection((s) => s.credentials);
+  const signOut = useConnection((s) => s.signOut);
 
   return (
     <AppShell padding="md" header={{ height: 56 }}>
@@ -18,10 +49,27 @@ export function App() {
               Coding Anywhere
             </Title>
             <Badge size="xs" variant="light">
-              P0 scaffold
+              P1 wired
             </Badge>
           </Group>
-          <ConnectionStatus />
+          <Group gap="xs">
+            <ConnectionStatus />
+            <Menu position="bottom-end" withArrow>
+              <Menu.Target>
+                <ActionIcon variant="subtle" aria-label="Device menu">
+                  <IconDotsVertical size={18} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Label>
+                  Account: {credentials?.bundle.account_id.slice(0, 12) ?? '—'}
+                </Menu.Label>
+                <Menu.Item leftSection={<IconLogout size={14} />} onClick={signOut}>
+                  Sign out / unpair
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+          </Group>
         </Group>
       </AppShell.Header>
       <AppShell.Main>
@@ -29,7 +77,8 @@ export function App() {
           <Box>
             <Title order={2}>Welcome</Title>
             <Text c="dimmed" mt="xs">
-              Remote-control your dev terminal and AI coding agents from any device.
+              You are paired. Sessions, terminal, and agent UIs come online in the upcoming phases
+              (P2–P4).
             </Text>
           </Box>
           <Box>
@@ -56,12 +105,20 @@ export function App() {
                       </Text>
                     </Stack>
                   </Group>
-                  <Badge
-                    color={agent.id === AGENTS.devin.id ? 'brand' : 'gray'}
-                    variant={agent.available ? 'filled' : 'light'}
+                  <Tooltip
+                    label={
+                      agent.id === AGENTS.devin.id
+                        ? 'Highest-priority integration; first to ship in P3'
+                        : 'Adapter lands in v2'
+                    }
                   >
-                    {agent.available ? 'Available' : 'Coming soon'}
-                  </Badge>
+                    <Badge
+                      color={agent.id === AGENTS.devin.id ? 'brand' : 'gray'}
+                      variant={agent.available ? 'filled' : 'light'}
+                    >
+                      {agent.available ? 'Available' : 'Coming soon'}
+                    </Badge>
+                  </Tooltip>
                 </Group>
               ))}
             </Stack>

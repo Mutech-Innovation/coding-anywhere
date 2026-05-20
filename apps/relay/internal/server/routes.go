@@ -13,9 +13,18 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
+
+	// Pairing
+	mux.HandleFunc("POST /v1/pair/init", s.handlePairInit)
+	mux.HandleFunc("GET /v1/pair/status", s.handlePairStatus)
+	mux.HandleFunc("POST /v1/pair/claim", s.handlePairClaim)
+
+	// Auth
+	mux.HandleFunc("POST /v1/auth/refresh", s.handleAuthRefresh)
+
+	// WebSocket
 	mux.HandleFunc("GET /v1/ws/connect", s.handleWSConnect)
 
-	// P1.2 will add: POST /v1/pair/init, POST /v1/pair/claim, GET /v1/pair/status
 	return s.withRecover(s.withRequestLog(mux))
 }
 

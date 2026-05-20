@@ -5,3 +5,5 @@
 // with internal/wire on the Go side via codegen from proto/*.json.
 
 export * from './envelope.js';
+export * from './pair.js';
+export * from './relay-ws-client.js';
