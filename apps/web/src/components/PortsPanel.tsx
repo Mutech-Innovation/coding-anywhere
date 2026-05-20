@@ -50,7 +50,8 @@ export function PortsPanel() {
       style={{
         border: '1px solid var(--mantine-color-default-border)',
         borderRadius: 8,
-        height: 'calc(100vh - 90px)',
+        height: '100%',
+        minHeight: 0,
       }}
     >
       <Group justify="space-between">

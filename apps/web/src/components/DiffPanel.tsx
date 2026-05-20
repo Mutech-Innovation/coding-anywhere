@@ -71,7 +71,7 @@ export function DiffPanel() {
   );
 
   return (
-    <Group align="stretch" gap="md" h="calc(100vh - 90px)" wrap="nowrap">
+    <Group align="stretch" gap="md" h="100%" wrap="nowrap" style={{ minHeight: 0 }}>
       <Stack
         gap="xs"
         miw={300}
@@ -153,6 +153,7 @@ export function DiffPanel() {
           display: 'flex',
           flexDirection: 'column',
           minWidth: 0,
+          minHeight: 0,
           padding: 8,
           border: '1px solid var(--mantine-color-default-border)',
           borderRadius: 8,

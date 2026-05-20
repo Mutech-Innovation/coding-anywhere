@@ -77,6 +77,7 @@ function MainShell() {
   const credentials = useConnection((s) => s.credentials);
   const signOut = useConnection((s) => s.signOut);
   const [activeTab, setActiveTab] = useState<string | null>('chat');
+  const panelStyle = { height: '100%', minHeight: 0 };
 
   return (
     <AppShell padding="md" header={{ height: 56 }}>
@@ -112,8 +113,26 @@ function MainShell() {
           </Group>
         </Group>
       </AppShell.Header>
-      <AppShell.Main>
-        <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
+      <AppShell.Main
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100dvh',
+          minHeight: 0,
+          overflow: 'hidden',
+        }}
+      >
+        <Tabs
+          value={activeTab}
+          onChange={setActiveTab}
+          keepMounted={false}
+          style={{
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            minHeight: 0,
+          }}
+        >
           <Tabs.List>
             <Tabs.Tab value="chat" leftSection={<IconMessageCircle size={14} />}>
               Chat
@@ -137,26 +156,26 @@ function MainShell() {
               Welcome
             </Tabs.Tab>
           </Tabs.List>
-          <Box pt="md">
-            <Tabs.Panel value="chat">
+          <Box pt="md" style={{ flex: 1, minHeight: 0 }}>
+            <Tabs.Panel value="chat" style={panelStyle}>
               <ChatPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="terminals">
+            <Tabs.Panel value="terminals" style={panelStyle}>
               <TerminalsPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="files">
+            <Tabs.Panel value="files" style={panelStyle}>
               <FilesPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="diff">
+            <Tabs.Panel value="diff" style={panelStyle}>
               <DiffPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="ports">
+            <Tabs.Panel value="ports" style={panelStyle}>
               <PortsPanel />
             </Tabs.Panel>
-            <Tabs.Panel value="agents">
+            <Tabs.Panel value="agents" style={panelStyle}>
               <AgentsTab />
             </Tabs.Panel>
-            <Tabs.Panel value="welcome">
+            <Tabs.Panel value="welcome" style={panelStyle}>
               <WelcomeTab />
             </Tabs.Panel>
           </Box>
