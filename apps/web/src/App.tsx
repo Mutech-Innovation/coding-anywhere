@@ -30,6 +30,7 @@ import { ChatPanel } from './components/ChatPanel.js';
 import { ConnectionStatus } from './components/ConnectionStatus.js';
 import { DiffPanel } from './components/DiffPanel.js';
 import { FilesPanel } from './components/FilesPanel.js';
+import { NotificationsMenu } from './components/NotificationsMenu.js';
 import { PairScreen } from './components/PairScreen.js';
 import { PortsPanel } from './components/PortsPanel.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
@@ -65,11 +66,12 @@ function MainShell() {
               Coding Anywhere
             </Title>
             <Badge size="xs" variant="light">
-              P6 wired
+              P7 wired
             </Badge>
           </Group>
           <Group gap="xs">
             <ConnectionStatus />
+            <NotificationsMenu />
             <Menu position="bottom-end" withArrow>
               <Menu.Target>
                 <ActionIcon variant="subtle" aria-label="Device menu">

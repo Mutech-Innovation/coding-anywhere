@@ -403,12 +403,45 @@ func (r *Router) setStatus(s *session, status string) {
 		r.mu.Unlock()
 		return
 	}
+	prev := s.Status
 	s.Status = status
 	id := s.ID
+	title := s.Title
 	r.mu.Unlock()
 	r.broadcastEvent(wire.ChatEventSessionStatus, wire.ChatSessionStatusEvent{
 		SessionID: id, Status: status,
 	})
+	// Push a Web Push when the agent finishes a turn so backgrounded
+	// devices see the result without keeping the tab open.
+	if status == "idle" && (prev == "thinking" || prev == "awaiting_permission") {
+		body := "Devin has finished thinking."
+		if title != "" {
+			body = title + " · " + body
+		}
+		r.broadcastEventOnChannel(wire.ChannelNotifications, wire.NotificationsMethodSend,
+			wire.NotificationsSendEvent{
+				Title:     "Coding Anywhere",
+				Body:      body,
+				Tag:       "chat-" + id,
+				SessionID: id,
+				URL:       "/", // future: deep-link to /chat/<id>
+			},
+		)
+	}
+}
+
+// broadcastEventOnChannel emits an event on a non-default channel; used to
+// route notifications.send onto the relay's notifications channel where the
+// Web Push dispatcher picks it up.
+func (r *Router) broadcastEventOnChannel(channel wire.Channel, method string, payload any) {
+	r.eventSeq.Add(1)
+	id := fmt.Sprintf("%s-%d", ulid.Make().String(), r.eventSeq.Load())
+	ev, err := wire.MakeEvent(id, channel, method, payload)
+	if err != nil {
+		r.logger.Warn("MakeEvent", "channel", channel, "method", method, "err", err)
+		return
+	}
+	r.cli.Send(ev)
 }
 
 // --- helpers ---

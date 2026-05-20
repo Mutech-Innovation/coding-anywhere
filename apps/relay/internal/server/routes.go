@@ -22,6 +22,12 @@ func (s *Server) routes() http.Handler {
 	// Auth
 	mux.HandleFunc("POST /v1/auth/refresh", s.handleAuthRefresh)
 
+	// Push notifications
+	mux.HandleFunc("GET /v1/push/vapid_public_key", s.handleVAPIDPublicKey)
+	mux.HandleFunc("POST /v1/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("POST /v1/push/unsubscribe", s.handlePushUnsubscribe)
+	mux.HandleFunc("POST /v1/push/test", s.handlePushTest)
+
 	// WebSocket
 	mux.HandleFunc("GET /v1/ws/connect", s.handleWSConnect)
 

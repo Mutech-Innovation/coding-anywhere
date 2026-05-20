@@ -127,6 +127,14 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 			}
 		}
 
+		// Notifications from the daemon are also dispatched via Web Push so
+		// offline / backgrounded devices still see them.
+		if conn.kind == auth.DeviceDaemon &&
+			env.Type == wire.TypeEvent &&
+			env.Channel == wire.ChannelNotifications {
+			go s.dispatchEnvelopePush(context.Background(), conn.accountID, env, logger)
+		}
+
 		// Fan out to peers. Senders never see their own message.
 		s.hub.Broadcast(conn, env)
 	}
