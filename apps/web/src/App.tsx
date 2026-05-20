@@ -14,6 +14,8 @@ import {
 import {
   IconCode,
   IconDotsVertical,
+  IconFiles,
+  IconGitCompare,
   IconHome,
   IconLogout,
   IconMessageCircle,
@@ -25,6 +27,8 @@ import { AGENTS, listAgents } from '@coding-anywhere/agents';
 
 import { ChatPanel } from './components/ChatPanel.js';
 import { ConnectionStatus } from './components/ConnectionStatus.js';
+import { DiffPanel } from './components/DiffPanel.js';
+import { FilesPanel } from './components/FilesPanel.js';
 import { PairScreen } from './components/PairScreen.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
 import { useConnection } from './store/connection.js';
@@ -59,7 +63,7 @@ function MainShell() {
               Coding Anywhere
             </Title>
             <Badge size="xs" variant="light">
-              P3 wired
+              P5 wired
             </Badge>
           </Group>
           <Group gap="xs">
@@ -91,6 +95,12 @@ function MainShell() {
             <Tabs.Tab value="terminals" leftSection={<IconTerminal2 size={14} />}>
               Terminals
             </Tabs.Tab>
+            <Tabs.Tab value="files" leftSection={<IconFiles size={14} />}>
+              Files
+            </Tabs.Tab>
+            <Tabs.Tab value="diff" leftSection={<IconGitCompare size={14} />}>
+              Diff
+            </Tabs.Tab>
             <Tabs.Tab value="agents" leftSection={<IconCode size={14} />}>
               Agents
             </Tabs.Tab>
@@ -104,6 +114,12 @@ function MainShell() {
             </Tabs.Panel>
             <Tabs.Panel value="terminals">
               <TerminalsPanel />
+            </Tabs.Panel>
+            <Tabs.Panel value="files">
+              <FilesPanel />
+            </Tabs.Panel>
+            <Tabs.Panel value="diff">
+              <DiffPanel />
             </Tabs.Panel>
             <Tabs.Panel value="agents">
               <AgentsTab />

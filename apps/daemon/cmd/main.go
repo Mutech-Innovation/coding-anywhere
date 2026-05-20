@@ -19,6 +19,8 @@ import (
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/credentials"
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/initcmd"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/diffrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/filesrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/terminalrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
@@ -39,6 +41,7 @@ func main() {
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 		credPath    = flag.String("credentials", "", "Path to credentials file (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
 		relayURL    = flag.String("relay-url", "", "Override the relay URL stored in credentials")
+		workspace   = flag.String("workspace", "", "Workspace root for the files API (default: $PWD)")
 	)
 	flag.Usage = usage
 	flag.Parse()
@@ -54,7 +57,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := run(ctx, logger, *credPath, *relayURL); err != nil {
+	if err := run(ctx, logger, *credPath, *relayURL, *workspace); err != nil {
 		logger.Error("daemon exited with error", "err", err)
 		os.Exit(1)
 	}
@@ -98,7 +101,7 @@ func runInit(args []string) error {
 	})
 }
 
-func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride string) error {
+func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, workspace string) error {
 	logger.Info("coding-anywhere daemon starting", "version", version.String())
 
 	if credPath == "" {
@@ -158,6 +161,24 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride st
 			logger.Warn("close chat router", "err", err)
 		}
 	}()
+
+	// files: workspace-scoped browse/read.
+	if workspace == "" {
+		var err error
+		workspace, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("workspace cwd: %w", err)
+		}
+	}
+	if _, err := filesrouter.New(cli, logger, workspace); err != nil {
+		return fmt.Errorf("filesrouter: %w", err)
+	}
+	logger.Info("files workspace", "root", workspace)
+
+	// diff: git-backed change list + per-file versions on the `git` channel.
+	if _, err := diffrouter.New(cli, logger, workspace); err != nil {
+		return fmt.Errorf("diffrouter: %w", err)
+	}
 
 	return cli.Run(ctx)
 }
