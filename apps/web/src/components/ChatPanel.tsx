@@ -21,11 +21,18 @@ import {
   ThemeIcon,
   Tooltip,
 } from '@mantine/core';
-import type { AvailableCommand, PlanEntry, ToolCallContentBlock } from '@coding-anywhere/protocol';
+import type {
+  AvailableCommand,
+  FilesEntry,
+  PlanEntry,
+  ToolCallContentBlock,
+} from '@coding-anywhere/protocol';
 import {
   IconArrowRight,
   IconBolt,
   IconBrain,
+  IconChevronDown,
+  IconChevronRight,
   IconCheck,
   IconCircle,
   IconCircleDashed,
@@ -34,6 +41,7 @@ import {
   IconEdit,
   IconFileSearch,
   IconFileText,
+  IconFolder,
   IconMessageCircle,
   IconPlayerStop,
   IconRoute,
@@ -51,6 +59,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
+import { useFiles } from '../store/files.js';
 
 const STATUS_COLOR: Record<string, string> = {
   idle: 'gray',
@@ -207,7 +216,7 @@ export function ChatPanel() {
 function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const create = useChat((s) => s.createSession);
   const agents = useChat((s) => s.agents);
-  const [cwd, setCwd] = useState('/Users');
+  const [cwd, setCwd] = useState('');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -219,7 +228,11 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
     setError(null);
     setBusy(true);
     try {
-      await create({ cwd, agentId: 'devin', title: title.trim() || undefined });
+      await create({
+        cwd: cwd.trim() || undefined,
+        agentId: 'devin',
+        title: title.trim() || undefined,
+      });
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -229,15 +242,16 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Start a Devin session" centered>
+    <Modal opened={opened} onClose={onClose} title="Start a Devin session" centered size="lg">
       <Stack gap="md">
         <TextInput
           label="Working directory"
-          description="Devin will run inside this directory."
-          required
+          description="Optional. Choose from the tree or leave blank to use the daemon's default workspace."
+          placeholder="Select a directory or use daemon default"
           value={cwd}
           onChange={(e) => setCwd(e.currentTarget.value)}
         />
+        <DirectoryPicker opened={opened} selectedPath={cwd} onSelect={setCwd} />
         <TextInput
           label="Title"
           placeholder="(optional)"
@@ -266,6 +280,209 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
       </Stack>
     </Modal>
   );
+}
+
+function DirectoryPicker({
+  opened,
+  selectedPath,
+  onSelect,
+}: {
+  opened: boolean;
+  selectedPath: string;
+  onSelect: (path: string) => void;
+}) {
+  const status = useConnection((s) => s.status);
+  const workspaces = useFiles((s) => s.workspaces);
+  const workspaceId = useFiles((s) => s.workspaceId);
+  const loadWorkspaces = useFiles((s) => s.loadWorkspaces);
+  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set(['']));
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!opened || status !== 'connected') return;
+    setError(null);
+    loadWorkspaces().catch((e: Error) => setError(e.message));
+  }, [opened, status, loadWorkspaces]);
+
+  const workspace = workspaces.find((w) => w.id === workspaceId) ?? workspaces[0];
+
+  if (status !== 'connected') {
+    return (
+      <Text size="sm" c="dimmed">
+        Directory picker is available after the relay connects.
+      </Text>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert color="red" variant="light" radius="md">
+        {error}
+      </Alert>
+    );
+  }
+
+  if (!workspace) {
+    return (
+      <Text size="sm" c="dimmed">
+        Loading workspace…
+      </Text>
+    );
+  }
+
+  return (
+    <Paper withBorder radius="md" p="sm">
+      <Group justify="space-between" align="flex-start" gap="sm">
+        <Stack gap={0} style={{ minWidth: 0 }}>
+          <Text size="sm" fw={500}>
+            Choose a directory
+          </Text>
+          <Tooltip label={workspace.root}>
+            <Text size="xs" c="dimmed" truncate>
+              {workspace.root}
+            </Text>
+          </Tooltip>
+        </Stack>
+        <Button size="xs" variant="subtle" onClick={() => onSelect('')}>
+          Use default
+        </Button>
+      </Group>
+      <ScrollArea.Autosize mah={260} mt="xs" type="auto">
+        <DirectoryNode
+          path=""
+          label={workspace.name || workspace.root}
+          workspaceRoot={workspace.root}
+          depth={0}
+          openDirs={openDirs}
+          setOpenDirs={setOpenDirs}
+          selectedPath={selectedPath}
+          onSelect={onSelect}
+        />
+      </ScrollArea.Autosize>
+    </Paper>
+  );
+}
+
+function DirectoryNode({
+  path,
+  label,
+  workspaceRoot,
+  depth,
+  openDirs,
+  setOpenDirs,
+  selectedPath,
+  onSelect,
+}: {
+  path: string;
+  label: string;
+  workspaceRoot: string;
+  depth: number;
+  openDirs: Set<string>;
+  setOpenDirs: (s: Set<string>) => void;
+  selectedPath: string;
+  onSelect: (path: string) => void;
+}) {
+  const list = useFiles((s) => s.list);
+  const workspaceId = useFiles((s) => s.workspaceId);
+  const cacheKey = `${workspaceId ?? ''}|${path}`;
+  const cached = useFiles((s) => s.listings[cacheKey]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isOpen = openDirs.has(path);
+  const absolutePath = joinWorkspacePath(workspaceRoot, path);
+  const active = selectedPath === absolutePath;
+
+  useEffect(() => {
+    if (!isOpen || cached) return;
+    setLoading(true);
+    setError(null);
+    list(path)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [isOpen, cached, list, path]);
+
+  function toggle() {
+    const next = new Set(openDirs);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    setOpenDirs(next);
+  }
+
+  const directories = (cached ?? []).filter(
+    (entry): entry is FilesEntry => entry.kind === 'directory',
+  );
+
+  return (
+    <Stack gap={0}>
+      <Group
+        gap={4}
+        py={3}
+        px="xs"
+        wrap="nowrap"
+        onClick={() => onSelect(absolutePath)}
+        style={{
+          cursor: 'pointer',
+          paddingLeft: depth * 12 + 4,
+          background: active ? 'var(--mantine-color-brand-9)' : 'transparent',
+          borderRadius: 4,
+        }}
+      >
+        <ActionIcon
+          size="xs"
+          variant="subtle"
+          aria-label={isOpen ? 'Collapse directory' : 'Expand directory'}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle();
+          }}
+        >
+          {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+        </ActionIcon>
+        <IconFolder size={14} />
+        <Text size="xs" fw={depth === 0 ? 600 : 500} truncate>
+          {label}
+        </Text>
+      </Group>
+      {isOpen ? (
+        <Stack gap={0}>
+          {error ? (
+            <Text size="xs" c="red" px="md">
+              {error}
+            </Text>
+          ) : null}
+          {loading && !cached ? (
+            <Text size="xs" c="dimmed" px="md">
+              Loading…
+            </Text>
+          ) : null}
+          {cached && directories.length === 0 ? (
+            <Text size="xs" c="dimmed" px="md">
+              No subdirectories
+            </Text>
+          ) : null}
+          {directories.map((entry) => (
+            <DirectoryNode
+              key={entry.path}
+              path={entry.path}
+              label={entry.name}
+              workspaceRoot={workspaceRoot}
+              depth={depth + 1}
+              openDirs={openDirs}
+              setOpenDirs={setOpenDirs}
+              selectedPath={selectedPath}
+              onSelect={onSelect}
+            />
+          ))}
+        </Stack>
+      ) : null}
+    </Stack>
+  );
+}
+
+function joinWorkspacePath(root: string, path: string): string {
+  if (!path) return root;
+  const base = root.replace(/\/+$/, '');
+  return `${base}/${path}`;
 }
 
 function ChatView({ sessionId }: { sessionId: string }) {

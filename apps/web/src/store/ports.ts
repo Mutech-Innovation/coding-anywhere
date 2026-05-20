@@ -2,6 +2,7 @@ import {
   type Envelope,
   type PortsEntry,
   PortsMethod,
+  type RelayWSClient,
   makeRequest,
 } from '@coding-anywhere/protocol';
 import { newId } from '@coding-anywhere/utils';
@@ -19,12 +20,15 @@ const pending = new Map<
   { resolve: (env: Envelope) => void; reject: (err: Error) => void }
 >();
 
-let handlerInstalled = false;
+let handlerClient: RelayWSClient | null = null;
+let unsubscribeHandler: (() => void) | null = null;
 function ensureHandler() {
-  if (handlerInstalled) return;
   const client = useConnection.getState().client;
   if (!client) return;
-  client.handle('ports', (env) => {
+  if (handlerClient === client) return;
+  if (unsubscribeHandler) unsubscribeHandler();
+  rejectPending(new Error('ports connection changed'));
+  unsubscribeHandler = client.handle('ports', (env) => {
     if (env.type !== 'res') return;
     const p = pending.get(env.id);
     if (!p) return;
@@ -32,7 +36,12 @@ function ensureHandler() {
     if (env.error) p.reject(new Error(`${env.error.code}: ${env.error.message}`));
     else p.resolve(env);
   });
-  handlerInstalled = true;
+  handlerClient = client;
+}
+
+function rejectPending(err: Error) {
+  for (const p of pending.values()) p.reject(err);
+  pending.clear();
 }
 
 export const usePorts = create<PortsStore>((set) => ({

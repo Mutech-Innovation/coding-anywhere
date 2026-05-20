@@ -73,7 +73,7 @@ type ChatListSessionsResponse struct {
 
 type ChatCreateSessionRequest struct {
 	AgentID string `json:"agent_id"`
-	Cwd     string `json:"cwd"`
+	Cwd     string `json:"cwd,omitempty"`
 	Title   string `json:"title,omitempty"`
 }
 
@@ -123,11 +123,11 @@ type ChatGetHistoryRequest struct {
 // ChatGetHistoryResponse carries the persisted snapshot. Updates are the
 // raw `update` bodies we forwarded as ChatEventUpdate, in order.
 type ChatGetHistoryResponse struct {
-	Session         ChatSession       `json:"session"`
-	Updates         []json.RawMessage `json:"updates"`
-	AvailableModes  []SessionMode     `json:"available_modes,omitempty"`
-	CurrentModeID   string            `json:"current_mode_id,omitempty"`
-	UserPrompts     []ChatPromptEntry `json:"user_prompts,omitempty"`
+	Session        ChatSession       `json:"session"`
+	Updates        []json.RawMessage `json:"updates"`
+	AvailableModes []SessionMode     `json:"available_modes,omitempty"`
+	CurrentModeID  string            `json:"current_mode_id,omitempty"`
+	UserPrompts    []ChatPromptEntry `json:"user_prompts,omitempty"`
 }
 
 // ChatPromptEntry is a persisted user turn. We replay these alongside

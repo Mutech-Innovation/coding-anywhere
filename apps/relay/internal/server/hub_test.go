@@ -124,6 +124,33 @@ func TestHubAccountIsolation(t *testing.T) {
 	}
 }
 
+func TestHubClientRequestNoDaemonGetsError(t *testing.T) {
+	hs, srv := newTestServer(t)
+	client := dialWS(t, hs.URL, srv.Signer(), "acc-1", "client", auth.DeviceClient)
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := wire.MakeRequest("req-no-daemon", wire.ChannelFiles, wire.FilesMethodListWorkspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, client, req); err != nil {
+		t.Fatalf("client Write: %v", err)
+	}
+	var got wire.Envelope
+	if err := wsjson.Read(ctx, client, &got); err != nil {
+		t.Fatalf("client Read: %v", err)
+	}
+	if got.Type != wire.TypeResponse || got.ID != req.ID {
+		t.Fatalf("unexpected envelope: %+v", got)
+	}
+	if got.Error == nil || got.Error.Code != "no_daemon" {
+		t.Fatalf("expected no_daemon error, got %+v", got.Error)
+	}
+}
+
 func TestHubMultipleClientsFanOut(t *testing.T) {
 	hs, srv := newTestServer(t)
 	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "daemon", auth.DeviceDaemon)

@@ -70,10 +70,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	pc := pairingclient.New(opts.RelayURL)
+	bearer := existingBearer(ctx, pc, opts.CredentialsPath, opts.RelayURL, opts.Logger)
 
 	opts.Logger.Info("starting pairing", "relay_url", opts.RelayURL, "label", opts.DeviceLabel)
 
-	init, err := pc.Init(ctx, "daemon", opts.DeviceLabel, "")
+	init, err := pc.Init(ctx, "daemon", opts.DeviceLabel, bearer)
 	if err != nil {
 		return fmt.Errorf("pair init: %w", err)
 	}
@@ -92,6 +93,33 @@ func Run(ctx context.Context, opts Options) error {
 	_, _ = fmt.Fprintf(opts.Out, "\nPaired! Saved credentials to %s\n", opts.CredentialsPath)
 	_, _ = fmt.Fprintf(opts.Out, "Account: %s  Device: %s (%s)\n", saved.AccountID, saved.DeviceID, saved.DeviceLabel)
 	return nil
+}
+
+func existingBearer(ctx context.Context, pc *pairingclient.Client, path, relayURL string, logger *slog.Logger) string {
+	b, err := credentials.Load(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.Warn("could not load existing credentials for account-preserving pairing", "err", err)
+		}
+		return ""
+	}
+	if strings.TrimRight(b.RelayURL, "/") != strings.TrimRight(relayURL, "/") {
+		return ""
+	}
+	if time.Now().UTC().Before(b.AccessTokenExpiresAt.Add(-time.Minute)) {
+		return b.AccessToken
+	}
+	access, ttl, err := pc.Refresh(ctx, b.RefreshToken)
+	if err != nil {
+		logger.Warn("could not refresh existing credentials for account-preserving pairing", "err", err)
+		return ""
+	}
+	b.AccessToken = access
+	b.AccessTokenExpiresAt = time.Now().UTC().Add(time.Duration(ttl) * time.Second)
+	if err := credentials.Save(path, b); err != nil {
+		logger.Warn("could not save refreshed credentials", "err", err)
+	}
+	return access
 }
 
 func bundleFromPairing(relayURL string, c pairingclient.CredentialBundle) *credentials.Bundle {

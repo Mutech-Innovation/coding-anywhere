@@ -38,17 +38,18 @@ import (
 
 type chatMockACP struct {
 	t  *testing.T
-	in *io.PipeReader  // adapter→server
-	wr *bufio.Writer   // server→adapter
+	in *io.PipeReader // adapter→server
+	wr *bufio.Writer  // server→adapter
 	mu sync.Mutex
 
 	respMu      sync.Mutex
 	respWaiters map[string]chan map[string]any // id (as string) → channel
+	lastNewCwd  string
 }
 
 func newChatMockACP(t *testing.T) (*chatMockACP, *io.PipeReader, *io.PipeWriter) {
 	t.Helper()
-	adapterStdinR, adapterStdinW := io.Pipe()  // adapter writes here, server reads
+	adapterStdinR, adapterStdinW := io.Pipe()   // adapter writes here, server reads
 	adapterStdoutR, adapterStdoutW := io.Pipe() // server writes here, adapter reads
 	m := &chatMockACP{
 		t:           t,
@@ -105,6 +106,10 @@ func (m *chatMockACP) run() {
 				"agentInfo":         map[string]any{"name": "mock-devin", "version": "0.0.1"},
 			})
 		case method == "session/new":
+			params, _ := msg["params"].(map[string]any)
+			m.mu.Lock()
+			m.lastNewCwd, _ = params["cwd"].(string)
+			m.mu.Unlock()
 			m.respond(idVal, map[string]any{"sessionId": "sess-acp-1"})
 		case method == "session/prompt":
 			// Run prompt handling in its own goroutine so the read loop
@@ -221,7 +226,7 @@ func TestChatEndToEnd(t *testing.T) {
 	mock, stdout, stdin := newChatMockACP(t)
 	cr := chatrouter.New(dc, logger, func(opts devin.Options) (*devin.Adapter, error) {
 		return devin.NewWithStreams(stdin, stdout, opts), nil
-	})
+	}, "/Users/me/app")
 	t.Cleanup(func() { _ = cr.Close() })
 
 	go func() { _ = dc.Run(ctx) }()
@@ -291,7 +296,7 @@ func TestChatEndToEnd(t *testing.T) {
 
 	// 4. Create session.
 	createReq, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
-		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/Users/me/app"})
+		wire.ChatCreateSessionRequest{AgentID: "devin"})
 	if err := wsjson.Write(ctx, clientWS, createReq); err != nil {
 		t.Fatalf("create write: %v", err)
 	}
@@ -307,6 +312,15 @@ func TestChatEndToEnd(t *testing.T) {
 	if sessionID == "" || createRes.Session.NativeID != "sess-acp-1" {
 		t.Fatalf("create response: %+v", createRes)
 	}
+	if createRes.Session.Cwd != "/Users/me/app" {
+		t.Fatalf("response cwd: %s", createRes.Session.Cwd)
+	}
+	mock.mu.Lock()
+	if mock.lastNewCwd != "/Users/me/app" {
+		mock.mu.Unlock()
+		t.Fatalf("cwd: %s", mock.lastNewCwd)
+	}
+	mock.mu.Unlock()
 
 	// 5. Send a prompt.
 	promptReq, _ := wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
@@ -354,7 +368,6 @@ func TestChatEndToEnd(t *testing.T) {
 	if promptRes.StopReason != "end_turn" {
 		t.Fatalf("stop reason: %s", promptRes.StopReason)
 	}
-	_ = mock
 }
 
 // TestChatHistoryAndSetMode exercises the persistence + mode controls added

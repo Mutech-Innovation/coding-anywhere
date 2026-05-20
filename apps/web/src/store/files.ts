@@ -4,6 +4,7 @@ import {
   type FilesListResponse,
   type FilesReadResponse,
   FilesMethod,
+  type RelayWSClient,
   type FilesWorkspaceInfo,
   base64ToBytes,
   makeRequest,
@@ -91,20 +92,35 @@ export const useFiles = create<FilesStore>((set, get) => ({
   },
 }));
 
-let handlerInstalled = false;
+let handlerClient: RelayWSClient | null = null;
+let unsubscribeHandler: (() => void) | null = null;
 function ensureHandlerInstalled() {
-  if (handlerInstalled) return;
   const client = useConnection.getState().client;
   if (!client) return;
-  client.handle('files', (env) => {
+  if (handlerClient === client) return;
+  if (unsubscribeHandler) unsubscribeHandler();
+  rejectPending(new Error('files connection changed'));
+  unsubscribeHandler = client.handle('files', (env) => {
     if (env.type !== 'res') return;
     const p = pending.get(env.id);
     if (!p) return;
     pending.delete(env.id);
-    if (env.error) p.reject(new Error(`${env.error.code}: ${env.error.message}`));
+    if (env.error) p.reject(new Error(formatFilesError(env.error.code, env.error.message)));
     else p.resolve(env);
   });
-  handlerInstalled = true;
+  handlerClient = client;
+}
+
+function formatFilesError(code: string, message: string): string {
+  if (code === 'no_daemon') {
+    return 'No daemon is connected to this browser account. Sign out and pair this browser with the active daemon again.';
+  }
+  return `${code}: ${message}`;
+}
+
+function rejectPending(err: Error) {
+  for (const p of pending.values()) p.reject(err);
+  pending.clear();
 }
 
 async function sendRequest(method: string, payload: unknown = {}): Promise<Envelope> {

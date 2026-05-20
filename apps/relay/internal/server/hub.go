@@ -52,8 +52,8 @@ type Account struct {
 type Hub struct {
 	logger *slog.Logger
 
-	mu    sync.RWMutex
-	accs  map[string]*Account
+	mu   sync.RWMutex
+	accs map[string]*Account
 }
 
 // NewHub returns an empty Hub.
@@ -193,6 +193,12 @@ var ErrNoDaemon = errors.New("no daemon connected for account")
 func (h *Hub) Broadcast(from *Conn, env wire.Envelope) {
 	targets := h.targetsFor(from)
 	if len(targets) == 0 {
+		if from.kind == auth.DeviceClient && env.Type == wire.TypeRequest {
+			from.deliver(context.Background(), mustEnvelope(wire.MakeResponse(env.ID, env.Channel, nil, &wire.EnvelopeError{
+				Code:    "no_daemon",
+				Message: "no daemon connected for this account; sign out and pair with the active daemon",
+			})))
+		}
 		return
 	}
 	for _, peer := range targets {
@@ -256,5 +262,3 @@ func (c *Conn) runWriter(ctx context.Context) error {
 		}
 	}
 }
-
-

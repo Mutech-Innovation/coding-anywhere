@@ -3,7 +3,9 @@ import {
   AppShell,
   Badge,
   Box,
+  Center,
   Group,
+  Loader,
   Menu,
   Stack,
   Tabs,
@@ -39,11 +41,31 @@ import { useConnection } from './store/connection.js';
 export function App() {
   const credentials = useConnection((s) => s.credentials);
   const hydrate = useConnection((s) => s.hydrate);
+  const [hydrating, setHydrating] = useState(true);
 
   // On first mount, attempt to load saved credentials and reconnect.
   useEffect(() => {
-    hydrate();
+    let cancelled = false;
+    hydrate().finally(() => {
+      if (!cancelled) setHydrating(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [hydrate]);
+
+  if (!credentials && hydrating) {
+    return (
+      <Center h="100vh">
+        <Stack gap="xs" align="center">
+          <Loader size="sm" />
+          <Text c="dimmed" size="sm">
+            Restoring session…
+          </Text>
+        </Stack>
+      </Center>
+    );
+  }
 
   if (!credentials) {
     return <PairScreen />;

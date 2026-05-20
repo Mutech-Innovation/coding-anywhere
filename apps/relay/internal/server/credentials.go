@@ -19,15 +19,15 @@ import (
 // shown once, stored hashed, and exchanged for new access tokens via
 // POST /v1/auth/refresh.
 type CredentialBundle struct {
-	AccountID              string `json:"account_id"`
-	DeviceID               string `json:"device_id"`
-	DeviceKind             string `json:"device_kind"`
-	DeviceLabel            string `json:"device_label"`
-	AccessToken            string `json:"access_token"`
-	AccessTokenExpiresIn   int64  `json:"access_token_expires_in"`
-	RefreshToken           string `json:"refresh_token"`
-	RefreshTokenExpiresIn  int64  `json:"refresh_token_expires_in"`
-	RelayProtocolVersion   int    `json:"relay_protocol_version"`
+	AccountID             string `json:"account_id"`
+	DeviceID              string `json:"device_id"`
+	DeviceKind            string `json:"device_kind"`
+	DeviceLabel           string `json:"device_label"`
+	AccessToken           string `json:"access_token"`
+	AccessTokenExpiresIn  int64  `json:"access_token_expires_in"`
+	RefreshToken          string `json:"refresh_token"`
+	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
+	RelayProtocolVersion  int    `json:"relay_protocol_version"`
 }
 
 const protocolVersion = 1
@@ -38,10 +38,9 @@ func (s *Server) issueCredentials(ctx Ctx, accountID string, dev store.Device) (
 	now := time.Now().UTC()
 
 	accessTTL := s.cfg.ClientTokenTTL
-	refreshTTL := 24 * time.Hour
+	refreshTTL := 90 * 24 * time.Hour
 	if dev.Kind == store.DeviceDaemon {
 		accessTTL = s.cfg.DaemonTokenTTL
-		refreshTTL = 90 * 24 * time.Hour
 	}
 
 	access, err := s.signer.Issue(accountID, dev.ID, auth.DeviceKind(dev.Kind), accessTTL)

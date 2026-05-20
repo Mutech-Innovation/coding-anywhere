@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,9 +46,10 @@ type Router struct {
 	runCtx    context.Context
 	runCancel context.CancelFunc
 
-	mu       sync.Mutex
-	devin    *devin.Adapter // nil until first session
-	sessions map[string]*session
+	mu         sync.Mutex
+	devin      *devin.Adapter // nil until first session
+	sessions   map[string]*session
+	defaultCwd string
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingPermission // request_id → channel
@@ -119,9 +121,16 @@ type resolution struct {
 // New constructs a router and registers a `chat` channel handler. The
 // router owns its own context for long-lived agent processes — Close
 // cancels it.
-func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder) *Router {
+func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, defaultCwd ...string) *Router {
 	if builder == nil {
 		builder = DefaultDevinBuilder
+	}
+	cwd := ""
+	if len(defaultCwd) > 0 {
+		cwd = defaultCwd[0]
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
@@ -131,6 +140,7 @@ func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder) *Ro
 		runCtx:       ctx,
 		runCancel:    cancel,
 		sessions:     make(map[string]*session),
+		defaultCwd:   cwd,
 		pending:      make(map[string]*pendingPermission),
 	}
 	cli.Handle(wire.ChannelChat, r.handle)
@@ -245,8 +255,13 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		return
 	}
 	if req.Cwd == "" {
-		r.respondErr(env, "bad_request", "cwd required")
-		return
+		r.mu.Lock()
+		req.Cwd = r.defaultCwd
+		r.mu.Unlock()
+		if req.Cwd == "" {
+			r.respondErr(env, "bad_request", "cwd required")
+			return
+		}
 	}
 	a, err := r.ensureDevin()
 	if err != nil {
@@ -440,8 +455,8 @@ func (r *Router) handleAgentUpdate(nativeSessionID string, update json.RawMessag
 		// Best-effort decode of the discriminator so we can pick out
 		// state-mutating updates without forcing a full schema.
 		var head struct {
-			Kind  string `json:"sessionUpdate"`
-			Mode  string `json:"currentModeId"`
+			Kind  string  `json:"sessionUpdate"`
+			Mode  string  `json:"currentModeId"`
 			Title *string `json:"title"`
 		}
 		if err := json.Unmarshal(update, &head); err == nil {

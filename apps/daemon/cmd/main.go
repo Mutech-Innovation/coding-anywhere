@@ -153,16 +153,6 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 		}
 	}()
 
-	// chat: AI coding agent conversations (Devin first; Claude Code, Codex,
-	// cursor-agent in v2). The Devin adapter spins up `devin acp` lazily on
-	// first session create.
-	cr := chatrouter.New(cli, logger, nil)
-	defer func() {
-		if err := cr.Close(); err != nil {
-			logger.Warn("close chat router", "err", err)
-		}
-	}()
-
 	// files: workspace-scoped browse/read.
 	if workspace == "" {
 		var err error
@@ -171,6 +161,17 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 			return fmt.Errorf("workspace cwd: %w", err)
 		}
 	}
+
+	// chat: AI coding agent conversations (Devin first; Claude Code, Codex,
+	// cursor-agent in v2). The Devin adapter spins up `devin acp` lazily on
+	// first session create.
+	cr := chatrouter.New(cli, logger, nil, workspace)
+	defer func() {
+		if err := cr.Close(); err != nil {
+			logger.Warn("close chat router", "err", err)
+		}
+	}()
+
 	if _, err := filesrouter.New(cli, logger, workspace); err != nil {
 		return fmt.Errorf("filesrouter: %w", err)
 	}

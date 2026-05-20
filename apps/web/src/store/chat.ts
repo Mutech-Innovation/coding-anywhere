@@ -89,7 +89,7 @@ interface ChatStore {
   detach(): void;
   loadAgents(): Promise<void>;
   refreshSessions(): Promise<void>;
-  createSession(args: { cwd: string; agentId?: string; title?: string }): Promise<ChatSession>;
+  createSession(args: { cwd?: string; agentId?: string; title?: string }): Promise<ChatSession>;
   setActive(id: string | null): void;
   sendPrompt(sessionId: string, text: string): Promise<void>;
   cancel(sessionId: string): Promise<void>;

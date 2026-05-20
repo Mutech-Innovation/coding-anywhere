@@ -72,7 +72,7 @@ Two phases:
    already has a Bearer.
 2. **Tokens**. Each device gets:
    - An access token: HS256 JWT, 1h for clients, 30 days for daemons.
-   - A refresh token: 32 random bytes, 24h for clients, 90d for daemons.
+   - A refresh token: 32 random bytes, 90d for clients and daemons.
      Stored as SHA-256 hash; exchanged via `POST /v1/auth/refresh`.
 
 The WebSocket endpoint (`GET /v1/ws/connect`) authenticates via Bearer

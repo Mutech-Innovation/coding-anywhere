@@ -58,7 +58,7 @@ export type ChatAgentDescriptor = z.infer<typeof ChatAgentDescriptor>;
 
 export interface ChatCreateSessionRequest {
   agent_id?: string;
-  cwd: string;
+  cwd?: string;
   title?: string;
 }
 
