@@ -131,6 +131,10 @@ function EmptyViewer() {
   );
 }
 
+const TREE_INDENT = 18;
+const TREE_TOGGLE_WIDTH = 18;
+const TREE_ICON_SIZE = 16;
+
 function DirNode({
   path,
   label,
@@ -174,18 +178,28 @@ function DirNode({
   return (
     <Stack gap={0}>
       <Group
-        gap={4}
+        gap={0}
         py={3}
         px="xs"
         wrap="nowrap"
         onClick={toggle}
         style={{
           cursor: 'pointer',
-          paddingLeft: depth * 12 + 4,
         }}
       >
-        {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-        <IconFolder size={14} />
+        <Box style={{ width: depth * TREE_INDENT, flexShrink: 0 }} />
+        <Box
+          style={{
+            width: TREE_TOGGLE_WIDTH,
+            marginRight: 4,
+            display: 'flex',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          {isOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+        </Box>
+        <IconFolder size={TREE_ICON_SIZE} style={{ marginRight: 6, flexShrink: 0 }} />
         <Text size="xs" fw={depth === 0 ? 600 : 500} truncate>
           {label}
         </Text>
@@ -245,19 +259,20 @@ function FileLeaf({
     entry.kind === 'symlink' ? IconLink : isLikelyText(entry.name) ? IconFileText : IconFile;
   return (
     <Group
-      gap={4}
+      gap={0}
       py={3}
       px="xs"
       wrap="nowrap"
       onClick={onClick}
       style={{
         cursor: 'pointer',
-        paddingLeft: depth * 12 + 4 + 16,
         background: active ? 'var(--mantine-color-brand-9)' : 'transparent',
         borderRadius: 4,
       }}
     >
-      <Icon size={14} />
+      <Box style={{ width: depth * TREE_INDENT, flexShrink: 0 }} />
+      <Box style={{ width: TREE_TOGGLE_WIDTH, marginRight: 4, flexShrink: 0 }} />
+      <Icon size={TREE_ICON_SIZE} style={{ marginRight: 6, flexShrink: 0 }} />
       <Text size="xs" truncate>
         {entry.name}
       </Text>
