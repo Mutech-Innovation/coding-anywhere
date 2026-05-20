@@ -34,7 +34,7 @@ func (s *Server) routes() http.Handler {
 	// HTTP proxy to the daemon's localhost ports.
 	mux.HandleFunc("/v1/proxy/", s.handleProxy)
 
-	return s.withRecover(s.withRequestLog(mux))
+	return s.withCORS(s.withRecover(s.withRequestLog(mux)))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

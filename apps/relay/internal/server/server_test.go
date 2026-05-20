@@ -62,6 +62,34 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestCORSPreflight(t *testing.T) {
+	hs, _ := newTestServer(t)
+	req, err := http.NewRequest(http.MethodOptions, hs.URL+"/v1/pair/claim", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "content-type")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeBody(res.Body)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: %d", res.StatusCode)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("allow origin: %q", got)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Methods"); got != "POST" {
+		t.Fatalf("allow methods: %q", got)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Headers"); got != "content-type" {
+		t.Fatalf("allow headers: %q", got)
+	}
+}
+
 func TestWSConnectRequiresAuth(t *testing.T) {
 	hs, _ := newTestServer(t)
 
