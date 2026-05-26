@@ -16,111 +16,102 @@ import {
   IconRefresh,
   IconTrash,
 } from '@tabler/icons-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 import { RelayError } from '@coding-anywhere/protocol';
 
 import { useConnection } from '../store/connection.js';
 
 /**
- * Account-key menu items + the two modals used by the user-menu in the app
- * header. Owns:
- *   - "Show account key" → opens reveal modal with the cached plaintext.
- *   - "Rotate account key" → mints a new key on the relay, opens reveal modal.
- *   - "Revoke account key" → confirmation modal, drops everything on success.
+ * Menu items for the device dropdown ("show / rotate / revoke account key").
  *
- * The reveal modal is shared with first-pair onboarding via the store's
- * pendingKeyReveal field, so freshly minted keys always show exactly once.
+ * IMPORTANT: this component MUST be rendered inside a `<Menu.Dropdown>`.
+ * Click handlers only mutate zustand store state — they do NOT own any
+ * React-local UI state — because Mantine's Menu unmounts its Dropdown
+ * subtree on item click (closeOnItemClick=true). Any component-local
+ * `useState` declared here would be wiped before a downstream modal could
+ * render, which is exactly the "click-and-flash" bug we hit before.
+ *
+ * The matching modals live in {@link AccountKeyModals}, which must be
+ * mounted as a sibling to the Menu (i.e. outside Menu.Dropdown) so their
+ * lifetime is independent of the dropdown.
  */
 export function AccountKeyMenu() {
-  const credentials = useConnection((s) => s.credentials);
-  const pendingKeyReveal = useConnection((s) => s.pendingKeyReveal);
-  const dismissKeyReveal = useConnection((s) => s.dismissKeyReveal);
+  const requestRevealKey = useConnection((s) => s.requestRevealKey);
+  const setRevokeKeyOpen = useConnection((s) => s.setRevokeKeyOpen);
   const rotateAccountKey = useConnection((s) => s.rotateAccountKey);
-  const revokeAccountKey = useConnection((s) => s.revokeAccountKey);
-
-  const [revealValue, setRevealValue] = useState<string | null>(null);
-  const [revokeOpen, setRevokeOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (pendingKeyReveal) {
-      setRevealValue(pendingKeyReveal);
-    }
-  }, [pendingKeyReveal]);
-
-  function closeReveal() {
-    setRevealValue(null);
-    dismissKeyReveal();
-  }
-
-  function handleError(err: unknown, fallback: string) {
-    if (err instanceof RelayError) {
-      setError(`${err.code}: ${err.message}`);
-    } else if (err instanceof Error) {
-      setError(err.message);
-    } else {
-      setError(fallback);
-    }
-  }
-
-  async function onShow() {
-    setError(null);
-    if (credentials?.bundle.account_key) {
-      setRevealValue(credentials.bundle.account_key);
-      return;
-    }
-    setError(
-      '本地凭据里没有账户密钥（可能在之前的版本配的对）。请用"重置账户密钥"重新生成一个。',
-    );
-  }
+  const setKeyActionError = useConnection((s) => s.setKeyActionError);
 
   async function onRotate() {
-    setError(null);
-    setBusy(true);
+    setKeyActionError(null);
     try {
       await rotateAccountKey();
-      // reveal is triggered via pendingKeyReveal effect above
+      // The new key flows through pendingKeyReveal → AccountKeyModals.
     } catch (err) {
-      handleError(err, '轮换失败。');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onRevoke() {
-    setError(null);
-    setBusy(true);
-    try {
-      await revokeAccountKey();
-      setRevokeOpen(false);
-    } catch (err) {
-      handleError(err, '撤销失败。');
-    } finally {
-      setBusy(false);
+      setKeyActionError(formatKeyError(err, '轮换失败。'));
     }
   }
 
   return (
     <>
-      <Menu.Item leftSection={<IconKey size={14} />} onClick={onShow}>
+      <Menu.Item leftSection={<IconKey size={14} />} onClick={() => requestRevealKey()}>
         显示账户密钥
       </Menu.Item>
-      <Menu.Item leftSection={<IconRefresh size={14} />} onClick={onRotate} disabled={busy}>
+      <Menu.Item leftSection={<IconRefresh size={14} />} onClick={() => void onRotate()}>
         重置账户密钥
       </Menu.Item>
       <Menu.Item
         leftSection={<IconTrash size={14} />}
         color="red"
-        onClick={() => setRevokeOpen(true)}
+        onClick={() => setRevokeKeyOpen(true)}
       >
         撤销账户密钥（所有设备下线）
       </Menu.Item>
+    </>
+  );
+}
 
+/**
+ * Modals that pair with {@link AccountKeyMenu}. Render this ONCE,
+ * outside the Menu (typically inside AppShell.Main or next to the
+ * header), so the modal stays mounted after the dropdown closes.
+ *
+ * All state is in the zustand store; this component is effectively a
+ * view layer over `pendingKeyReveal` / `revokeKeyOpen` / `keyActionError`.
+ */
+export function AccountKeyModals() {
+  const pendingKeyReveal = useConnection((s) => s.pendingKeyReveal);
+  const dismissKeyReveal = useConnection((s) => s.dismissKeyReveal);
+  const revokeKeyOpen = useConnection((s) => s.revokeKeyOpen);
+  const setRevokeKeyOpen = useConnection((s) => s.setRevokeKeyOpen);
+  const revokeAccountKey = useConnection((s) => s.revokeAccountKey);
+  const keyActionError = useConnection((s) => s.keyActionError);
+  const setKeyActionError = useConnection((s) => s.setKeyActionError);
+
+  const [busy, setBusy] = useState(false);
+
+  async function onRevoke() {
+    setKeyActionError(null);
+    setBusy(true);
+    try {
+      await revokeAccountKey();
+    } catch (err) {
+      setKeyActionError(formatKeyError(err, '撤销失败。'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function closeRevoke() {
+    if (busy) return;
+    setRevokeKeyOpen(false);
+  }
+
+  return (
+    <>
       <Modal
-        opened={revealValue !== null}
-        onClose={closeReveal}
+        opened={pendingKeyReveal !== null}
+        onClose={dismissKeyReveal}
         title={
           <Group gap={6}>
             <IconKey size={18} />
@@ -132,7 +123,7 @@ export function AccountKeyMenu() {
       >
         <Stack gap="md">
           <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />}>
-            这串密钥相当于账户的主密码。任何拥有它的人都能登录你的账户。**只显示一次时请立刻保存到密码管理器**；之后想再看可以随时从这里"显示账户密钥"再调出。
+            这串密钥相当于账户的主密码。任何拥有它的人都能登录你的账户。请把它保存到密码管理器；之后想再看可以随时从这里"显示账户密钥"再调出。
           </Alert>
           <Box
             p="md"
@@ -146,33 +137,33 @@ export function AccountKeyMenu() {
               userSelect: 'all',
             }}
           >
-            {revealValue ?? ''}
+            {pendingKeyReveal ?? ''}
           </Box>
+          {keyActionError ? (
+            <Alert color="red" variant="light">
+              {keyActionError}
+            </Alert>
+          ) : null}
           <Group justify="flex-end">
-            <CopyButton value={revealValue ?? ''} timeout={1500}>
+            <CopyButton value={pendingKeyReveal ?? ''} timeout={1500}>
               {({ copied, copy }) => (
                 <Tooltip label={copied ? '已复制' : '点击复制'} withArrow>
-                  <Button variant="default" onClick={copy} disabled={!revealValue}>
+                  <Button variant="default" onClick={copy} disabled={!pendingKeyReveal}>
                     {copied ? '已复制' : '复制密钥'}
                   </Button>
                 </Tooltip>
               )}
             </CopyButton>
-            <Button color="ink.9" onClick={closeReveal}>
+            <Button color="ink.9" onClick={dismissKeyReveal}>
               我已保存
             </Button>
           </Group>
-          {error ? (
-            <Alert color="red" variant="light">
-              {error}
-            </Alert>
-          ) : null}
         </Stack>
       </Modal>
 
       <Modal
-        opened={revokeOpen}
-        onClose={() => setRevokeOpen(false)}
+        opened={revokeKeyOpen}
+        onClose={closeRevoke}
         title={
           <Group gap={6}>
             <IconAlertTriangle size={18} color="var(--mantine-color-red-7)" />
@@ -187,21 +178,69 @@ export function AccountKeyMenu() {
             这会立即作废账户密钥，并使<b>所有</b>设备的会话失效（包括 daemon）。
             之后只能在开发机上重新走配对流程才能进入账户。请确认这是你的本意。
           </Text>
-          {error ? (
+          {keyActionError ? (
             <Alert color="red" variant="light">
-              {error}
+              {keyActionError}
             </Alert>
           ) : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setRevokeOpen(false)} disabled={busy}>
+            <Button variant="default" onClick={closeRevoke} disabled={busy}>
               取消
             </Button>
-            <Button color="red" onClick={onRevoke} loading={busy}>
+            <Button color="red" onClick={() => void onRevoke()} loading={busy}>
               确认撤销
             </Button>
           </Group>
         </Stack>
       </Modal>
+
+      {/*
+        Inline banner for menu-time errors that occur while the reveal modal
+        is closed (e.g. "本地凭据里没有账户密钥" from requestRevealKey, or
+        a rotateAccountKey failure). Without this the error would be silent.
+      */}
+      {keyActionError && pendingKeyReveal === null && !revokeKeyOpen ? (
+        <KeyActionErrorBanner
+          message={keyActionError}
+          onDismiss={() => setKeyActionError(null)}
+        />
+      ) : null}
     </>
   );
+}
+
+function KeyActionErrorBanner({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <Box
+      style={{
+        position: 'fixed',
+        right: 16,
+        bottom: 16,
+        zIndex: 1000,
+        maxWidth: 360,
+      }}
+    >
+      <Alert
+        color="red"
+        variant="filled"
+        withCloseButton
+        onClose={onDismiss}
+        icon={<IconAlertTriangle size={16} />}
+      >
+        {message}
+      </Alert>
+    </Box>
+  );
+}
+
+function formatKeyError(err: unknown, fallback: string): string {
+  if (err instanceof RelayError) return `${err.code}: ${err.message}`;
+  if (err instanceof Error) return err.message;
+  return fallback;
 }

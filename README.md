@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/coding-anywhere.png" alt="Coding Anywhere" width="240" />
+</p>
+
 # coding-anywhere
 
 > Most AI coding agents run locally. **Coding Anywhere** lets you remotely

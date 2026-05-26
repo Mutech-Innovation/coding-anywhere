@@ -26,7 +26,8 @@ self.addEventListener('push', (event) => {
     body: payload.body || '',
     tag: payload.tag || 'coding-anywhere',
     data: { url: payload.url || '/' },
-    icon: payload.icon || undefined,
+    icon: payload.icon || '/favicon-192x192.png',
+    badge: payload.badge || '/favicon-32x32.png',
     renotify: true,
   };
   event.waitUntil(self.registration.showNotification(title, options));

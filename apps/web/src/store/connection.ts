@@ -29,6 +29,15 @@ interface ConnectionStore {
    * "save this somewhere safe" modal, then call dismissKeyReveal().
    */
   pendingKeyReveal: string | null;
+  /**
+   * UI flag for the revoke-key confirmation modal. Lives in the store
+   * because the trigger (a Menu.Item) and the modal render in different
+   * subtrees: the Menu.Dropdown subtree unmounts on item click, so any
+   * component-local useState there gets wiped before the modal can render.
+   */
+  revokeKeyOpen: boolean;
+  /** Last error from a key-management action (show/rotate/revoke). */
+  keyActionError: string | null;
 
   // Actions
   hydrate(): Promise<void>;
@@ -46,6 +55,14 @@ interface ConnectionStore {
   revokeAccountKey(): Promise<void>;
   /** Mark the pending key as shown; clears it from store state. */
   dismissKeyReveal(): void;
+  /**
+   * Surface the cached account key into pendingKeyReveal so the reveal
+   * modal opens. Sets keyActionError if the local credentials lack a key
+   * (e.g. paired on an older client).
+   */
+  requestRevealKey(): void;
+  setRevokeKeyOpen(open: boolean): void;
+  setKeyActionError(message: string | null): void;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
 }
@@ -57,6 +74,8 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
   lastError: null,
   refreshTimer: null,
   pendingKeyReveal: null,
+  revokeKeyOpen: false,
+  keyActionError: null,
 
   async hydrate() {
     const creds = loadCredentials();
@@ -86,6 +105,27 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
 
   dismissKeyReveal() {
     set({ pendingKeyReveal: null });
+  },
+
+  requestRevealKey() {
+    const { credentials } = get();
+    const key = credentials?.bundle.account_key;
+    if (key) {
+      set({ pendingKeyReveal: key, keyActionError: null });
+      return;
+    }
+    set({
+      keyActionError:
+        '本地凭据里没有账户密钥（可能在之前的版本配的对）。请用"重置账户密钥"重新生成一个。',
+    });
+  },
+
+  setRevokeKeyOpen(open) {
+    set({ revokeKeyOpen: open, keyActionError: open ? null : get().keyActionError });
+  },
+
+  setKeyActionError(message) {
+    set({ keyActionError: message });
   },
 
   async signInWithAccountKey({ relay_url, account_key, device_label }) {
@@ -135,6 +175,9 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
       status: 'disconnected',
       lastError: null,
       refreshTimer: null,
+      revokeKeyOpen: false,
+      keyActionError: null,
+      pendingKeyReveal: null,
     });
   },
 
@@ -149,6 +192,9 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
       status: 'disconnected',
       lastError: null,
       refreshTimer: null,
+      revokeKeyOpen: false,
+      keyActionError: null,
+      pendingKeyReveal: null,
     });
   },
 

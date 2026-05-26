@@ -33,7 +33,8 @@ import { useEffect, useState } from 'react';
 
 import { AGENTS, listAgents } from '@coding-anywhere/agents';
 
-import { AccountKeyMenu } from './components/AccountKeyMenu.js';
+import { AccountKeyMenu, AccountKeyModals } from './components/AccountKeyMenu.js';
+import { BrandLogo } from './components/BrandLogo.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { ConnectionStatus } from './components/ConnectionStatus.js';
 import { DiffPanel } from './components/DiffPanel.js';
@@ -107,26 +108,8 @@ function MainShell() {
       <AppShell.Header className="cw-hairline-b" withBorder={false}>
         <Group h="100%" px="lg" justify="space-between">
           <Group gap="md">
-            <Group gap={8}>
-              <Box
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  background: 'light-dark(#0e0e10, #e7ecf3)',
-                  color: 'light-dark(#fff, #0b0f17)',
-                  display: 'grid',
-                  placeItems: 'center',
-                  fontFamily:
-                    '"JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace',
-                  fontSize: 14,
-                  fontWeight: 700,
-                  letterSpacing: '-0.04em',
-                }}
-                aria-hidden
-              >
-                CA
-              </Box>
+            <Group gap={10}>
+              <BrandLogo height={40} />
               <Stack gap={0}>
                 <Text fw={700} size="sm" lh={1.1}>
                   Coding Anywhere
@@ -174,6 +157,12 @@ function MainShell() {
           </Group>
         </Group>
       </AppShell.Header>
+      {/*
+        Mounted as a sibling to <AppShell.Header> so the Menu.Dropdown
+        unmounting doesn't take the modals with it. See AccountKeyMenu.tsx
+        for the full rationale.
+      */}
+      <AccountKeyModals />
       <AppShell.Main
         style={{
           display: 'flex',

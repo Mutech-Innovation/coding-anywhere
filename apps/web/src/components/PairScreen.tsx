@@ -29,6 +29,7 @@ import {
 } from '@coding-anywhere/protocol';
 
 import { useConnection } from '../store/connection.js';
+import { BrandLogo } from './BrandLogo.js';
 
 const DEFAULT_RELAY_URL = 'http://localhost:8443';
 const DEVICE_LABEL_KEY = 'coding-anywhere/device-label';
@@ -151,7 +152,10 @@ export function PairScreen() {
         }}
       >
         <Group justify="space-between">
-          <Text inherit>CODING ANYWHERE · 远程开发控制台</Text>
+          <Group gap={8}>
+            <BrandLogo height={22} />
+            <Text inherit>CODING ANYWHERE · 远程开发控制台</Text>
+          </Group>
           <Group gap={6}>
             <Box
               style={{

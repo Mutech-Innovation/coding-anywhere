@@ -143,7 +143,9 @@ export function WelcomeTab({ onNavigate }: WelcomeTabProps) {
           </Box>
 
           {/* "它到底是什么" section */}
-          <SectionTitle char="是" title="它到底是什么" />
+          <Title order={2} fw={800} mt={16} style={{ letterSpacing: '-0.01em' }}>
+            它到底是什么
+          </Title>
           <Box className="cw-feature-grid">
             <FeatureCard
               index="01"
@@ -243,32 +245,6 @@ export function WelcomeTab({ onNavigate }: WelcomeTabProps) {
   );
 }
 
-function SectionTitle({ char, title }: { char: string; title: string }) {
-  return (
-    <Group gap="md" mt={16}>
-      <Box
-        style={{
-          width: 44,
-          height: 44,
-          borderRadius: 6,
-          background: 'light-dark(#0e0e10, #e7ecf3)',
-          color: 'light-dark(#fff, #0b0f17)',
-          display: 'grid',
-          placeItems: 'center',
-          fontSize: 20,
-          fontWeight: 700,
-        }}
-        aria-hidden
-      >
-        {char}
-      </Box>
-      <Title order={2} fw={800} style={{ letterSpacing: '-0.01em' }}>
-        {title}
-      </Title>
-    </Group>
-  );
-}
-
 interface FeatureCardProps {
   index: string;
   eyebrow: string;
@@ -347,6 +323,26 @@ function CtaCard(props: { eyebrow: string; title: string; desc: string; href: st
 }
 
 /** Solid primary button (CodeWhale-style: black in light, white in dark). */
+// Shared geometry for the hero CTA buttons so PrimaryButton / SecondaryButton
+// match pixel-for-pixel regardless of children (icon vs no icon, etc).
+const HERO_BUTTON_HEIGHT = 44;
+
+const heroButtonBase: React.CSSProperties = {
+  boxSizing: 'border-box',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 8,
+  height: HERO_BUTTON_HEIGHT,
+  padding: '0 20px',
+  borderRadius: 6,
+  fontSize: 14,
+  lineHeight: 1,
+  fontWeight: 600,
+  letterSpacing: 0.1,
+  cursor: 'pointer',
+};
+
 function PrimaryButton({
   children,
   onClick,
@@ -359,18 +355,10 @@ function PrimaryButton({
       type="button"
       onClick={onClick}
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '12px 20px',
+        ...heroButtonBase,
         background: 'light-dark(#0e0e10, #e7ecf3)',
         color: 'light-dark(#fff, #0b0f17)',
         border: '1px solid light-dark(#0e0e10, #e7ecf3)',
-        borderRadius: 6,
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: 'pointer',
-        letterSpacing: 0.1,
       }}
     >
       {children}
@@ -390,18 +378,10 @@ function SecondaryButton({
       type="button"
       onClick={onClick}
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '12px 20px',
+        ...heroButtonBase,
         background: 'transparent',
         color: 'var(--mantine-color-text)',
         border: '1px solid var(--mantine-color-default-border)',
-        borderRadius: 6,
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: 'pointer',
-        letterSpacing: 0.1,
       }}
     >
       {children}
