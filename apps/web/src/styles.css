@@ -1,3 +1,5 @@
+/* CodeWhale-inspired global styles. */
+
 html,
 body,
 #root {
@@ -10,12 +12,309 @@ body {
   background: var(--mantine-color-body);
   color: var(--mantine-color-text);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    'Inter', 'PingFang SC', 'Source Han Sans SC', 'Noto Sans SC', ui-sans-serif, system-ui,
+    -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings:
+    'cv11' on,
+    'ss01' on,
+    'ss03' on;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.005em;
 }
 
 #root {
   display: flex;
   flex-direction: column;
+}
+
+a {
+  color: var(--mantine-color-brand-8);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  font-weight: 600;
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* ===== CodeWhale shared utilities ===== */
+
+/* Hairline 1px border that respects color scheme. */
+.cw-hairline {
+  border: 1px solid light-dark(#e5e7eb, #222a36);
+}
+.cw-hairline-b {
+  border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
+}
+.cw-hairline-t {
+  border-top: 1px solid light-dark(#e5e7eb, #222a36);
+}
+
+/* "01 · Label" eyebrow text used above section titles. */
+.cw-eyebrow {
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: light-dark(#6b7280, #8a93a3);
+  font-weight: 600;
+}
+
+.cw-eyebrow-accent {
+  color: var(--mantine-color-brand-8);
+}
+
+/* Pale blue tag (CodeWhale "V4 · 1M CONTEXT"). */
+.cw-tag-soft {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: light-dark(#e9eefe, #1a2148);
+  color: var(--mantine-color-brand-8);
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 3px;
+}
+
+/* Outlined tag (CodeWhale "MIT LICENSED"). */
+.cw-tag-outline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid light-dark(#0e0e10, #e7ecf3);
+  color: light-dark(#0e0e10, #e7ecf3);
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: transparent;
+}
+
+/* Dark code block used in install hero. */
+.cw-code-block {
+  background: #0e0e10;
+  color: #e7ecf3;
+  border-radius: 8px;
+  padding: 20px 24px;
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-x: auto;
+  position: relative;
+}
+.cw-code-block::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(90deg, #1a3dbf 0%, #3d54ee 40%, #16a34a 100%);
+}
+.cw-code-comment {
+  color: #94a6ff;
+}
+.cw-code-prompt {
+  color: #6b7280;
+  user-select: none;
+  margin-right: 8px;
+}
+.cw-code-path {
+  color: #94a6ff;
+}
+
+/* Hero giant heading. */
+.cw-hero-title {
+  font-size: clamp(36px, 5.6vw, 72px);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  font-weight: 800;
+  margin: 0;
+  color: light-dark(#0e0e10, #e7ecf3);
+}
+
+/* Inline accent word inside body copy. */
+.cw-accent {
+  color: var(--mantine-color-brand-8);
+  font-weight: 700;
+}
+
+/* Big number used in stats grid. */
+.cw-bignum {
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: clamp(40px, 4.5vw, 56px);
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: light-dark(#0e0e10, #e7ecf3);
+}
+
+/* Dark CTA section background (CodeWhale's "这是一个小项目"). */
+.cw-inverse {
+  background: #0e0e10;
+  color: #ffffff;
+}
+.cw-inverse .cw-hero-title,
+.cw-inverse h1,
+.cw-inverse h2 {
+  color: #ffffff;
+}
+
+/* Marquee / ticker. */
+.cw-ticker {
+  display: flex;
+  overflow: hidden;
+  align-items: stretch;
+  border-top: 1px solid light-dark(#e5e7eb, #222a36);
+  border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
+  background: light-dark(#ffffff, #0b0f17);
+}
+.cw-ticker-tag {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  background: #0e0e10;
+  color: #ffffff;
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+.cw-ticker-tag::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.25);
+}
+.cw-ticker-track {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cw-ticker-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 28px;
+  padding: 8px 16px;
+  animation: cw-ticker-scroll 60s linear infinite;
+  font-family:
+    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: light-dark(#272a31, #e7ecf3);
+}
+.cw-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cw-ticker-kind {
+  color: var(--mantine-color-brand-8);
+  font-weight: 700;
+}
+.cw-ticker-time {
+  color: light-dark(#6b7280, #8a93a3);
+}
+.cw-ticker-sep {
+  color: light-dark(#9aa1ac, #4b5563);
+}
+@keyframes cw-ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* N-column feature row used in hero / welcome. */
+.cw-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid light-dark(#e5e7eb, #222a36);
+  border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
+}
+.cw-feature-grid > * + * {
+  border-left: 1px solid light-dark(#e5e7eb, #222a36);
+}
+.cw-feature-grid.cw-feature-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 720px) {
+  .cw-feature-grid.cw-feature-grid--four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cw-feature-grid.cw-feature-grid--four > *:nth-child(n + 3) {
+    border-top: 1px solid light-dark(#e5e7eb, #222a36);
+  }
+  .cw-feature-grid.cw-feature-grid--four > *:nth-child(2n + 1) {
+    border-left: 0;
+  }
+}
+@media (max-width: 720px) {
+  .cw-feature-grid {
+    grid-template-columns: 1fr;
+  }
+  .cw-feature-grid > * + * {
+    border-left: 0;
+    border-top: 1px solid light-dark(#e5e7eb, #222a36);
+  }
+  .cw-feature-grid.cw-feature-grid--four {
+    grid-template-columns: 1fr;
+  }
+  .cw-feature-grid.cw-feature-grid--four > *:nth-child(n + 2) {
+    border-left: 0;
+    border-top: 1px solid light-dark(#e5e7eb, #222a36);
+  }
+}
+
+/* Tabs override: CodeWhale-style underline tabs. */
+.cw-tabs .mantine-Tabs-list {
+  border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
+  gap: 0;
+}
+.cw-tabs .mantine-Tabs-tab {
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: light-dark(#4b5563, #8a93a3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.cw-tabs .mantine-Tabs-tab:hover {
+  color: light-dark(#0e0e10, #e7ecf3);
+  background: transparent;
+}
+.cw-tabs .mantine-Tabs-tab[data-active='true'] {
+  color: light-dark(#0e0e10, #e7ecf3);
+  border-bottom-color: light-dark(#0e0e10, #e7ecf3);
+  background: transparent;
 }

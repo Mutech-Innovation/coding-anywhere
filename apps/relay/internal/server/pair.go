@@ -204,7 +204,15 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the account: prefer the claimer's existing account, then the
 	// initiator's, otherwise create a fresh one.
-	var accountID string
+	//
+	// freshAccountKey is set only when we just created the account; it gets
+	// surfaced once (in plaintext) so the operator can paste it on another
+	// device later instead of repeating the pairing dance. We never persist
+	// the plaintext — only its SHA-256 digest lives in SQLite.
+	var (
+		accountID       string
+		freshAccountKey string
+	)
 	switch {
 	case claimerAccountID != nil && p.InitiatorAccountID != nil && *claimerAccountID != *p.InitiatorAccountID:
 		writeError(w, http.StatusConflict, "account_mismatch", "initiator and claimer belong to different accounts")
@@ -220,6 +228,18 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", "create_account")
 			return
 		}
+		key, err := randomAccountKey()
+		if err != nil {
+			s.logger.Error("randomAccountKey", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "key")
+			return
+		}
+		if err := s.store.SetAccountKey(r.Context(), accountID, hashAccountKey(key)); err != nil {
+			s.logger.Error("SetAccountKey", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "key_persist")
+			return
+		}
+		freshAccountKey = key
 	}
 
 	// Materialise both devices.
@@ -271,6 +291,13 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("issueCredentials claimer", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "issue")
 		return
+	}
+	// Surface the freshly minted account key to BOTH ends of the pair so
+	// either side can back it up. After this response we have no way of
+	// reconstructing the plaintext.
+	if freshAccountKey != "" {
+		initiatorCreds.AccountKey = freshAccountKey
+		claimerCreds.AccountKey = freshAccountKey
 	}
 	credJSON, err := json.Marshal(initiatorCreds)
 	if err != nil {

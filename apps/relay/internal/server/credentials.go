@@ -18,6 +18,10 @@ import (
 // device. The access token is short-lived; the refresh token is opaque, only
 // shown once, stored hashed, and exchanged for new access tokens via
 // POST /v1/auth/refresh.
+//
+// AccountKey is populated only on first-time pairing (when the account is
+// newly created) and after an explicit rotate. It is omitted on add-device
+// pairs, /v1/auth/refresh, and /v1/auth/login responses.
 type CredentialBundle struct {
 	AccountID             string `json:"account_id"`
 	DeviceID              string `json:"device_id"`
@@ -28,6 +32,7 @@ type CredentialBundle struct {
 	RefreshToken          string `json:"refresh_token"`
 	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
 	RelayProtocolVersion  int    `json:"relay_protocol_version"`
+	AccountKey            string `json:"account_key,omitempty"`
 }
 
 const protocolVersion = 1
@@ -83,6 +88,51 @@ func randomBase64URL(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// AccountKeyPrefix is the human-recognisable prefix on every account key.
+// Format: `ca_key_<base64url(32 random bytes)>`.
+const AccountKeyPrefix = "ca_key_"
+
+// randomAccountKey mints a fresh account key in the canonical
+// `ca_key_<43 char base64url>` shape. 32 random bytes give us ~256 bits of
+// entropy, plenty for a long-lived password-equivalent secret.
+func randomAccountKey() (string, error) {
+	body, err := randomBase64URL(32)
+	if err != nil {
+		return "", err
+	}
+	return AccountKeyPrefix + body, nil
+}
+
+// hashAccountKey returns the SHA-256 hex digest used to look up an account
+// key on the relay side. The plaintext is never persisted.
+func hashAccountKey(plain string) string {
+	return sha256Hex(plain)
+}
+
+// validAccountKeyShape does a cheap structural check before hitting the
+// database. It only ensures the canonical prefix and a reasonable length
+// for the base64url body; cryptographic verification happens by lookup.
+func validAccountKeyShape(plain string) bool {
+	if len(plain) < len(AccountKeyPrefix)+32 {
+		return false
+	}
+	if plain[:len(AccountKeyPrefix)] != AccountKeyPrefix {
+		return false
+	}
+	body := plain[len(AccountKeyPrefix):]
+	for _, r := range body {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // sha256Hex hashes the input as SHA-256 and returns the lowercase hex digest.

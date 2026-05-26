@@ -18,6 +18,12 @@ export const CredentialBundle = z.object({
   refresh_token: z.string(),
   refresh_token_expires_in: z.number(),
   relay_protocol_version: z.number(),
+  /**
+   * Long-lived account key (format: `ca_key_<43 char base64url>`). Returned
+   * once at account creation and after explicit rotate; absent otherwise.
+   * Persist it; other clients use it to log in without re-pairing.
+   */
+  account_key: z.string().optional(),
 });
 export type CredentialBundle = z.infer<typeof CredentialBundle>;
 
@@ -44,6 +50,30 @@ export const RefreshResponse = z.object({
   access_token_expires_in: z.number(),
 });
 export type RefreshResponse = z.infer<typeof RefreshResponse>;
+
+export const LoginResponse = z.object({
+  credentials: CredentialBundle,
+});
+export type LoginResponse = z.infer<typeof LoginResponse>;
+
+export const RotateKeyResponse = z.object({
+  account_key: z.string(),
+});
+export type RotateKeyResponse = z.infer<typeof RotateKeyResponse>;
+
+/**
+ * Canonical prefix on every account key. Used for cheap shape validation in
+ * UI forms before hitting the network.
+ */
+export const ACCOUNT_KEY_PREFIX = 'ca_key_';
+
+/** Cheap structural check; full validation happens server-side. */
+export function isAccountKeyShape(value: string): boolean {
+  if (!value.startsWith(ACCOUNT_KEY_PREFIX)) return false;
+  const body = value.slice(ACCOUNT_KEY_PREFIX.length);
+  if (body.length < 32) return false;
+  return /^[A-Za-z0-9_-]+$/.test(body);
+}
 
 /**
  * Maps `ws[s]://` → `http[s]://` so the same configured relay URL works for
@@ -147,5 +177,55 @@ export class PairingClient {
 
   refresh(refresh_token: string, opts?: RequestOpts) {
     return postJSON(`${this.base}/v1/auth/refresh`, { refresh_token }, RefreshResponse, opts);
+  }
+
+  /**
+   * Trade an account key for a freshly issued credential bundle. Used by
+   * browsers that already have a long-lived key (from a previous pair, or
+   * shown by `coding-anywhere-daemon key show`).
+   */
+  login(
+    args: { account_key: string; device_label: string; device_kind?: DeviceKind },
+    opts?: RequestOpts,
+  ) {
+    return postJSON(
+      `${this.base}/v1/auth/login`,
+      { device_kind: 'client' as DeviceKind, ...args },
+      LoginResponse,
+      opts,
+    );
+  }
+
+  /**
+   * Rotate the account key. Returns the new plaintext value, which must be
+   * stored by the caller — the relay never shows it again.
+   */
+  rotateAccountKey(opts: RequestOpts & { bearer: string }) {
+    return postJSON(`${this.base}/v1/auth/key/rotate`, {}, RotateKeyResponse, opts);
+  }
+
+  /**
+   * Clear the account key AND revoke every refresh token on the account.
+   * Use only when the key (or a device's credentials) is suspected
+   * compromised; recovery requires a fresh pair flow.
+   */
+  async revokeAccountKey(opts: RequestOpts & { bearer: string }): Promise<void> {
+    const res = await fetch(`${this.base}/v1/auth/key`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${opts.bearer}` },
+      signal: opts.signal,
+    });
+    if (!res.ok && res.status !== 204) {
+      let code = 'http_error';
+      let message = res.statusText;
+      try {
+        const body = (await res.json()) as { code?: string; message?: string };
+        if (body.code) code = body.code;
+        if (body.message) message = body.message;
+      } catch {
+        // ignore
+      }
+      throw new RelayError(res.status, code, message);
+    }
   }
 }

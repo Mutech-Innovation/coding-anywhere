@@ -21,6 +21,13 @@ import (
 // Bundle mirrors apps/relay/internal/server.CredentialBundle but lives in the
 // daemon. Fields here are everything the daemon needs to dial the relay and
 // later refresh its access token.
+//
+// AccountKey is the long-lived `ca_key_…` secret used by other clients
+// (browsers, phones) to log into the same account without going through the
+// pairing-code flow again. The daemon is the canonical place to keep it
+// because the credentials file is the operator's source of truth; if a
+// browser loses its localStorage, the operator can run
+// `coding-anywhere-daemon key show` and paste the value into the new browser.
 type Bundle struct {
 	RelayURL              string    `json:"relay_url"`
 	AccountID             string    `json:"account_id"`
@@ -32,6 +39,7 @@ type Bundle struct {
 	RefreshToken          string    `json:"refresh_token"`
 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at"`
 	RelayProtocolVersion  int       `json:"relay_protocol_version"`
+	AccountKey            string    `json:"account_key,omitempty"`
 }
 
 // Validate checks that the bundle has the fields required to dial the relay.

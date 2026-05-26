@@ -154,7 +154,13 @@ export function ChatPanel() {
                     cursor: 'pointer',
                     borderRadius: 6,
                     background:
-                      activeId === s.session.id ? 'var(--mantine-color-brand-9)' : 'transparent',
+                      activeId === s.session.id
+                        ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                        : 'transparent',
+                    color:
+                      activeId === s.session.id
+                        ? 'light-dark(var(--mantine-color-brand-8), #ffffff)'
+                        : undefined,
                   }}
                 >
                   <IconMessageCircle size={14} />
@@ -163,7 +169,7 @@ export function ChatPanel() {
                       {s.session.title || s.session.cwd}
                     </Text>
                     <Text size="xs" c="dimmed" truncate>
-                      {s.session.agent_id} · {s.session.cwd}
+                      {s.session.agent_id}
                     </Text>
                   </Stack>
                   <Badge size="xs" color={STATUS_COLOR[s.session.status] ?? 'gray'} variant="light">
@@ -426,7 +432,8 @@ function DirectoryNode({
         style={{
           cursor: 'pointer',
           paddingLeft: depth * 12 + 4,
-          background: active ? 'var(--mantine-color-brand-9)' : 'transparent',
+          background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
+          color: active ? 'light-dark(var(--mantine-color-brand-8), #ffffff)' : undefined,
           borderRadius: 4,
         }}
       >
@@ -557,7 +564,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
             {session.session.title || session.session.cwd}
           </Text>
           <Text size="xs" c="dimmed" truncate>
-            {session.session.agent_id} · {session.session.cwd}
+            {session.session.agent_id}
           </Text>
         </Stack>
         <Group gap="xs">
@@ -578,11 +585,21 @@ function ChatView({ sessionId }: { sessionId: string }) {
             </Tooltip>
           ) : null}
           {session.usage ? <UsagePill usage={session.usage} /> : null}
-          <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
-            {status}
-          </Badge>
+          {status === 'awaiting_permission' ? (
+            <Tooltip
+              label={'智能体在等待授权 — 请在下方"需要授权"卡片里点允许或拒绝'}
+            >
+              <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
+                {status}
+              </Badge>
+            </Tooltip>
+          ) : (
+            <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
+              {status}
+            </Badge>
+          )}
           {status === 'thinking' || status === 'awaiting_permission' ? (
-            <Tooltip label="Cancel">
+            <Tooltip label="取消">
               <ActionIcon variant="subtle" color="red" onClick={() => void cancel(sessionId)}>
                 <IconPlayerStop size={14} />
               </ActionIcon>
@@ -600,14 +617,6 @@ function ChatView({ sessionId }: { sessionId: string }) {
         offsetScrollbars
       >
         <Stack gap="sm" px="xs">
-          {pendingPermissions.map((p) => (
-            <PermissionCard
-              key={p.requestId}
-              params={p.params}
-              onAllow={() => void resolvePermission(sessionId, p.requestId, { decision: 'allow' })}
-              onDeny={() => void resolvePermission(sessionId, p.requestId, { decision: 'deny' })}
-            />
-          ))}
           {transcriptItems.map((item) =>
             item.type === 'message' ? (
               <MessageBubble key={`message-${item.id}`} message={item.message} />
@@ -617,6 +626,20 @@ function ChatView({ sessionId }: { sessionId: string }) {
           )}
         </Stack>
       </ScrollArea>
+
+      {pendingPermissions.length > 0 ? (
+        <Stack gap="xs" px="xs" mt="sm">
+          {pendingPermissions.map((p) => (
+            <PermissionCard
+              key={p.requestId}
+              params={p.params}
+              onResolve={(decision) =>
+                void resolvePermission(sessionId, p.requestId, decision)
+              }
+            />
+          ))}
+        </Stack>
+      ) : null}
 
       {error ? (
         <Alert color="red" variant="light" radius="md">
@@ -798,6 +821,12 @@ function CommandInput({
     [commands, slashOpen, filter],
   );
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  // Track IME composition so Enter does not submit while the user is still
+  // picking pinyin candidates / Japanese kana / Korean jamo etc. We watch
+  // both React's composition events (state-based) AND the native isComposing
+  // flag / keyCode 229 (event-based) because some IMEs fire keydown for
+  // candidate selection BEFORE the React state has flushed.
+  const composingRef = useRef(false);
   return (
     <Stack gap={4} px="xs">
       {matches.length > 0 ? (
@@ -835,14 +864,29 @@ function CommandInput({
       <Group gap="xs" align="flex-end">
         <Textarea
           ref={ref}
-          placeholder="Ask Devin... (try /plan, /clear, /fork)"
+          placeholder="问问 Devin…(试试 /plan、/clear、/fork)"
           autosize
           minRows={1}
           maxRows={6}
           value={value}
           style={{ flex: 1 }}
           onChange={(e) => onChange(e.currentTarget.value)}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
           onKeyDown={(e) => {
+            // Skip Enter handling while an IME is composing — that Enter
+            // belongs to the candidate picker, not us.
+            if (
+              composingRef.current ||
+              e.nativeEvent.isComposing ||
+              e.keyCode === 229
+            ) {
+              return;
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               void onSubmit();
@@ -850,7 +894,7 @@ function CommandInput({
           }}
         />
         <Button leftSection={<IconSend size={14} />} onClick={() => void onSubmit()} loading={busy}>
-          Send
+          发送
         </Button>
       </Group>
     </Stack>
@@ -865,13 +909,31 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
   if (isThought) return <ThoughtBubble message={message} />;
 
+  // CodeWhale-style bubbles: indigo on user side, hairline white card on
+  // agent side. System messages get a flatter, more muted look so they
+  // recede into the timeline.
+  const userStyle: React.CSSProperties = {
+    background: 'var(--mantine-color-brand-8)',
+    color: '#ffffff',
+    border: '1px solid var(--mantine-color-brand-8)',
+  };
+  const agentStyle: React.CSSProperties = {
+    background: 'light-dark(#ffffff, var(--mantine-color-dark-6))',
+    color: 'var(--mantine-color-text)',
+    border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+  };
+  const systemStyle: React.CSSProperties = {
+    background: 'light-dark(#f5f6f8, var(--mantine-color-dark-5))',
+    color: 'var(--mantine-color-dimmed)',
+    border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+  };
+
   return (
     <Group justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start">
       <Card
         radius="md"
         padding="sm"
-        bg={isUser ? 'brand.7' : isSystem ? 'dark.6' : 'dark.7'}
-        c={isUser ? 'white' : undefined}
+        style={isUser ? userStyle : isSystem ? systemStyle : agentStyle}
         miw={isUser ? 100 : 200}
         maw="80%"
       >
@@ -895,11 +957,13 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
       <Card
         radius="md"
         padding="sm"
-        bg="dark.7"
         miw={220}
         maw="80%"
-        withBorder
-        style={{ opacity: 0.72 }}
+        style={{
+          background: 'light-dark(#fafafa, var(--mantine-color-dark-7))',
+          border: '1px dashed light-dark(#d1d6de, var(--mantine-color-dark-4))',
+          color: 'var(--mantine-color-text)',
+        }}
       >
         <Group gap="xs" justify="space-between" wrap="nowrap">
           <Group gap="xs" wrap="nowrap">
@@ -907,7 +971,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
               <IconBrain size={12} />
             </ThemeIcon>
             <Text size="xs" c="dimmed" fw={600}>
-              Thought process
+              思考过程
             </Text>
           </Group>
           <Button
@@ -917,7 +981,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
             leftSection={expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
             onClick={() => setExpanded((x) => !x)}
           >
-            {expanded ? 'Hide' : 'Show'}
+            {expanded ? '收起' : '展开'}
           </Button>
         </Group>
         {expanded ? (
@@ -1112,15 +1176,19 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
   const status = call.status ?? 'pending';
   const hasDetails =
     call.rawInput != null || call.rawOutput != null || (call.content && call.content.length > 0);
+  // Hairline white card to blend into the timeline; terminal-style output
+  // lives inside a dark mono block so the "this is shell output" cue is
+  // preserved without dominating the whole card visually.
   return (
     <Card
       padding="sm"
       radius="md"
-      withBorder
       maw="92%"
       style={{
         alignSelf: 'flex-start',
-        background: 'var(--mantine-color-dark-7)',
+        background: 'light-dark(#ffffff, var(--mantine-color-dark-6))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        color: 'var(--mantine-color-text)',
       }}
     >
       <Group gap="xs" justify="space-between" wrap="nowrap">
@@ -1128,7 +1196,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           <ThemeIcon size="sm" variant="light" color={TOOL_STATUS_COLOR[status] ?? 'gray'}>
             {iconForKind(call.kind)}
           </ThemeIcon>
-          <Text size="sm" fw={500} truncate>
+          <Text size="sm" fw={600} truncate>
             {title}
           </Text>
           <Badge size="xs" color={TOOL_STATUS_COLOR[status] ?? 'gray'} variant="light">
@@ -1136,7 +1204,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           </Badge>
         </Group>
         {hasDetails ? (
-          <Tooltip label={expanded ? 'Hide details' : 'Show details'}>
+          <Tooltip label={expanded ? '收起详情' : '展开详情'}>
             <ActionIcon variant="subtle" size="sm" onClick={() => setExpanded((x) => !x)}>
               <IconArrowRight
                 size={12}
@@ -1156,7 +1224,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
               key={i}
               size="xs"
               variant="light"
-              color="blue"
+              color="brand"
               leftSection={<IconFileText size={10} />}
             >
               {shortenPath(loc.path)}
@@ -1172,27 +1240,51 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           ))}
           {call.rawInput != null ? (
             <Box>
-              <Text size="xs" c="dimmed">
+              <Text size="xs" c="dimmed" mb={4}>
                 input
               </Text>
-              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-                {safeStringify(call.rawInput)}
-              </Code>
+              <RawJSONBlock value={safeStringify(call.rawInput)} />
             </Box>
           ) : null}
           {call.rawOutput != null ? (
             <Box>
-              <Text size="xs" c="dimmed">
+              <Text size="xs" c="dimmed" mb={4}>
                 output
               </Text>
-              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-                {safeStringify(call.rawOutput)}
-              </Code>
+              <RawJSONBlock value={safeStringify(call.rawOutput)} />
             </Box>
           ) : null}
         </Stack>
       ) : null}
     </Card>
+  );
+}
+
+/**
+ * Compact mono code block used for tool-call input/output JSON. Light theme
+ * gets a near-white surface with a hairline; dark theme inherits Mantine's
+ * surface.
+ */
+function RawJSONBlock({ value }: { value: string }) {
+  return (
+    <Box
+      style={{
+        background: 'light-dark(#f5f6f8, var(--mantine-color-dark-7))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        borderRadius: 6,
+        padding: '8px 10px',
+        fontFamily:
+          '"JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 11,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--mantine-color-text)',
+        maxHeight: 280,
+        overflow: 'auto',
+      }}
+    >
+      {value}
+    </Box>
   );
 }
 
@@ -1240,27 +1332,50 @@ function shortenPath(p: string): string {
   return '…/' + p.slice(idx + 1);
 }
 
+/**
+ * Renders an opaque/near-black mono block — used for shell-style output
+ * inside ToolCallCard. Matches the "cw-code-block" CodeWhale install
+ * snippet used on PairScreen, so the visual language stays consistent.
+ */
+function TerminalBlock({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      style={{
+        background: '#0e0e10',
+        color: '#e7ecf3',
+        border: '1px solid #1f2330',
+        borderRadius: 6,
+        padding: '10px 12px',
+        fontFamily:
+          '"JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 12,
+        lineHeight: 1.55,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        maxHeight: 360,
+        overflow: 'auto',
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
 function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
   if (block.type === 'content') {
     const inner = (block as { content?: { type?: string; text?: string } }).content;
     if (inner?.type === 'text' && typeof inner.text === 'string') {
-      return (
-        <Text size="xs" ff="monospace" style={{ whiteSpace: 'pre-wrap' }}>
-          {inner.text}
-        </Text>
-      );
+      return <TerminalBlock>{inner.text}</TerminalBlock>;
     }
   }
   if (block.type === 'diff') {
     const d = block as { path: string; oldText?: string | null; newText: string };
     return (
       <Box>
-        <Text size="xs" c="dimmed">
+        <Text size="xs" c="dimmed" mb={4}>
           diff · {d.path}
         </Text>
-        <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-          {d.newText}
-        </Code>
+        <TerminalBlock>{d.newText}</TerminalBlock>
       </Box>
     );
   }
@@ -1275,52 +1390,157 @@ function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
       </Group>
     );
   }
-  return (
-    <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-      {safeStringify(block)}
-    </Code>
-  );
+  return <TerminalBlock>{safeStringify(block)}</TerminalBlock>;
+}
+
+/**
+ * ACP option kinds we render with distinct visual weight. Unknown kinds fall
+ * back to a neutral grey button so future agents (or non-Devin agents) keep
+ * working without UI changes.
+ */
+type AcpOptionKind =
+  | 'allow_once'
+  | 'allow_always'
+  | 'reject_once'
+  | 'reject_always'
+  | string;
+
+interface AcpOption {
+  optionId: string;
+  name: string;
+  kind?: AcpOptionKind;
+}
+
+function optionColor(kind?: string): string {
+  if (kind === 'allow_once') return 'green';
+  if (kind === 'allow_always') return 'teal';
+  if (kind === 'reject_once' || kind === 'reject_always') return 'red';
+  return 'gray';
+}
+
+function optionVariant(kind?: string): 'filled' | 'light' | 'default' {
+  if (kind === 'allow_once') return 'filled';
+  if (kind?.startsWith('reject')) return 'light';
+  return 'default';
+}
+
+function optionIcon(kind?: string) {
+  if (kind?.startsWith('allow')) return <IconCheck size={12} />;
+  if (kind?.startsWith('reject')) return <IconX size={12} />;
+  return null;
+}
+
+function parseAcpPermissionParams(params: Record<string, unknown>): {
+  title: string | null;
+  command: string | null;
+  description: string | null;
+  options: AcpOption[];
+} {
+  const toolCall = (params.toolCall ?? {}) as Record<string, unknown>;
+  const rawInput = (toolCall.rawInput ?? {}) as Record<string, unknown>;
+  const title = typeof toolCall.title === 'string' ? (toolCall.title as string) : null;
+  const command = typeof rawInput.command === 'string' ? (rawInput.command as string) : null;
+  const description =
+    typeof rawInput.description === 'string' ? (rawInput.description as string) : null;
+  const rawOptions = Array.isArray(params.options) ? (params.options as unknown[]) : [];
+  const options: AcpOption[] = [];
+  for (const o of rawOptions) {
+    if (!o || typeof o !== 'object') continue;
+    const obj = o as Record<string, unknown>;
+    if (typeof obj.optionId !== 'string' || typeof obj.name !== 'string') continue;
+    const opt: AcpOption = { optionId: obj.optionId, name: obj.name };
+    if (typeof obj.kind === 'string') opt.kind = obj.kind;
+    options.push(opt);
+  }
+  return { title, command, description, options };
 }
 
 function PermissionCard({
   params,
-  onAllow,
-  onDeny,
+  onResolve,
 }: {
   params: Record<string, unknown>;
-  onAllow: () => void;
-  onDeny: () => void;
+  /** Decision body is forwarded verbatim to the agent via ACP. */
+  onResolve: (decision: unknown) => void;
 }) {
+  const { title, command, description, options } = parseAcpPermissionParams(params);
+
+  // Fallback options when the agent did not send any — same shape as ACP so
+  // the response stays well-formed. Devin always provides options, but other
+  // ACP agents might not.
+  const renderedOptions: AcpOption[] =
+    options.length > 0
+      ? options
+      : [
+          { optionId: 'allow_once', name: '允许', kind: 'allow_once' },
+          { optionId: 'reject_once', name: '拒绝', kind: 'reject_once' },
+        ];
+
+  function selectOption(opt: AcpOption) {
+    onResolve({ outcome: { outcome: 'selected', optionId: opt.optionId } });
+  }
+
+  function cancel() {
+    onResolve({ outcome: { outcome: 'cancelled' } });
+  }
+
   return (
-    <Card padding="sm" radius="md" withBorder bg="yellow.9">
-      <Group gap="xs">
-        <IconShieldCheck size={14} />
-        <Text size="sm" fw={600}>
-          Permission requested
+    <Card
+      padding="sm"
+      radius="md"
+      style={{
+        background: 'light-dark(#fffbeb, var(--mantine-color-yellow-9))',
+        border: '1px solid light-dark(#fcd34d, var(--mantine-color-yellow-7))',
+        color: 'var(--mantine-color-text)',
+      }}
+    >
+      <Group gap="xs" wrap="nowrap">
+        <IconShieldCheck size={16} color="var(--mantine-color-yellow-8)" />
+        <Text size="sm" fw={700}>
+          需要授权
         </Text>
+        {title ? (
+          <Text size="xs" c="dimmed" truncate>
+            · {title}
+          </Text>
+        ) : null}
       </Group>
-      <Text size="xs" ff="monospace" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>
-        {safeStringify(params)}
-      </Text>
-      <Group gap="xs" mt="xs">
-        <Button
-          size="xs"
-          color="green"
-          variant="filled"
-          leftSection={<IconCheck size={12} />}
-          onClick={onAllow}
-        >
-          Allow
-        </Button>
-        <Button
-          size="xs"
-          color="red"
-          variant="light"
-          leftSection={<IconX size={12} />}
-          onClick={onDeny}
-        >
-          Deny
-        </Button>
+      {command ? (
+        <Box mt="xs">
+          <Text size="xs" c="dimmed" mb={4}>
+            command
+          </Text>
+          <RawJSONBlock value={command} />
+        </Box>
+      ) : null}
+      {!command && description ? (
+        <Text size="xs" mt={6} c="dimmed">
+          {description}
+        </Text>
+      ) : null}
+      {!command && !description ? (
+        <Box mt="xs">
+          <RawJSONBlock value={safeStringify(params)} />
+        </Box>
+      ) : null}
+      <Group gap="xs" mt="sm" wrap="wrap">
+        {renderedOptions.map((opt) => (
+          <Button
+            key={opt.optionId}
+            size="xs"
+            color={optionColor(opt.kind)}
+            variant={optionVariant(opt.kind)}
+            leftSection={optionIcon(opt.kind)}
+            onClick={() => selectOption(opt)}
+          >
+            {opt.name}
+          </Button>
+        ))}
+        {renderedOptions.length > 0 ? (
+          <Button size="xs" variant="subtle" color="gray" onClick={cancel}>
+            取消
+          </Button>
+        ) : null}
       </Group>
     </Card>
   );

@@ -12,8 +12,11 @@ import {
   Text,
   Title,
   Tooltip,
+  UnstyledButton,
+  useMantineColorScheme,
 } from '@mantine/core';
 import {
+  IconBrandGithub,
   IconCode,
   IconDotsVertical,
   IconFiles,
@@ -21,13 +24,16 @@ import {
   IconHome,
   IconLogout,
   IconMessageCircle,
+  IconMoon,
   IconServer,
+  IconSun,
   IconTerminal2,
 } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 
 import { AGENTS, listAgents } from '@coding-anywhere/agents';
 
+import { AccountKeyMenu } from './components/AccountKeyMenu.js';
 import { ChatPanel } from './components/ChatPanel.js';
 import { ConnectionStatus } from './components/ConnectionStatus.js';
 import { DiffPanel } from './components/DiffPanel.js';
@@ -36,6 +42,7 @@ import { NotificationsMenu } from './components/NotificationsMenu.js';
 import { PairScreen } from './components/PairScreen.js';
 import { PortsPanel } from './components/PortsPanel.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
+import { WelcomeTab } from './components/WelcomeTab.js';
 import { useConnection } from './store/connection.js';
 
 export function App() {
@@ -43,7 +50,6 @@ export function App() {
   const hydrate = useConnection((s) => s.hydrate);
   const [hydrating, setHydrating] = useState(true);
 
-  // On first mount, attempt to load saved credentials and reconnect.
   useEffect(() => {
     let cancelled = false;
     hydrate().finally(() => {
@@ -60,7 +66,7 @@ export function App() {
         <Stack gap="xs" align="center">
           <Loader size="sm" />
           <Text c="dimmed" size="sm">
-            Restoring session…
+            正在恢复会话…
           </Text>
         </Stack>
       </Center>
@@ -73,40 +79,95 @@ export function App() {
   return <MainShell />;
 }
 
+function ColorSchemeToggle() {
+  const { colorScheme, setColorScheme } = useMantineColorScheme();
+  const isDark = colorScheme === 'dark';
+  return (
+    <Tooltip label={isDark ? '切换到浅色' : '切换到深色'}>
+      <ActionIcon
+        variant="subtle"
+        color="ink"
+        aria-label="Toggle color scheme"
+        onClick={() => setColorScheme(isDark ? 'light' : 'dark')}
+      >
+        {isDark ? <IconSun size={18} /> : <IconMoon size={18} />}
+      </ActionIcon>
+    </Tooltip>
+  );
+}
+
 function MainShell() {
   const credentials = useConnection((s) => s.credentials);
   const signOut = useConnection((s) => s.signOut);
-  const [activeTab, setActiveTab] = useState<string | null>('chat');
+  const [activeTab, setActiveTab] = useState<string | null>('welcome');
   const panelStyle = { height: '100%', minHeight: 0 };
 
   return (
-    <AppShell padding="md" header={{ height: 56 }}>
-      <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="xs">
-            <IconTerminal2 size={20} stroke={1.6} />
-            <Title order={4} fw={600}>
-              Coding Anywhere
-            </Title>
-            <Badge size="xs" variant="light">
-              P7 wired
-            </Badge>
+    <AppShell padding={0} header={{ height: 56 }}>
+      <AppShell.Header className="cw-hairline-b" withBorder={false}>
+        <Group h="100%" px="lg" justify="space-between">
+          <Group gap="md">
+            <Group gap={8}>
+              <Box
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  background: 'light-dark(#0e0e10, #e7ecf3)',
+                  color: 'light-dark(#fff, #0b0f17)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontFamily:
+                    '"JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  letterSpacing: '-0.04em',
+                }}
+                aria-hidden
+              >
+                CA
+              </Box>
+              <Stack gap={0}>
+                <Text fw={700} size="sm" lh={1.1}>
+                  Coding Anywhere
+                </Text>
+                <Text size="10px" c="dimmed" lh={1} style={{ letterSpacing: 1 }}>
+                  REMOTE DEV CONSOLE
+                </Text>
+              </Stack>
+            </Group>
           </Group>
           <Group gap="xs">
             <ConnectionStatus />
             <NotificationsMenu />
+            <Tooltip label="GitHub">
+              <ActionIcon
+                variant="subtle"
+                color="ink"
+                aria-label="GitHub"
+                component="a"
+                href="https://github.com/Mutech-Innovation/coding-anywhere"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <IconBrandGithub size={18} />
+              </ActionIcon>
+            </Tooltip>
+            <ColorSchemeToggle />
             <Menu position="bottom-end" withArrow>
               <Menu.Target>
-                <ActionIcon variant="subtle" aria-label="Device menu">
+                <ActionIcon variant="subtle" color="ink" aria-label="Device menu">
                   <IconDotsVertical size={18} />
                 </ActionIcon>
               </Menu.Target>
               <Menu.Dropdown>
                 <Menu.Label>
-                  Account: {credentials?.bundle.account_id.slice(0, 12) ?? '—'}
+                  账户：{credentials?.bundle.account_id.slice(0, 12) ?? '—'}
                 </Menu.Label>
+                <AccountKeyMenu />
+                <Menu.Divider />
                 <Menu.Item leftSection={<IconLogout size={14} />} onClick={signOut}>
-                  Sign out / unpair
+                  退出并取消配对
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>
@@ -126,6 +187,7 @@ function MainShell() {
           value={activeTab}
           onChange={setActiveTab}
           keepMounted={false}
+          className="cw-tabs"
           style={{
             display: 'flex',
             flex: 1,
@@ -133,51 +195,55 @@ function MainShell() {
             minHeight: 0,
           }}
         >
-          <Tabs.List>
-            <Tabs.Tab value="chat" leftSection={<IconMessageCircle size={14} />}>
-              Chat
-            </Tabs.Tab>
-            <Tabs.Tab value="terminals" leftSection={<IconTerminal2 size={14} />}>
-              Terminals
-            </Tabs.Tab>
-            <Tabs.Tab value="files" leftSection={<IconFiles size={14} />}>
-              Files
-            </Tabs.Tab>
-            <Tabs.Tab value="diff" leftSection={<IconGitCompare size={14} />}>
-              Diff
-            </Tabs.Tab>
-            <Tabs.Tab value="ports" leftSection={<IconServer size={14} />}>
-              Ports
-            </Tabs.Tab>
-            <Tabs.Tab value="agents" leftSection={<IconCode size={14} />}>
-              Agents
-            </Tabs.Tab>
-            <Tabs.Tab value="welcome" leftSection={<IconHome size={14} />}>
-              Welcome
-            </Tabs.Tab>
-          </Tabs.List>
-          <Box pt="md" style={{ flex: 1, minHeight: 0 }}>
-            <Tabs.Panel value="chat" style={panelStyle}>
-              <ChatPanel />
-            </Tabs.Panel>
-            <Tabs.Panel value="terminals" style={panelStyle}>
-              <TerminalsPanel />
-            </Tabs.Panel>
-            <Tabs.Panel value="files" style={panelStyle}>
-              <FilesPanel />
-            </Tabs.Panel>
-            <Tabs.Panel value="diff" style={panelStyle}>
-              <DiffPanel />
-            </Tabs.Panel>
-            <Tabs.Panel value="ports" style={panelStyle}>
-              <PortsPanel />
-            </Tabs.Panel>
-            <Tabs.Panel value="agents" style={panelStyle}>
-              <AgentsTab />
-            </Tabs.Panel>
+          <Box px="lg">
+            <Tabs.List>
+              <Tabs.Tab value="welcome" leftSection={<IconHome size={14} />}>
+                首页
+              </Tabs.Tab>
+              <Tabs.Tab value="chat" leftSection={<IconMessageCircle size={14} />}>
+                对话
+              </Tabs.Tab>
+              <Tabs.Tab value="terminals" leftSection={<IconTerminal2 size={14} />}>
+                终端
+              </Tabs.Tab>
+              <Tabs.Tab value="files" leftSection={<IconFiles size={14} />}>
+                文件
+              </Tabs.Tab>
+              <Tabs.Tab value="diff" leftSection={<IconGitCompare size={14} />}>
+                Diff
+              </Tabs.Tab>
+              <Tabs.Tab value="ports" leftSection={<IconServer size={14} />}>
+                端口
+              </Tabs.Tab>
+              <Tabs.Tab value="agents" leftSection={<IconCode size={14} />}>
+                Agents
+              </Tabs.Tab>
+            </Tabs.List>
+          </Box>
+          <Box style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
             <Tabs.Panel value="welcome" style={panelStyle}>
-              <WelcomeTab />
+              <WelcomeTab onNavigate={(v) => setActiveTab(v)} />
             </Tabs.Panel>
+            <Box px="lg" pt="md" style={{ height: '100%', minHeight: 0 }}>
+              <Tabs.Panel value="chat" style={panelStyle}>
+                <ChatPanel />
+              </Tabs.Panel>
+              <Tabs.Panel value="terminals" style={panelStyle}>
+                <TerminalsPanel />
+              </Tabs.Panel>
+              <Tabs.Panel value="files" style={panelStyle}>
+                <FilesPanel />
+              </Tabs.Panel>
+              <Tabs.Panel value="diff" style={panelStyle}>
+                <DiffPanel />
+              </Tabs.Panel>
+              <Tabs.Panel value="ports" style={panelStyle}>
+                <PortsPanel />
+              </Tabs.Panel>
+              <Tabs.Panel value="agents" style={panelStyle}>
+                <AgentsTab />
+              </Tabs.Panel>
+            </Box>
           </Box>
         </Tabs>
       </AppShell.Main>
@@ -185,59 +251,67 @@ function MainShell() {
   );
 }
 
-function WelcomeTab() {
-  return (
-    <Stack gap="lg">
-      <Box>
-        <Title order={2}>Welcome</Title>
-        <Text c="dimmed" mt="xs">
-          You are paired. Open a Terminal in the Terminals tab to drive your dev machine remotely.
-          Sessions, structured chat UIs, files, and ports come online in the next phases (P3–P6).
-        </Text>
-      </Box>
-    </Stack>
-  );
-}
-
 function AgentsTab() {
   const agents = listAgents();
   return (
-    <Stack gap="xs">
-      {agents.map((agent) => (
-        <Group
-          key={agent.id}
-          justify="space-between"
-          p="sm"
-          style={{
-            border: '1px solid var(--mantine-color-default-border)',
-            borderRadius: 8,
-          }}
-        >
-          <Group gap="sm">
-            <IconCode size={18} color={agent.accent} />
-            <Stack gap={0}>
-              <Text fw={500}>{agent.name}</Text>
-              <Text size="xs" c="dimmed">
-                {agent.tagline}
-              </Text>
-            </Stack>
-          </Group>
-          <Tooltip
-            label={
-              agent.id === AGENTS.devin.id
-                ? 'Highest-priority integration; first to ship in P3'
-                : 'Adapter lands in v2'
-            }
+    <Stack gap="md" py="lg">
+      <Box>
+        <Text className="cw-eyebrow">AGENTS · 智能体</Text>
+        <Title order={2} mt={6}>
+          连接你的 AI 编码伙伴
+        </Title>
+        <Text c="dimmed" mt={4} size="sm" maw={620}>
+          一套统一的 ACP 通道，让任何 agent 都能通过 daemon 出站连接你的开发机。
+        </Text>
+      </Box>
+      <Stack gap="sm">
+        {agents.map((agent) => (
+          <Group
+            key={agent.id}
+            justify="space-between"
+            p="md"
+            className="cw-hairline"
+            style={{ borderRadius: 8 }}
           >
-            <Badge
-              color={agent.id === AGENTS.devin.id ? 'brand' : 'gray'}
-              variant={agent.available ? 'filled' : 'light'}
+            <Group gap="md" align="flex-start">
+              <UnstyledButton
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 6,
+                  background: `${agent.accent}14`,
+                  color: agent.accent,
+                  display: 'grid',
+                  placeItems: 'center',
+                }}
+                aria-hidden
+              >
+                <IconCode size={18} />
+              </UnstyledButton>
+              <Stack gap={2}>
+                <Text fw={600}>{agent.name}</Text>
+                <Text size="xs" c="dimmed">
+                  {agent.tagline}
+                </Text>
+              </Stack>
+            </Group>
+            <Tooltip
+              label={
+                agent.id === AGENTS.devin.id
+                  ? '优先级最高的集成，P3 阶段首发'
+                  : '适配器将在 v2 落地'
+              }
             >
-              {agent.available ? 'Available' : 'Coming soon'}
-            </Badge>
-          </Tooltip>
-        </Group>
-      ))}
+              <Badge
+                color={agent.id === AGENTS.devin.id ? 'brand' : 'gray'}
+                variant={agent.available ? 'filled' : 'light'}
+              >
+                {agent.available ? '已可用' : '即将上线'}
+              </Badge>
+            </Tooltip>
+          </Group>
+        ))}
+      </Stack>
     </Stack>
   );
 }

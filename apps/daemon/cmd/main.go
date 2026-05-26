@@ -21,6 +21,7 @@ import (
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/diffrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/filesrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/pairingclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/portsrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/terminalrouter"
@@ -28,10 +29,22 @@ import (
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 )
 
+// defaultAutoPairRelayURL is what we point the in-daemon auto-pair flow at
+// when --relay-url is not given on first run. It matches the `make dev`
+// relay binding (apps/relay listens on :8443 in dev).
+const defaultAutoPairRelayURL = "http://localhost:8443"
+
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "init" {
 		if err := runInit(os.Args[2:]); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "init: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "key" {
+		if err := runKey(os.Args[2:]); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "key: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -59,6 +72,10 @@ func main() {
 	defer cancel()
 
 	if err := run(ctx, logger, *credPath, *relayURL, *workspace); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logger.Info("daemon shutting down")
+			return
+		}
 		logger.Error("daemon exited with error", "err", err)
 		os.Exit(1)
 	}
@@ -67,9 +84,13 @@ func main() {
 func usage() {
 	_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage: coding-anywhere-daemon [flags]
        coding-anywhere-daemon init [flags]
+       coding-anywhere-daemon key <show|rotate|revoke> [flags]
 
 Subcommands:
-  init    Pair this machine with the relay (interactive, prints a 6-digit code)
+  init             Pair this machine with the relay (interactive, prints a 6-digit code)
+  key show         Print the account key stored in the credentials file
+  key rotate       Mint a new account key (old one stops working for new logins)
+  key revoke       Clear the account key AND drop every session on the account
 
 Flags:
 `)
@@ -113,16 +134,9 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 		credPath = p
 	}
 
-	bundle, err := credentials.Load(credPath)
+	bundle, err := loadOrAutoPair(ctx, logger, credPath, relayURLOverride)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			logger.Error(
-				"no credentials found; run `coding-anywhere init` to pair this machine",
-				"path", credPath,
-			)
-			return errors.New("no credentials")
-		}
-		return fmt.Errorf("load credentials: %w", err)
+		return err
 	}
 
 	relayURL := bundle.RelayURL
@@ -186,6 +200,136 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 	portsrouter.New(cli, logger)
 
 	return cli.Run(ctx)
+}
+
+// runKey dispatches the `key` sub-commands.
+//
+// All three sub-commands operate on the daemon's local credentials file. They
+// talk to the relay only when needed (rotate, revoke). show is offline.
+func runKey(args []string) error {
+	if len(args) == 0 {
+		return errors.New("subcommand required: show | rotate | revoke")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("key "+sub, flag.ExitOnError)
+	credPath := fs.String("credentials", "", "Path to credentials file (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
+	relayURL := fs.String("relay-url", "", "Override the relay URL stored in credentials")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	if *credPath == "" {
+		p, err := credentials.DefaultPath()
+		if err != nil {
+			return fmt.Errorf("default credentials path: %w", err)
+		}
+		*credPath = p
+	}
+	bundle, err := credentials.Load(*credPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no credentials yet at %s — run `coding-anywhere-daemon init` first", *credPath)
+		}
+		return fmt.Errorf("load credentials: %w", err)
+	}
+
+	relay := bundle.RelayURL
+	if *relayURL != "" {
+		relay = *relayURL
+	}
+
+	switch sub {
+	case "show":
+		if bundle.AccountKey == "" {
+			fmt.Println("(no account key on file — run `coding-anywhere-daemon key rotate` to mint one)")
+			return nil
+		}
+		fmt.Println(bundle.AccountKey)
+		return nil
+
+	case "rotate":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		pc := pairingclient.New(relay)
+		newKey, err := pc.RotateAccountKey(ctx, bundle.AccessToken)
+		if err != nil {
+			return fmt.Errorf("rotate: %w", err)
+		}
+		bundle.AccountKey = newKey
+		if err := credentials.Save(*credPath, bundle); err != nil {
+			return fmt.Errorf("save credentials: %w", err)
+		}
+		fmt.Println("New account key (save somewhere safe — only shown once):")
+		fmt.Println("  " + newKey)
+		return nil
+
+	case "revoke":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		pc := pairingclient.New(relay)
+		if err := pc.RevokeAccountKey(ctx, bundle.AccessToken); err != nil {
+			return fmt.Errorf("revoke: %w", err)
+		}
+		// The relay also revoked our refresh token, so the locally stored
+		// credentials are now junk. Clear them so the daemon can be re-paired
+		// from scratch.
+		bundle.AccountKey = ""
+		if err := credentials.Clear(*credPath); err != nil {
+			return fmt.Errorf("clear credentials: %w", err)
+		}
+		fmt.Println("Account key revoked and all sessions invalidated.")
+		fmt.Println("Re-pair the daemon with `coding-anywhere-daemon init --relay-url <relay>`.")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand %q (expected show | rotate | revoke)", sub)
+	}
+}
+
+// loadOrAutoPair loads credentials from disk; if the file does not exist,
+// it transparently runs the pairing flow inline so a fresh `make dev` only
+// needs the operator to enter the printed 6-digit code in the browser.
+//
+// relayURLOverride (from --relay-url) wins when set; otherwise we default to
+// the dev relay binding so first-time setup is zero-config.
+func loadOrAutoPair(
+	ctx context.Context,
+	logger *slog.Logger,
+	credPath, relayURLOverride string,
+) (*credentials.Bundle, error) {
+	if bundle, err := credentials.Load(credPath); err == nil {
+		return bundle, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load credentials: %w", err)
+	}
+
+	relayURL := relayURLOverride
+	if relayURL == "" {
+		relayURL = defaultAutoPairRelayURL
+	}
+
+	logger.Warn(
+		"no credentials found; starting auto-pairing — "+
+			"enter the code printed below on the Coding Anywhere web/mobile app",
+		"relay_url", relayURL,
+		"credentials_path", credPath,
+	)
+
+	if err := initcmd.Run(ctx, initcmd.Options{
+		RelayURL:        relayURL,
+		CredentialsPath: credPath,
+		Out:             os.Stdout,
+		Logger:          logger,
+	}); err != nil {
+		return nil, fmt.Errorf("auto-pairing: %w", err)
+	}
+
+	bundle, err := credentials.Load(credPath)
+	if err != nil {
+		return nil, fmt.Errorf("load credentials after pairing: %w", err)
+	}
+	logger.Info("pairing complete; continuing startup")
+	return bundle, nil
 }
 
 func newLogger(level string) *slog.Logger {

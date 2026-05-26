@@ -23,12 +23,29 @@ interface ConnectionStore {
   client: RelayWSClient | null;
   lastError: string | null;
   refreshTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * A plaintext account key that was just minted (first pair, or rotate) and
+   * has not yet been acknowledged by the UI. Components display it once in a
+   * "save this somewhere safe" modal, then call dismissKeyReveal().
+   */
+  pendingKeyReveal: string | null;
 
   // Actions
   hydrate(): Promise<void>;
   signIn(creds: StoredCredentials): void;
+  signInWithAccountKey(args: {
+    relay_url: string;
+    account_key: string;
+    device_label: string;
+  }): Promise<void>;
   signOut(): void;
   refreshAccessToken(): Promise<void>;
+  /** Rotate the account key on the relay; returns the new plaintext value. */
+  rotateAccountKey(): Promise<string>;
+  /** Clear the account key + revoke all sessions; signs out locally. */
+  revokeAccountKey(): Promise<void>;
+  /** Mark the pending key as shown; clears it from store state. */
+  dismissKeyReveal(): void;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
 }
@@ -39,6 +56,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
   client: null,
   lastError: null,
   refreshTimer: null,
+  pendingKeyReveal: null,
 
   async hydrate() {
     const creds = loadCredentials();
@@ -61,6 +79,63 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
   signIn(creds) {
     const saved = saveCredentials(creds);
     attachClient(set, get, saved);
+    if (saved.bundle.account_key) {
+      set({ pendingKeyReveal: saved.bundle.account_key });
+    }
+  },
+
+  dismissKeyReveal() {
+    set({ pendingKeyReveal: null });
+  },
+
+  async signInWithAccountKey({ relay_url, account_key, device_label }) {
+    const pc = new PairingClient(relay_url);
+    const { credentials: bundle } = await pc.login({
+      account_key,
+      device_label,
+      device_kind: 'client',
+    });
+    // The login response never echoes account_key back. Persist the one the
+    // user just used so subsequent rotate/show flows have it available.
+    const saved = saveCredentials({
+      relay_url,
+      bundle: { ...bundle, account_key },
+    });
+    attachClient(set, get, saved);
+  },
+
+  async rotateAccountKey() {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    const { account_key } = await pc.rotateAccountKey({
+      bearer: credentials.bundle.access_token,
+    });
+    const next: StoredCredentials = {
+      ...credentials,
+      bundle: { ...credentials.bundle, account_key },
+    };
+    const saved = saveCredentials(next);
+    set({ credentials: saved, pendingKeyReveal: account_key });
+    return account_key;
+  },
+
+  async revokeAccountKey() {
+    const { credentials, client, refreshTimer } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    await pc.revokeAccountKey({ bearer: credentials.bundle.access_token });
+    // Server has invalidated our refresh token too — drop everything locally.
+    if (client) client.stop();
+    if (refreshTimer) clearTimeout(refreshTimer);
+    clearCredentials();
+    set({
+      credentials: null,
+      client: null,
+      status: 'disconnected',
+      lastError: null,
+      refreshTimer: null,
+    });
   },
 
   signOut() {

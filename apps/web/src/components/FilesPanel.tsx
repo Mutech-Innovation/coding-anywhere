@@ -266,7 +266,8 @@ function FileLeaf({
       onClick={onClick}
       style={{
         cursor: 'pointer',
-        background: active ? 'var(--mantine-color-brand-9)' : 'transparent',
+        background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
+        color: active ? 'light-dark(var(--mantine-color-brand-8), #ffffff)' : undefined,
         borderRadius: 4,
       }}
     >
