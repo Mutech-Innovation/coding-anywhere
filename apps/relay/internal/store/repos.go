@@ -26,9 +26,10 @@ func (s *Store) CreateAccount(ctx context.Context, id string) (Account, error) {
 func (s *Store) GetAccount(ctx context.Context, id string) (Account, error) {
 	var a Account
 	var createdAt int64
+	var keyHash sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, created_at FROM accounts WHERE id = ?`, id,
-	).Scan(&a.ID, &createdAt)
+		`SELECT id, created_at, account_key_hash FROM accounts WHERE id = ?`, id,
+	).Scan(&a.ID, &createdAt, &keyHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -36,7 +37,66 @@ func (s *Store) GetAccount(ctx context.Context, id string) (Account, error) {
 		return Account{}, err
 	}
 	a.CreatedAt = time.UnixMilli(createdAt).UTC()
+	a.AccountKeyHash = stringPtr(keyHash)
 	return a, nil
+}
+
+// GetAccountByKeyHash looks up an account by its SHA-256 hex account-key
+// digest. Returns ErrNotFound if no row matches (including when the column
+// is NULL).
+func (s *Store) GetAccountByKeyHash(ctx context.Context, keyHash string) (Account, error) {
+	if keyHash == "" {
+		return Account{}, ErrNotFound
+	}
+	var a Account
+	var createdAt int64
+	var stored sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, created_at, account_key_hash
+		 FROM accounts WHERE account_key_hash = ?`, keyHash,
+	).Scan(&a.ID, &createdAt, &stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	a.CreatedAt = time.UnixMilli(createdAt).UTC()
+	a.AccountKeyHash = stringPtr(stored)
+	return a, nil
+}
+
+// SetAccountKey writes (or replaces) the SHA-256 hex digest of an account's
+// long-lived key. Pass an empty string to unset the key.
+func (s *Store) SetAccountKey(ctx context.Context, accountID, keyHash string) error {
+	var arg any
+	if keyHash == "" {
+		arg = nil
+	} else {
+		arg = keyHash
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE accounts SET account_key_hash = ? WHERE id = ?`, arg, accountID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RevokeRefreshTokensForAccount marks every refresh token belonging to the
+// given account as revoked. Used as the "nuclear option" when an account key
+// is revoked entirely.
+func (s *Store) RevokeRefreshTokensForAccount(ctx context.Context, accountID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE refresh_tokens SET revoked = 1 WHERE account_id = ?`, accountID)
+	return err
 }
 
 // CreateDevice inserts a new device row.

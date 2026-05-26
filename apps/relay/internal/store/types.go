@@ -7,6 +7,10 @@ import "time"
 type Account struct {
 	ID        string
 	CreatedAt time.Time
+	// AccountKeyHash is the SHA-256 hex digest of the long-lived account key.
+	// Nil means the account currently has no active key; in that state new
+	// clients cannot log in via /v1/auth/login until the key is rotated.
+	AccountKeyHash *string
 }
 
 // DeviceKind is mirrored on internal/auth.DeviceKind. Keep both in sync.

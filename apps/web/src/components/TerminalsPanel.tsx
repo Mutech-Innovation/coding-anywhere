@@ -130,7 +130,14 @@ export function TerminalsPanel() {
                   style={{
                     cursor: 'pointer',
                     borderRadius: 6,
-                    background: activeId === s.id ? 'var(--mantine-color-brand-9)' : 'transparent',
+                    background:
+                      activeId === s.id
+                        ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                        : 'transparent',
+                    color:
+                      activeId === s.id
+                        ? 'light-dark(var(--mantine-color-brand-8), #ffffff)'
+                        : undefined,
                   }}
                 >
                   <IconTerminal2 size={14} />

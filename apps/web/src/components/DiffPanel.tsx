@@ -123,7 +123,13 @@ export function DiffPanel() {
                     cursor: 'pointer',
                     borderRadius: 6,
                     background:
-                      activePath === c.path ? 'var(--mantine-color-brand-9)' : 'transparent',
+                      activePath === c.path
+                        ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                        : 'transparent',
+                    color:
+                      activePath === c.path
+                        ? 'light-dark(var(--mantine-color-brand-8), #ffffff)'
+                        : undefined,
                   }}
                 >
                   <KindIcon kind={c.kind} />

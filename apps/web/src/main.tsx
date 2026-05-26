@@ -17,7 +17,7 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <MantineProvider theme={theme} defaultColorScheme="dark">
+    <MantineProvider theme={theme} defaultColorScheme="light">
       <Notifications position="top-right" />
       <App />
     </MantineProvider>

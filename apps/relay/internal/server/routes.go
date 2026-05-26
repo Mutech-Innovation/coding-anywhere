@@ -21,6 +21,9 @@ func (s *Server) routes() http.Handler {
 
 	// Auth
 	mux.HandleFunc("POST /v1/auth/refresh", s.handleAuthRefresh)
+	mux.HandleFunc("POST /v1/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /v1/auth/key/rotate", s.handleAuthKeyRotate)
+	mux.HandleFunc("DELETE /v1/auth/key", s.handleAuthKeyRevoke)
 
 	// Push notifications
 	mux.HandleFunc("GET /v1/push/vapid_public_key", s.handleVAPIDPublicKey)

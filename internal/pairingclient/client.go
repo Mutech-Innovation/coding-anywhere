@@ -31,6 +31,9 @@ type CredentialBundle struct {
 	RefreshToken          string `json:"refresh_token"`
 	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
 	RelayProtocolVersion  int    `json:"relay_protocol_version"`
+	// AccountKey is only populated on first-time pairing or after an
+	// explicit rotate.
+	AccountKey string `json:"account_key,omitempty"`
 }
 
 // InitResponse is what /v1/pair/init returns.
@@ -184,6 +187,60 @@ func (c *Client) Refresh(ctx context.Context, refreshToken string) (string, int6
 		return "", 0, err
 	}
 	return out.AccessToken, out.AccessTokenExpiresIn, nil
+}
+
+// LoginRequest is the body of POST /v1/auth/login.
+type LoginRequest struct {
+	AccountKey  string `json:"account_key"`
+	DeviceLabel string `json:"device_label"`
+	DeviceKind  string `json:"device_kind,omitempty"`
+}
+
+// Login trades an account key for a freshly issued credential bundle.
+// Currently only client-kind devices may log in via this flow.
+func (c *Client) Login(ctx context.Context, req LoginRequest) (*CredentialBundle, error) {
+	var out struct {
+		Credentials CredentialBundle `json:"credentials"`
+	}
+	if err := c.post(ctx, "/v1/auth/login", req, "", &out); err != nil {
+		return nil, err
+	}
+	return &out.Credentials, nil
+}
+
+// RotateAccountKey rotates the account key for the authenticated account
+// and returns the new plaintext value. The new key is only visible in this
+// response — callers must persist it.
+func (c *Client) RotateAccountKey(ctx context.Context, bearer string) (string, error) {
+	var out struct {
+		AccountKey string `json:"account_key"`
+	}
+	if err := c.post(ctx, "/v1/auth/key/rotate", struct{}{}, bearer, &out); err != nil {
+		return "", err
+	}
+	return out.AccountKey, nil
+}
+
+// RevokeAccountKey clears the account key AND revokes every refresh token
+// on the account, forcing all sessions to drop. Use only when the key (or
+// any device's credentials) is suspected compromised.
+func (c *Client) RevokeAccountKey(ctx context.Context, bearer string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.relayHTTP+"/v1/auth/key", nil)
+	if err != nil {
+		return err
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode >= 400 {
+		return decodeError(res)
+	}
+	return nil
 }
 
 func (c *Client) post(ctx context.Context, path string, body any, bearer string, out any) error {

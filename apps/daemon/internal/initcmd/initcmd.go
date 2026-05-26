@@ -92,6 +92,12 @@ func Run(ctx context.Context, opts Options) error {
 
 	_, _ = fmt.Fprintf(opts.Out, "\nPaired! Saved credentials to %s\n", opts.CredentialsPath)
 	_, _ = fmt.Fprintf(opts.Out, "Account: %s  Device: %s (%s)\n", saved.AccountID, saved.DeviceID, saved.DeviceLabel)
+	if saved.AccountKey != "" {
+		_, _ = fmt.Fprintf(opts.Out, "\nAccount key (save this somewhere safe — only shown once):\n  %s\n",
+			saved.AccountKey)
+		_, _ = fmt.Fprintln(opts.Out,
+			"Use it on other browsers/phones via the \"sign in with account key\" form to skip the pairing code.")
+	}
 	return nil
 }
 
@@ -135,6 +141,7 @@ func bundleFromPairing(relayURL string, c pairingclient.CredentialBundle) *crede
 		RefreshToken:          c.RefreshToken,
 		RefreshTokenExpiresAt: now.Add(time.Duration(c.RefreshTokenExpiresIn) * time.Second),
 		RelayProtocolVersion:  c.RelayProtocolVersion,
+		AccountKey:            c.AccountKey,
 	}
 }
 

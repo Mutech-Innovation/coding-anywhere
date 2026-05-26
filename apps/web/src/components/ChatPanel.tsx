@@ -154,7 +154,13 @@ export function ChatPanel() {
                     cursor: 'pointer',
                     borderRadius: 6,
                     background:
-                      activeId === s.session.id ? 'var(--mantine-color-brand-9)' : 'transparent',
+                      activeId === s.session.id
+                        ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                        : 'transparent',
+                    color:
+                      activeId === s.session.id
+                        ? 'light-dark(var(--mantine-color-brand-8), #ffffff)'
+                        : undefined,
                   }}
                 >
                   <IconMessageCircle size={14} />
@@ -426,7 +432,8 @@ function DirectoryNode({
         style={{
           cursor: 'pointer',
           paddingLeft: depth * 12 + 4,
-          background: active ? 'var(--mantine-color-brand-9)' : 'transparent',
+          background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
+          color: active ? 'light-dark(var(--mantine-color-brand-8), #ffffff)' : undefined,
           borderRadius: 4,
         }}
       >
@@ -865,13 +872,31 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
   if (isThought) return <ThoughtBubble message={message} />;
 
+  // CodeWhale-style bubbles: indigo on user side, hairline white card on
+  // agent side. System messages get a flatter, more muted look so they
+  // recede into the timeline.
+  const userStyle: React.CSSProperties = {
+    background: 'var(--mantine-color-brand-8)',
+    color: '#ffffff',
+    border: '1px solid var(--mantine-color-brand-8)',
+  };
+  const agentStyle: React.CSSProperties = {
+    background: 'light-dark(#ffffff, var(--mantine-color-dark-6))',
+    color: 'var(--mantine-color-text)',
+    border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+  };
+  const systemStyle: React.CSSProperties = {
+    background: 'light-dark(#f5f6f8, var(--mantine-color-dark-5))',
+    color: 'var(--mantine-color-dimmed)',
+    border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+  };
+
   return (
     <Group justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start">
       <Card
         radius="md"
         padding="sm"
-        bg={isUser ? 'brand.7' : isSystem ? 'dark.6' : 'dark.7'}
-        c={isUser ? 'white' : undefined}
+        style={isUser ? userStyle : isSystem ? systemStyle : agentStyle}
         miw={isUser ? 100 : 200}
         maw="80%"
       >
@@ -895,11 +920,13 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
       <Card
         radius="md"
         padding="sm"
-        bg="dark.7"
         miw={220}
         maw="80%"
-        withBorder
-        style={{ opacity: 0.72 }}
+        style={{
+          background: 'light-dark(#fafafa, var(--mantine-color-dark-7))',
+          border: '1px dashed light-dark(#d1d6de, var(--mantine-color-dark-4))',
+          color: 'var(--mantine-color-text)',
+        }}
       >
         <Group gap="xs" justify="space-between" wrap="nowrap">
           <Group gap="xs" wrap="nowrap">
@@ -907,7 +934,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
               <IconBrain size={12} />
             </ThemeIcon>
             <Text size="xs" c="dimmed" fw={600}>
-              Thought process
+              思考过程
             </Text>
           </Group>
           <Button
@@ -917,7 +944,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
             leftSection={expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
             onClick={() => setExpanded((x) => !x)}
           >
-            {expanded ? 'Hide' : 'Show'}
+            {expanded ? '收起' : '展开'}
           </Button>
         </Group>
         {expanded ? (
@@ -1112,15 +1139,19 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
   const status = call.status ?? 'pending';
   const hasDetails =
     call.rawInput != null || call.rawOutput != null || (call.content && call.content.length > 0);
+  // Hairline white card to blend into the timeline; terminal-style output
+  // lives inside a dark mono block so the "this is shell output" cue is
+  // preserved without dominating the whole card visually.
   return (
     <Card
       padding="sm"
       radius="md"
-      withBorder
       maw="92%"
       style={{
         alignSelf: 'flex-start',
-        background: 'var(--mantine-color-dark-7)',
+        background: 'light-dark(#ffffff, var(--mantine-color-dark-6))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        color: 'var(--mantine-color-text)',
       }}
     >
       <Group gap="xs" justify="space-between" wrap="nowrap">
@@ -1128,7 +1159,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           <ThemeIcon size="sm" variant="light" color={TOOL_STATUS_COLOR[status] ?? 'gray'}>
             {iconForKind(call.kind)}
           </ThemeIcon>
-          <Text size="sm" fw={500} truncate>
+          <Text size="sm" fw={600} truncate>
             {title}
           </Text>
           <Badge size="xs" color={TOOL_STATUS_COLOR[status] ?? 'gray'} variant="light">
@@ -1136,7 +1167,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           </Badge>
         </Group>
         {hasDetails ? (
-          <Tooltip label={expanded ? 'Hide details' : 'Show details'}>
+          <Tooltip label={expanded ? '收起详情' : '展开详情'}>
             <ActionIcon variant="subtle" size="sm" onClick={() => setExpanded((x) => !x)}>
               <IconArrowRight
                 size={12}
@@ -1156,7 +1187,7 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
               key={i}
               size="xs"
               variant="light"
-              color="blue"
+              color="brand"
               leftSection={<IconFileText size={10} />}
             >
               {shortenPath(loc.path)}
@@ -1172,27 +1203,51 @@ function ToolCallCard({ call }: { call: ChatToolCall }) {
           ))}
           {call.rawInput != null ? (
             <Box>
-              <Text size="xs" c="dimmed">
+              <Text size="xs" c="dimmed" mb={4}>
                 input
               </Text>
-              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-                {safeStringify(call.rawInput)}
-              </Code>
+              <RawJSONBlock value={safeStringify(call.rawInput)} />
             </Box>
           ) : null}
           {call.rawOutput != null ? (
             <Box>
-              <Text size="xs" c="dimmed">
+              <Text size="xs" c="dimmed" mb={4}>
                 output
               </Text>
-              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-                {safeStringify(call.rawOutput)}
-              </Code>
+              <RawJSONBlock value={safeStringify(call.rawOutput)} />
             </Box>
           ) : null}
         </Stack>
       ) : null}
     </Card>
+  );
+}
+
+/**
+ * Compact mono code block used for tool-call input/output JSON. Light theme
+ * gets a near-white surface with a hairline; dark theme inherits Mantine's
+ * surface.
+ */
+function RawJSONBlock({ value }: { value: string }) {
+  return (
+    <Box
+      style={{
+        background: 'light-dark(#f5f6f8, var(--mantine-color-dark-7))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        borderRadius: 6,
+        padding: '8px 10px',
+        fontFamily:
+          '"JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 11,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--mantine-color-text)',
+        maxHeight: 280,
+        overflow: 'auto',
+      }}
+    >
+      {value}
+    </Box>
   );
 }
 
@@ -1240,27 +1295,50 @@ function shortenPath(p: string): string {
   return '…/' + p.slice(idx + 1);
 }
 
+/**
+ * Renders an opaque/near-black mono block — used for shell-style output
+ * inside ToolCallCard. Matches the "cw-code-block" CodeWhale install
+ * snippet used on PairScreen, so the visual language stays consistent.
+ */
+function TerminalBlock({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      style={{
+        background: '#0e0e10',
+        color: '#e7ecf3',
+        border: '1px solid #1f2330',
+        borderRadius: 6,
+        padding: '10px 12px',
+        fontFamily:
+          '"JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: 12,
+        lineHeight: 1.55,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        maxHeight: 360,
+        overflow: 'auto',
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
 function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
   if (block.type === 'content') {
     const inner = (block as { content?: { type?: string; text?: string } }).content;
     if (inner?.type === 'text' && typeof inner.text === 'string') {
-      return (
-        <Text size="xs" ff="monospace" style={{ whiteSpace: 'pre-wrap' }}>
-          {inner.text}
-        </Text>
-      );
+      return <TerminalBlock>{inner.text}</TerminalBlock>;
     }
   }
   if (block.type === 'diff') {
     const d = block as { path: string; oldText?: string | null; newText: string };
     return (
       <Box>
-        <Text size="xs" c="dimmed">
+        <Text size="xs" c="dimmed" mb={4}>
           diff · {d.path}
         </Text>
-        <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-          {d.newText}
-        </Code>
+        <TerminalBlock>{d.newText}</TerminalBlock>
       </Box>
     );
   }
@@ -1275,11 +1353,7 @@ function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
       </Group>
     );
   }
-  return (
-    <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>
-      {safeStringify(block)}
-    </Code>
-  );
+  return <TerminalBlock>{safeStringify(block)}</TerminalBlock>;
 }
 
 function PermissionCard({
@@ -1292,16 +1366,24 @@ function PermissionCard({
   onDeny: () => void;
 }) {
   return (
-    <Card padding="sm" radius="md" withBorder bg="yellow.9">
+    <Card
+      padding="sm"
+      radius="md"
+      style={{
+        background: 'light-dark(#fffbeb, var(--mantine-color-yellow-9))',
+        border: '1px solid light-dark(#fcd34d, var(--mantine-color-yellow-7))',
+        color: 'var(--mantine-color-text)',
+      }}
+    >
       <Group gap="xs">
-        <IconShieldCheck size={14} />
+        <IconShieldCheck size={14} color="var(--mantine-color-yellow-8)" />
         <Text size="sm" fw={600}>
-          Permission requested
+          需要授权
         </Text>
       </Group>
-      <Text size="xs" ff="monospace" mt="xs" style={{ whiteSpace: 'pre-wrap' }}>
-        {safeStringify(params)}
-      </Text>
+      <Box mt="xs">
+        <RawJSONBlock value={safeStringify(params)} />
+      </Box>
       <Group gap="xs" mt="xs">
         <Button
           size="xs"
@@ -1310,7 +1392,7 @@ function PermissionCard({
           leftSection={<IconCheck size={12} />}
           onClick={onAllow}
         >
-          Allow
+          允许
         </Button>
         <Button
           size="xs"
@@ -1319,7 +1401,7 @@ function PermissionCard({
           leftSection={<IconX size={12} />}
           onClick={onDeny}
         >
-          Deny
+          拒绝
         </Button>
       </Group>
     </Card>
