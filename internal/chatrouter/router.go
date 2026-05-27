@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,6 +120,11 @@ type resolution struct {
 // New constructs a router and registers a `chat` channel handler. The
 // router owns its own context for long-lived agent processes — Close
 // cancels it.
+//
+// defaultCwd, if non-empty, is used when a session is created without an
+// explicit Cwd. Pass an empty value (or omit the arg) to require clients to
+// always pick a cwd — useful when the daemon's files workspace points at a
+// broad root like $HOME that Devin would refuse to operate on.
 func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, defaultCwd ...string) *Router {
 	if builder == nil {
 		builder = DefaultDevinBuilder
@@ -128,9 +132,6 @@ func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, def
 	cwd := ""
 	if len(defaultCwd) > 0 {
 		cwd = defaultCwd[0]
-	}
-	if cwd == "" {
-		cwd, _ = os.Getwd()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{

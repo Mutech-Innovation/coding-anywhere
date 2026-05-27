@@ -55,7 +55,7 @@ func main() {
 		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 		credPath    = flag.String("credentials", "", "Path to credentials file (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
 		relayURL    = flag.String("relay-url", "", "Override the relay URL stored in credentials")
-		workspace   = flag.String("workspace", "", "Workspace root for the files API (default: $PWD)")
+		workspace   = flag.String("workspace", "", "Workspace root for the files API (default: $HOME)")
 	)
 	flag.Usage = usage
 	flag.Parse()
@@ -167,19 +167,26 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 		}
 	}()
 
-	// files: workspace-scoped browse/read.
+	// files: workspace-scoped browse/read. Default to $HOME so a fresh
+	// `make dev` (or systemd unit launched without an explicit cwd) lands
+	// the file/diff APIs on a useful root instead of wherever the daemon
+	// happens to have been started from.
 	if workspace == "" {
-		var err error
-		workspace, err = os.Getwd()
+		home, err := os.UserHomeDir()
 		if err != nil {
-			return fmt.Errorf("workspace cwd: %w", err)
+			return fmt.Errorf("workspace home dir: %w", err)
 		}
+		workspace = home
 	}
 
 	// chat: AI coding agent conversations (Devin first; Claude Code, Codex,
 	// cursor-agent in v2). The Devin adapter spins up `devin acp` lazily on
-	// first session create.
-	cr := chatrouter.New(cli, logger, nil, workspace)
+	// first session create. We deliberately do NOT seed defaultCwd with the
+	// files workspace: the files API is happy to roam over $HOME, but Devin
+	// refuses to operate on non-project roots like $HOME, so chat sessions
+	// must be created with an explicit, user-picked cwd (the web modal has
+	// a directory picker for this).
+	cr := chatrouter.New(cli, logger, nil)
 	defer func() {
 		if err := cr.Close(); err != nil {
 			logger.Warn("close chat router", "err", err)
