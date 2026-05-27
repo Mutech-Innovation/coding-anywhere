@@ -59,6 +59,15 @@ function pushUpdate(update: Record<string, unknown>) {
   });
 }
 
+function pushSessionCreated(session: Record<string, unknown>) {
+  attachOnce();
+  chatHandler?.({
+    type: 'event',
+    method: 'session_created',
+    payload: { session },
+  });
+}
+
 describe('chat store ingestUpdate', () => {
   afterEach(() => seedSession());
 
@@ -274,5 +283,49 @@ describe('chat store ingestUpdate', () => {
       'I will inspect the file.',
       'The file is straightforward.',
     ]);
+  });
+
+  it('preserves existing state when session_created arrives for a known session', () => {
+    // The daemon broadcasts session_created right after the
+    // chat.create_session response, so the originating client receives
+    // it after it has already populated configOptions / messages /
+    // currentModeId from the response payload. The handler must not
+    // clobber that state with emptySession() — that would hide the
+    // model picker and mode controls.
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'config_option_update',
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'claude-opus-4-7-max',
+          options: [{ value: 'claude-opus-4-7-max', name: 'Claude Opus 4.7 Max' }],
+        },
+      ],
+    });
+    pushUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'plan' });
+
+    pushSessionCreated({ ...baseSession });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.configOptions).toHaveLength(1);
+    expect(state.configOptions[0]?.currentValue).toBe('claude-opus-4-7-max');
+    expect(state.currentModeId).toBe('plan');
+    // session metadata should still be present.
+    expect(state.session.id).toBe('sess-1');
+  });
+
+  it('seeds fresh state when session_created arrives for an unknown session', () => {
+    // A session opened on a different device should still produce a
+    // fresh entry in the local store via the broadcast.
+    seedSession();
+    pushSessionCreated({ ...baseSession, id: 'sess-from-phone' });
+
+    const state = useChat.getState().sessions['sess-from-phone']!;
+    expect(state).toBeDefined();
+    expect(state.messages).toEqual([]);
+    expect(state.configOptions).toEqual([]);
   });
 });

@@ -151,12 +151,28 @@ export const useChat = create<ChatStore>((set, get) => ({
         case ChatEvent.SessionCreated: {
           const payload = env.payload as { session: ChatSession } | undefined;
           if (!payload?.session) return;
-          set((s) => ({
-            sessions: {
-              ...s.sessions,
-              [payload.session.id]: emptySession(payload.session),
-            },
-          }));
+          // The daemon broadcasts session_created to *every* connected
+          // client (so a phone tab can see a session opened from a
+          // laptop). The originating client also receives this event,
+          // arriving right after the chat.create_session response that
+          // already populated the session — including the modes and
+          // configOptions ingested from `pending_updates`. Treating the
+          // event as authoritative would clobber that data with
+          // emptySession() and hide the model picker / mode controls.
+          // Keep existing state if we already know the session and only
+          // refresh the metadata; fall through to emptySession only for
+          // sessions opened on a different device.
+          set((s) => {
+            const existing = s.sessions[payload.session.id];
+            return {
+              sessions: {
+                ...s.sessions,
+                [payload.session.id]: existing
+                  ? { ...existing, session: payload.session }
+                  : emptySession(payload.session),
+              },
+            };
+          });
           break;
         }
         case ChatEvent.SessionClosed: {
