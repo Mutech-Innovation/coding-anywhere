@@ -86,8 +86,21 @@ type ChatCreateSessionResponse struct {
 }
 
 type ChatPromptRequest struct {
-	SessionID string `json:"session_id"`
-	Text      string `json:"text"`
+	SessionID   string       `json:"session_id"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is a file or image the user dropped into the chat composer.
+// Either Data (base64-encoded inline payload) or URI (file://...) is set;
+// MimeType is informational. The chatrouter translates these into ACP
+// content blocks before forwarding to the agent.
+type Attachment struct {
+	Type     string `json:"type"` // "image" | "file"
+	Name     string `json:"name"`
+	Data     string `json:"data,omitempty"`     // base64
+	URI      string `json:"uri,omitempty"`      // file://...
+	MimeType string `json:"mime_type,omitempty"`
 }
 
 type ChatPromptResponse struct {
@@ -134,8 +147,9 @@ type ChatGetHistoryResponse struct {
 // agent updates so the chat transcript matches what the user originally
 // saw.
 type ChatPromptEntry struct {
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"created_at"`
+	Text        string       `json:"text"`
+	CreatedAt   time.Time    `json:"created_at"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 	// SequenceID gives a strict relative ordering vs. the updates list.
 	// Updates have a parallel sequence id; the client interleaves both
 	// streams by sequence to reconstruct the timeline.

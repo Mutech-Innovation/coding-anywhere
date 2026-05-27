@@ -84,14 +84,15 @@ func (s *session) appendUpdate(update json.RawMessage) uint64 {
 	return s.seq
 }
 
-func (s *session) appendPrompt(text string) uint64 {
+func (s *session) appendPrompt(text string, attachments []wire.Attachment) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seq++
 	s.prompts = append(s.prompts, wire.ChatPromptEntry{
-		Text:       text,
-		CreatedAt:  time.Now().UTC(),
-		SequenceID: s.seq,
+		Text:        text,
+		CreatedAt:   time.Now().UTC(),
+		Attachments: attachments,
+		SequenceID:  s.seq,
 	})
 	return s.seq
 }
@@ -324,7 +325,9 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 
 	// Record the user prompt before sending so the snapshot retains the
 	// originating message even if the agent closes mid-turn.
-	s.appendPrompt(req.Text)
+	s.appendPrompt(req.Text, req.Attachments)
+
+	contentBlocks := r.attachmentsToContentBlocks(req.Text, req.Attachments)
 
 	r.setStatus(s, "thinking")
 	go func() {
@@ -337,7 +340,7 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 			s.cancelCtx = nil
 			r.mu.Unlock()
 		}()
-		stop, err := r.devin.PromptText(ctx, s.NativeID, req.Text)
+		stop, err := r.devin.Prompt(ctx, s.NativeID, contentBlocks)
 		if err != nil {
 			r.respondErr(env, "prompt_failed", err.Error())
 			r.setStatus(s, "idle")
@@ -346,6 +349,50 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 		r.respondOK(env, wire.ChatPromptResponse{StopReason: stop})
 		r.setStatus(s, "idle")
 	}()
+}
+
+// attachmentsToContentBlocks lifts the wire-side Attachment list into ACP
+// ContentBlocks the agent can consume. Images are emitted as inline
+// `image` blocks (base64 data); files with inline data are summarised as
+// a `text` block (Phase 1) and files with a URI are emitted as
+// `resource_link`. Devin's ACP server accepts the unknown extra fields
+// (`data`, `mime_type`) thanks to the round-trippable Extra map on
+// ContentBlock.
+func (r *Router) attachmentsToContentBlocks(text string, attachments []wire.Attachment) []acp.ContentBlock {
+	var blocks []acp.ContentBlock
+	if text != "" {
+		blocks = append(blocks, acp.ContentBlock{Type: "text", Text: text})
+	}
+	for _, att := range attachments {
+		switch att.Type {
+		case "image":
+			blocks = append(blocks, acp.ContentBlock{
+				Type: "image",
+				Extra: map[string]any{
+					"data":      att.Data,
+					"mime_type": att.MimeType,
+				},
+			})
+		case "file":
+			if att.Data != "" {
+				blocks = append(blocks, acp.ContentBlock{
+					Type: "text",
+					Text: fmt.Sprintf("[File: %s, Type: %s, Size: %d bytes (base64 encoded)]",
+						att.Name, att.MimeType, len(att.Data)),
+				})
+			} else if att.URI != "" {
+				blocks = append(blocks, acp.ContentBlock{
+					Type: "resource_link",
+					URI:  att.URI,
+					Extra: map[string]any{
+						"name":      att.Name,
+						"mime_type": att.MimeType,
+					},
+				})
+			}
+		}
+	}
+	return blocks
 }
 
 func (r *Router) handleCancel(env wire.Envelope, req wire.ChatCancelRequest) {

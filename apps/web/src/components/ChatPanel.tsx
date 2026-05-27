@@ -24,6 +24,7 @@ import {
 } from '@mantine/core';
 import type {
   AvailableCommand,
+  ChatAttachment,
   ChatConfigOption,
   FilesEntry,
   PlanEntry,
@@ -54,6 +55,7 @@ import {
   IconTerminal2,
   IconTool,
   IconTrash,
+  IconUpload,
   IconWorld,
   IconX,
 } from '@tabler/icons-react';
@@ -504,6 +506,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-scroll on new content.
@@ -542,13 +545,15 @@ function ChatView({ sessionId }: { sessionId: string }) {
   const modelLabel = getConfigOptionDisplay(session.configOptions, 'model');
 
   async function onSend() {
-    if (!draft.trim()) return;
+    if (!draft.trim() && attachments.length === 0) return;
     setError(null);
     setBusy(true);
     try {
       const text = draft;
       setDraft('');
-      await sendPrompt(sessionId, text);
+      const currentAttachments = [...attachments];
+      setAttachments([]);
+      await sendPrompt(sessionId, text, currentAttachments);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -655,6 +660,8 @@ function ChatView({ sessionId }: { sessionId: string }) {
         onChange={setDraft}
         onSubmit={onSend}
         busy={busy}
+        attachments={attachments}
+        onAttachmentsChange={setAttachments}
       />
     </Stack>
   );
@@ -799,18 +806,24 @@ function formatCost(cost: NonNullable<ChatUsage['cost']>): string {
   return `${cost.currency} ${cost.amount.toFixed(digits)}`;
 }
 
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
 function CommandInput({
   commands,
   value,
   onChange,
   onSubmit,
   busy,
+  attachments,
+  onAttachmentsChange,
 }: {
   commands: AvailableCommand[];
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void | Promise<void>;
   busy: boolean;
+  attachments: ChatAttachment[];
+  onAttachmentsChange: (attachments: ChatAttachment[]) => void;
 }) {
   // Show the typeahead only when the user has typed `/` as the very first
   // non-whitespace character and the cursor sits in the command word.
@@ -823,6 +836,54 @@ function CommandInput({
     [commands, slashOpen, filter],
   );
   const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  async function handleFileSelect(files: FileList | null) {
+    if (!files) return;
+    const additions: ChatAttachment[] = [];
+    for (const file of Array.from(files)) {
+      if (file.size > ATTACHMENT_MAX_BYTES) {
+        alert(`文件 ${file.name} 超过 10MB 限制`);
+        continue;
+      }
+      const data = await fileToBase64(file);
+      additions.push({
+        type: file.type.startsWith('image/') ? 'image' : 'file',
+        name: file.name,
+        data,
+        mime_type: file.type,
+      });
+    }
+    if (additions.length) onAttachmentsChange([...attachments, ...additions]);
+  }
+
+  function removeAttachment(index: number) {
+    onAttachmentsChange(attachments.filter((_, i) => i !== index));
+  }
+
+  async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const additions: ChatAttachment[] = [];
+    for (const item of Array.from(items)) {
+      if (!item.type.startsWith('image/')) continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      e.preventDefault();
+      if (file.size > ATTACHMENT_MAX_BYTES) {
+        alert('粘贴的图片超过 10MB 限制');
+        continue;
+      }
+      const data = await fileToBase64(file);
+      additions.push({
+        type: 'image',
+        name: `pasted-image-${Date.now()}.${file.type.split('/')[1] ?? 'png'}`,
+        data,
+        mime_type: file.type,
+      });
+    }
+    if (additions.length) onAttachmentsChange([...attachments, ...additions]);
+  }
+
   // Track IME composition so Enter does not submit while the user is still
   // picking pinyin candidates / Japanese kana / Korean jamo etc. We watch
   // both React's composition events (state-based) AND the native isComposing
@@ -831,6 +892,18 @@ function CommandInput({
   const composingRef = useRef(false);
   return (
     <Stack gap={4} px="xs">
+      {attachments.length > 0 ? (
+        <Group gap="xs" wrap="wrap">
+          {attachments.map((att, idx) => (
+            <AttachmentPreview
+              key={idx}
+              attachment={att}
+              onRemove={() => removeAttachment(idx)}
+            />
+          ))}
+        </Group>
+      ) : null}
+
       {matches.length > 0 ? (
         <Paper withBorder radius="md" p="xs">
           <Stack gap={2}>
@@ -864,6 +937,16 @@ function CommandInput({
         </Paper>
       ) : null}
       <Group gap="xs" align="flex-end">
+        <ActionIcon component="label" variant="subtle" size="lg" aria-label="Attach files">
+          <IconUpload size={18} />
+          <input
+            type="file"
+            hidden
+            multiple
+            accept="image/*,.pdf,.doc,.docx,.txt,.md,.json"
+            onChange={(e) => void handleFileSelect(e.target.files)}
+          />
+        </ActionIcon>
         <Textarea
           ref={ref}
           placeholder="问问 Devin…(试试 /plan、/clear、/fork)"
@@ -873,6 +956,7 @@ function CommandInput({
           value={value}
           style={{ flex: 1 }}
           onChange={(e) => onChange(e.currentTarget.value)}
+          onPaste={(e) => void handlePaste(e)}
           onCompositionStart={() => {
             composingRef.current = true;
           }}
@@ -900,6 +984,68 @@ function CommandInput({
         </Button>
       </Group>
     </Stack>
+  );
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('failed to read file'));
+        return;
+      }
+      // Strip the `data:<mime>;base64,` prefix; the wire format expects
+      // raw base64.
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader error'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function AttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: ChatAttachment;
+  onRemove: () => void;
+}) {
+  const isImage = attachment.type === 'image';
+  const dataUrl =
+    isImage && attachment.data ? `data:${attachment.mime_type ?? 'image/png'};base64,${attachment.data}` : null;
+  return (
+    <Paper withBorder radius="md" p={4} pr="xs">
+      <Group gap="xs" wrap="nowrap">
+        {dataUrl ? (
+          <Box
+            component="img"
+            src={dataUrl}
+            alt={attachment.name}
+            style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4 }}
+          />
+        ) : (
+          <ThemeIcon size="md" variant="light">
+            <IconFileText size={14} />
+          </ThemeIcon>
+        )}
+        <Stack gap={0} style={{ minWidth: 0, maxWidth: 140 }}>
+          <Text size="xs" truncate>
+            {attachment.name}
+          </Text>
+          {attachment.mime_type ? (
+            <Text size="xs" c="dimmed" truncate>
+              {attachment.mime_type}
+            </Text>
+          ) : null}
+        </Stack>
+        <ActionIcon size="sm" variant="subtle" color="gray" onClick={onRemove}>
+          <IconX size={12} />
+        </ActionIcon>
+      </Group>
+    </Paper>
   );
 }
 

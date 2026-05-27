@@ -1,6 +1,7 @@
 import {
   type AvailableCommand,
   type ChatAgentDescriptor,
+  type ChatAttachment,
   type ChatConfigOption,
   ChatEvent,
   ChatMethod,
@@ -38,6 +39,7 @@ export interface ChatMessage {
   streaming?: boolean;
   createdAt: number;
   order: number;
+  attachments?: ChatAttachment[];
 }
 
 export interface ChatToolCall {
@@ -98,7 +100,7 @@ interface ChatStore {
   refreshSessions(): Promise<void>;
   createSession(args: { cwd?: string; agentId?: string; title?: string }): Promise<ChatSession>;
   setActive(id: string | null): void;
-  sendPrompt(sessionId: string, text: string): Promise<void>;
+  sendPrompt(sessionId: string, text: string, attachments?: ChatAttachment[]): Promise<void>;
   cancel(sessionId: string): Promise<void>;
   closeSession(sessionId: string): Promise<void>;
   resolvePermission(sessionId: string, requestId: string, decision: unknown): Promise<void>;
@@ -303,7 +305,7 @@ export const useChat = create<ChatStore>((set, get) => ({
     set({ activeId: id });
   },
 
-  async sendPrompt(sessionId, text) {
+  async sendPrompt(sessionId, text, attachments = []) {
     // Optimistically push the user message.
     set((s) => {
       const cur = s.sessions[sessionId];
@@ -320,6 +322,7 @@ export const useChat = create<ChatStore>((set, get) => ({
                 id: newId(),
                 role: 'user',
                 text,
+                attachments: attachments.length > 0 ? attachments : undefined,
                 createdAt: Date.now(),
                 order,
               },
@@ -339,7 +342,7 @@ export const useChat = create<ChatStore>((set, get) => ({
       // see what they typed in the transcript.
       setTimeout(() => get().resetLocalSession(sessionId), 0);
     }
-    await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text });
+    await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text, attachments });
   },
 
   async cancel(sessionId) {

@@ -65,6 +65,15 @@ export interface ChatCreateSessionRequest {
 export interface ChatPromptRequest {
   session_id: string;
   text: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatAttachment {
+  type: 'image' | 'file';
+  name: string;
+  data?: string;
+  uri?: string;
+  mime_type?: string;
 }
 
 export interface ChatCancelRequest {
