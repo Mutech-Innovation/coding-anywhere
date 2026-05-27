@@ -1055,6 +1055,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const isSystem = message.role === 'system';
   const text = message.text || (message.streaming ? '…' : '');
 
+  // Defensive: some Devin models stream `content == "None"` when the
+  // assistant turn ends with only tool calls (see closeLiveMessage in
+  // store/chat.ts). The store drops these on close, but suppress here
+  // too so a still-streaming bubble doesn't briefly flash "None".
+  if (message.role === 'agent' && message.text === 'None') return null;
+
   if (isThought) return <ThoughtBubble message={message} />;
 
   // CodeWhale-style bubbles: indigo on user side, hairline white card on

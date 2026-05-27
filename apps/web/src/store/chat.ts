@@ -706,6 +706,20 @@ function closeLiveMessage(cur: SessionState): SessionState {
   const liveId = cur.liveAgentMessageId;
   const live = cur.messages.find((m) => m.id === liveId);
   if (!live?.streaming) return { ...cur, liveAgentMessageId: null };
+  // Devin's `swe-1-6-fast` (and likely other models) sometimes finishes an
+  // assistant turn with `content == "None"` — Python's `None` str-ified —
+  // when the model decided to emit only tool calls and no accompanying
+  // text. The agent then streams that body as one or more
+  // `agent_message_chunk` updates whose concatenated text is exactly
+  // "None", and we'd otherwise finalise a bare "None" bubble between the
+  // thought card and the tool-call card. Drop the message instead.
+  if (live.role === 'agent' && live.text === 'None') {
+    return {
+      ...cur,
+      messages: cur.messages.filter((m) => m.id !== liveId),
+      liveAgentMessageId: null,
+    };
+  }
   return {
     ...cur,
     messages: cur.messages.map((m) => (m.id === liveId ? { ...m, streaming: false } : m)),

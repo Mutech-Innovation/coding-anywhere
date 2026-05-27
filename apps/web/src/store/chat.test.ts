@@ -170,6 +170,76 @@ describe('chat store ingestUpdate', () => {
     expect(state.configOptions[0]?.currentValue).toBe('model-2');
   });
 
+  it('drops "None" agent messages emitted by Devin between thought and tool calls', () => {
+    // Devin's swe-1-6-fast model sometimes ends an assistant turn with
+    // content == "None" (Python's None str-ified) when the LLM picked
+    // only tool_calls; we don't want bare "None" bubbles in the
+    // transcript.
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Let me inspect the file.' },
+    });
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'None' },
+    });
+    pushUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_read',
+      title: 'Read file',
+      kind: 'read',
+      status: 'in_progress',
+    });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.messages.map((m) => ({ role: m.role, text: m.text }))).toEqual([
+      { role: 'agent_thought', text: 'Let me inspect the file.' },
+    ]);
+    expect(Object.keys(state.toolCalls)).toEqual(['call_read']);
+  });
+
+  it('drops "None" agent messages even when streamed across multiple chunks', () => {
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'No' },
+    });
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'ne' },
+    });
+    pushUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_x',
+      title: 'Edit file',
+      kind: 'edit',
+      status: 'in_progress',
+    });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.messages).toHaveLength(0);
+    expect(state.toolCalls['call_x']?.title).toBe('Edit file');
+  });
+
+  it('keeps agent messages whose content merely contains "None" as a substring', () => {
+    seedSession();
+    pushUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'None of the files matched.' },
+    });
+    pushUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_y',
+      title: 'Search',
+      kind: 'search',
+      status: 'in_progress',
+    });
+
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.messages.map((m) => m.text)).toEqual(['None of the files matched.']);
+  });
+
   it('keeps tool calls inline between surrounding message chunks', () => {
     seedSession();
     pushUpdate({
