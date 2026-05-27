@@ -255,8 +255,8 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
       <Stack gap="md">
         <TextInput
           label="Working directory"
-          description="Optional. Choose from the tree or leave blank to use the daemon's default workspace."
-          placeholder="Select a directory or use daemon default"
+          description="Required. Pick a project directory below — Devin refuses to operate on broad roots like $HOME."
+          placeholder="Select a directory"
           value={cwd}
           onChange={(e) => setCwd(e.currentTarget.value)}
         />
@@ -282,7 +282,7 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
           <Button variant="subtle" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={onSubmit} loading={busy}>
+          <Button onClick={onSubmit} loading={busy} disabled={!cwd.trim()}>
             Start
           </Button>
         </Group>
@@ -352,8 +352,8 @@ function DirectoryPicker({
             </Text>
           </Tooltip>
         </Stack>
-        <Button size="xs" variant="subtle" onClick={() => onSelect('')}>
-          Use default
+        <Button size="xs" variant="subtle" onClick={() => onSelect('')} disabled={!selectedPath}>
+          Clear
         </Button>
       </Group>
       <ScrollArea.Autosize mah={260} mt="xs" type="auto">
@@ -426,12 +426,12 @@ function DirectoryNode({
       <Group
         gap={4}
         py={3}
-        px="xs"
+        pr="xs"
         wrap="nowrap"
         onClick={() => onSelect(absolutePath)}
         style={{
           cursor: 'pointer',
-          paddingLeft: depth * 12 + 4,
+          paddingLeft: 8 + depth * 16,
           background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
           color: active ? 'light-dark(var(--mantine-color-brand-8), #ffffff)' : undefined,
           borderRadius: 4,
