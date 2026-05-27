@@ -558,14 +558,16 @@ function ChatView({ sessionId }: { sessionId: string }) {
 
   return (
     <Stack style={{ flex: 1, minHeight: 0 }} gap="xs">
-      <Group justify="space-between" px="xs">
-        <Stack gap={0}>
+      <Group justify="space-between" px="xs" wrap="nowrap">
+        <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
           <Text fw={600} size="sm" truncate>
             {session.session.title || session.session.cwd}
           </Text>
-          <Text size="xs" c="dimmed" truncate>
-            {session.session.agent_id}
-          </Text>
+          <Tooltip label={session.session.cwd} disabled={!session.session.cwd}>
+            <Text size="xs" c="dimmed" truncate>
+              {session.session.agent_id} · {session.session.cwd}
+            </Text>
+          </Tooltip>
         </Stack>
         <Group gap="xs">
           {session.modes.length > 0 ? (
