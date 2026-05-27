@@ -97,3 +97,35 @@ Run commands from the repo root unless there is a reason not to.
   - `pnpm --filter @coding-anywhere/web build`
 - For Go changes, run targeted package tests first, then `go test ./...` when scope is broad.
 - Keep generated/build output out of git unless explicitly intended.
+
+## Devin CLI version pinning (ACP regression workaround)
+
+The daemon spawns `devin acp` as a subprocess (see `internal/agent/devin/adapter.go`). The `acp` subcommand has been less stable than the interactive REPL — at least one shipped version (`2026.5.26-0`) regressed `session/prompt` for Pro accounts so every prompt comes back as JSON-RPC error `-32013` *"Permission denied: ... an internal error occurred (trace ID: ...)"*. The interactive `devin --print` path was unaffected, so plain `devin auth status` looks fine even when chat is broken.
+
+Symptoms in `make dev` chat:
+- New session can be created (status → `idle`).
+- Sending the first message fails immediately with `prompt_failed: rpc error -32013: Permission denied: ...`.
+- The daemon's stderr (from `pumpStderr`, when `--log-level=debug`) shows `WARN chisel_core::translator: ACP: agent error (Internal): Permission denied` and a giveaway `WARN agent_ext::raindrop: 403: Telemetry proxy is only available for free-tier users` even on Pro accounts.
+
+### Detect
+
+`scripts/check-devin-acp.py` drives a `devin acp` subprocess through `initialize` → `session/new` → `session/prompt` and exits 0 on PASS / 2 on regression. Use it before adopting any new `devin` version:
+
+```bash
+# Test whatever `devin` is on PATH:
+scripts/check-devin-acp.py
+# Test a specific binary (use this against newly downloaded versions):
+scripts/check-devin-acp.py --devin ~/.local/share/devin/cli/_versions/<ver>/bin/devin
+```
+
+### Pin to a working version
+
+The `devin` installer keeps every downloaded version under `~/.local/share/devin/cli/_versions/<ver>` and points `~/.local/share/devin/cli/_versions/current` at the active one. To pin a specific version:
+
+1. Disable background updates so `devin` doesn't quietly re-promote a broken release. In `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows) set `"auto_update": false`.
+2. Repoint the symlink: `ln -sfn <ver> ~/.local/share/devin/cli/_versions/current` (e.g. `2026.5.6-12` for the regression above).
+3. Restart `make dev` so the daemon respawns `devin acp` against the new binary. The previous `devin acp` child keeps running until the daemon exits.
+
+### Re-evaluate later
+
+When a new `devin` release comes out, don't just flip `auto_update` back on. Download the candidate (e.g. via `devin update --force` to populate `_versions/`, or by grabbing the installer manually), run `scripts/check-devin-acp.py --devin <candidate>` against it, and only repoint `current` after PASS.
