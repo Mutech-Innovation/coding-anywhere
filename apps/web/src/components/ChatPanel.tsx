@@ -12,6 +12,7 @@ import {
   Menu,
   Modal,
   Paper,
+  Popover,
   Progress,
   ScrollArea,
   SegmentedControl,
@@ -21,6 +22,7 @@ import {
   TextInput,
   ThemeIcon,
   Tooltip,
+  UnstyledButton,
 } from '@mantine/core';
 import type {
   AvailableCommand,
@@ -502,6 +504,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
   const sendPrompt = useChat((s) => s.sendPrompt);
   const cancel = useChat((s) => s.cancel);
   const setMode = useChat((s) => s.setMode);
+  const setConfigOption = useChat((s) => s.setConfigOption);
   const resolvePermission = useChat((s) => s.resolvePermission);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -542,7 +545,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
 
   const status = session.session.status;
   const pendingPermissions = Object.values(session.permissions).filter((p) => p.pending);
-  const modelLabel = getConfigOptionDisplay(session.configOptions, 'model');
+  const modelOption = session.configOptions.find((o) => o.id.toLowerCase() === 'model') ?? null;
 
   async function onSend() {
     if (!draft.trim() && attachments.length === 0) return;
@@ -584,12 +587,13 @@ function ChatView({ sessionId }: { sessionId: string }) {
               transitionDuration={0}
             />
           ) : null}
-          {modelLabel ? (
-            <Tooltip label="Current model">
-              <Badge color="violet" variant="light" maw={220} style={{ textTransform: 'none' }}>
-                Model · {modelLabel}
-              </Badge>
-            </Tooltip>
+          {modelOption ? (
+            <ModelPicker
+              option={modelOption}
+              onChange={(value) =>
+                void setConfigOption(sessionId, modelOption.id, value)
+              }
+            />
           ) : null}
           {session.usage ? <UsagePill usage={session.usage} /> : null}
           {status === 'awaiting_permission' ? (
@@ -770,8 +774,7 @@ function UsagePill({ usage }: { usage: ChatUsage }) {
   );
 }
 
-function getConfigOptionDisplay(options: ChatConfigOption[], id: string): string | null {
-  const option = options.find((o) => o.id.toLowerCase() === id);
+function configOptionCurrentLabel(option: ChatConfigOption | null): string | null {
   if (!option) return null;
   const value = option.currentValue;
   const choice = option.options?.find((o) => o.value === value);
@@ -782,6 +785,222 @@ function stringValue(value: unknown): string | null {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return null;
+}
+
+// --- Model picker ---------------------------------------------------------
+//
+// The agent ships ~80 model identifiers in a single flat `options` array
+// (`Claude Opus 4.7 Max`, `GPT-5.5 Low Thinking`, `Gemini 3.5 Flash`, …).
+// We group by detected family so the dropdown is scannable and provide a
+// text filter for power users. Unknown labels fall through to "Other".
+
+interface ModelFamilyRule {
+  test: RegExp;
+  family: string;
+}
+
+const MODEL_FAMILY_RULES: ModelFamilyRule[] = [
+  { test: /^Claude Opus 4\.7\b/, family: 'Claude Opus 4.7' },
+  { test: /^Claude Opus 4\.6\b/, family: 'Claude Opus 4.6' },
+  { test: /^Claude Opus 4\.5\b/, family: 'Claude Opus 4.5' },
+  { test: /^Claude Sonnet 4\.6\b/, family: 'Claude Sonnet 4.6' },
+  { test: /^Claude Sonnet 4\.5\b/, family: 'Claude Sonnet 4.5' },
+  { test: /^Claude Haiku/, family: 'Claude Haiku' },
+  { test: /^GPT-5\.5\b/, family: 'GPT-5.5' },
+  { test: /^GPT-5\.4 Mini\b/, family: 'GPT-5.4 Mini' },
+  { test: /^GPT-5\.4\b/, family: 'GPT-5.4' },
+  { test: /^GPT-5\.3-Codex\b/, family: 'GPT-5.3 Codex' },
+  { test: /^GPT-5\.2\b/, family: 'GPT-5.2' },
+  { test: /^Gemini 3\.5 Flash\b/, family: 'Gemini 3.5 Flash' },
+  { test: /^Gemini 3\.1 Pro\b/, family: 'Gemini 3.1 Pro' },
+  { test: /^Gemini 3 Flash\b/, family: 'Gemini 3 Flash' },
+  { test: /^SWE-1\.6\b/, family: 'SWE-1.6' },
+  { test: /^SWE-1\.5\b/, family: 'SWE-1.5' },
+  { test: /^Kimi\b/, family: 'Kimi' },
+  { test: /^DeepSeek/, family: 'DeepSeek' },
+  { test: /^GLM/, family: 'GLM' },
+  { test: /^Adaptive\b/, family: 'Adaptive' },
+];
+
+function familyForModel(label: string): string {
+  for (const rule of MODEL_FAMILY_RULES) {
+    if (rule.test.test(label)) return rule.family;
+  }
+  return 'Other';
+}
+
+interface ModelChoice {
+  value: string;
+  label: string;
+  variant: string;
+  description: string | null;
+}
+
+function ModelPicker({
+  option,
+  onChange,
+}: {
+  option: ChatConfigOption;
+  onChange: (value: string) => void;
+}) {
+  const [opened, setOpened] = useState(false);
+  const [filter, setFilter] = useState('');
+
+  const choices = useMemo<ModelChoice[]>(
+    () =>
+      (option.options ?? []).flatMap((raw) => {
+        const value = stringValue(raw.value);
+        if (!value) return [];
+        const label =
+          stringValue(raw.label) ?? stringValue(raw.name) ?? value;
+        const fam = familyForModel(label);
+        // Strip the family prefix from the label so the per-row text
+        // doesn't repeat the section header (e.g. "Medium" instead of
+        // "Claude Opus 4.7 Medium" under the "Claude Opus 4.7" group).
+        const stripped = label.startsWith(fam) ? label.slice(fam.length).trim() : label;
+        const variant = stripped || label;
+        return [
+          {
+            value,
+            label,
+            variant,
+            description: stringValue(raw.description),
+          },
+        ];
+      }),
+    [option.options],
+  );
+
+  const grouped = useMemo(() => {
+    const lower = filter.trim().toLowerCase();
+    const filtered = lower
+      ? choices.filter(
+          (c) =>
+            c.label.toLowerCase().includes(lower) || c.value.toLowerCase().includes(lower),
+        )
+      : choices;
+    const map = new Map<string, ModelChoice[]>();
+    for (const c of filtered) {
+      const fam = familyForModel(c.label);
+      const list = map.get(fam) ?? [];
+      list.push(c);
+      map.set(fam, list);
+    }
+    // Preserve declaration order from MODEL_FAMILY_RULES, then "Other".
+    const order = [...MODEL_FAMILY_RULES.map((r) => r.family), 'Other'];
+    return order
+      .filter((f) => map.has(f))
+      .map((f) => ({ family: f, items: map.get(f)! }));
+  }, [choices, filter]);
+
+  const currentValue = stringValue(option.currentValue);
+  const currentLabel = configOptionCurrentLabel(option) ?? '(unset)';
+
+  return (
+    <Popover
+      opened={opened}
+      onChange={setOpened}
+      position="bottom-end"
+      shadow="md"
+      withArrow
+      offset={6}
+    >
+      <Popover.Target>
+        <UnstyledButton
+          onClick={() => setOpened((o) => !o)}
+          aria-label="Switch model"
+        >
+          <Tooltip label="Click to switch model" disabled={opened}>
+            <Badge
+              color="violet"
+              variant="light"
+              maw={260}
+              style={{ textTransform: 'none', cursor: 'pointer' }}
+              rightSection={<IconChevronDown size={12} />}
+            >
+              Model · {currentLabel}
+            </Badge>
+          </Tooltip>
+        </UnstyledButton>
+      </Popover.Target>
+      <Popover.Dropdown p={0}>
+        <Stack gap={0} w={340}>
+          <Box p="xs" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+            <TextInput
+              size="xs"
+              placeholder="搜索模型…"
+              value={filter}
+              onChange={(e) => setFilter(e.currentTarget.value)}
+              autoFocus
+              leftSection={<IconSearch size={12} />}
+            />
+          </Box>
+          <ScrollArea.Autosize mah={360} type="auto">
+            {grouped.length === 0 ? (
+              <Text size="xs" c="dimmed" p="md" ta="center">
+                没有匹配的模型
+              </Text>
+            ) : (
+              <Stack gap={2} p={4}>
+                {grouped.map((group) => (
+                  <Box key={group.family}>
+                    <Text
+                      size="xs"
+                      fw={600}
+                      c="dimmed"
+                      px="xs"
+                      py={4}
+                      style={{ textTransform: 'uppercase', letterSpacing: 0.3 }}
+                    >
+                      {group.family}
+                    </Text>
+                    {group.items.map((item) => {
+                      const active = item.value === currentValue;
+                      return (
+                        <UnstyledButton
+                          key={item.value}
+                          onClick={() => {
+                            setOpened(false);
+                            if (item.value !== currentValue) onChange(item.value);
+                          }}
+                          p="xs"
+                          w="100%"
+                          style={{
+                            borderRadius: 4,
+                            background: active
+                              ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                              : 'transparent',
+                          }}
+                        >
+                          <Group gap="xs" justify="space-between" wrap="nowrap">
+                            <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
+                              <Text size="sm" fw={active ? 600 : 500} truncate>
+                                {item.variant}
+                              </Text>
+                              {item.description ? (
+                                <Text size="xs" c="dimmed" truncate>
+                                  {item.description}
+                                </Text>
+                              ) : null}
+                            </Stack>
+                            {active ? (
+                              <ThemeIcon size="xs" color="brand" variant="light">
+                                <IconCheck size={10} />
+                              </ThemeIcon>
+                            ) : null}
+                          </Group>
+                        </UnstyledButton>
+                      );
+                    })}
+                  </Box>
+                ))}
+              </Stack>
+            )}
+          </ScrollArea.Autosize>
+        </Stack>
+      </Popover.Dropdown>
+    </Popover>
+  );
 }
 
 function usageColor(percent: number): string {

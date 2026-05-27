@@ -528,9 +528,14 @@ type snapshotMockACP struct {
 	in *io.PipeReader
 	wr *bufio.Writer
 
-	mu            sync.Mutex
-	writeMu       sync.Mutex
-	modes         map[string]any
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	modes   map[string]any
+	// earlyNotifs, if set, are fired as session/update notifications
+	// *before* responding to session/new. Used to reproduce the
+	// real-world Devin behaviour where configOptions /
+	// availableCommands arrive while session/new is still in flight.
+	earlyNotifs   []map[string]any
 	lastSetModeID string
 	respWaiters   map[string]chan map[string]any
 }
@@ -555,9 +560,18 @@ func (m *snapshotMockACP) run() {
 			result := map[string]any{"sessionId": "sess-acp-snap"}
 			m.mu.Lock()
 			modes := m.modes
+			early := m.earlyNotifs
 			m.mu.Unlock()
 			if modes != nil {
 				result["modes"] = modes
+			}
+			// Fire any early-update notifications synchronously before
+			// answering session/new — same ordering as real Devin.
+			for _, body := range early {
+				m.notify("session/update", map[string]any{
+					"sessionId": "sess-acp-snap",
+					"update":    body,
+				})
 			}
 			m.respond(idVal, result)
 		case "session/set_mode":
@@ -669,5 +683,165 @@ func TestChatAgentsLists(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// TestChatCreateSessionPendingUpdates pins down the buffering fix for
+// session/update notifications that arrive while session/new is still in
+// flight. In production Devin emits config_option_update +
+// available_commands_update before answering session/new; before the fix
+// they were dropped (no daemon-side session record yet) and the web UI
+// never received configOptions, hiding the model picker.
+//
+// The mock ACP server here mimics that ordering: an
+// `available_commands_update` and a `config_option_update` are fired
+// *before* the session/new response. The chatrouter must buffer them and
+// ship them inline with the create_session response as `pending_updates`.
+func TestChatCreateSessionPendingUpdates(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	mock := &snapshotMockACP{
+		t:           t,
+		respWaiters: map[string]chan map[string]any{},
+		earlyNotifs: []map[string]any{
+			{
+				"sessionUpdate": "config_option_update",
+				"configOptions": []map[string]any{
+					{
+						"id":           "model",
+						"name":         "Model",
+						"type":         "select",
+						"currentValue": "swe-1-6-fast",
+						"options": []map[string]any{
+							{"value": "swe-1-6-fast", "name": "SWE-1.6 Fast"},
+							{"value": "claude-opus-4-7-max", "name": "Claude Opus 4.7 Max"},
+						},
+					},
+				},
+			},
+			{
+				"sessionUpdate": "available_commands_update",
+				"availableCommands": []map[string]any{
+					{"name": "compact", "description": "Force conversation compaction"},
+				},
+			},
+		},
+	}
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	mock.in = stdinR
+	mock.wr = bufio.NewWriter(stdoutW)
+	go mock.run()
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clientWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientWS.Close(websocket.StatusNormalClosure, "") })
+
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+	if err := wsjson.Write(ctx, clientWS, req); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the create_session response; tolerate the broadcast
+	// session_created event arriving on the same socket.
+	deadline := time.After(8 * time.Second)
+	var res wire.Envelope
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("no create_session response within 8s")
+		default:
+		}
+		var env wire.Envelope
+		if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if env.ID == "c-1" && env.Type == wire.TypeResponse {
+			res = env
+			break
+		}
+	}
+	if res.Error != nil {
+		t.Fatalf("create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	if len(createRes.PendingUpdates) != 2 {
+		t.Fatalf("expected 2 pending updates (config_option_update, available_commands_update), got %d: %s",
+			len(createRes.PendingUpdates), string(res.Payload))
+	}
+	kinds := make([]string, 0, len(createRes.PendingUpdates))
+	for _, u := range createRes.PendingUpdates {
+		var head struct {
+			Kind string `json:"sessionUpdate"`
+		}
+		if err := json.Unmarshal(u, &head); err != nil {
+			t.Fatalf("decode pending update: %v", err)
+		}
+		kinds = append(kinds, head.Kind)
+	}
+	wantKinds := []string{"config_option_update", "available_commands_update"}
+	for i, want := range wantKinds {
+		if i >= len(kinds) || kinds[i] != want {
+			t.Fatalf("pending update kinds = %v, want %v", kinds, wantKinds)
+		}
+	}
+
+	// Also verify that the daemon's snapshot picked these up, so a
+	// subsequent get_history replays them too (page reload path).
+	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: createRes.Session.ID})
+	if err := wsjson.Write(ctx, clientWS, req); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("no get_history response within 5s")
+		default:
+		}
+		var env wire.Envelope
+		if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if env.ID != "h-1" || env.Type != wire.TypeResponse {
+			continue
+		}
+		var hist wire.ChatGetHistoryResponse
+		if err := json.Unmarshal(env.Payload, &hist); err != nil {
+			t.Fatalf("history payload: %v", err)
+		}
+		if len(hist.Updates) < 2 {
+			t.Fatalf("expected at least 2 updates in history, got %d", len(hist.Updates))
+		}
+		return
 	}
 }

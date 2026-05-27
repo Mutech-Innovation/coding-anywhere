@@ -23,6 +23,10 @@ const (
 	ChatMethodGetHistory = "get_history"
 	// ChatMethodSetMode forwards an ACP `session/set_mode` to the agent.
 	ChatMethodSetMode = "set_mode"
+	// ChatMethodSetConfigOption forwards an ACP `session/set_config_option`
+	// to the agent (used by the web UI's model picker to switch model,
+	// max-turn-requests, etc.).
+	ChatMethodSetConfigOption = "set_config_option"
 
 	ChatEventSessionCreated     = "session_created"
 	ChatEventSessionClosed      = "session_closed"
@@ -83,6 +87,14 @@ type ChatCreateSessionResponse struct {
 	// doesn't expose modes.
 	AvailableModes []SessionMode `json:"available_modes,omitempty"`
 	CurrentModeID  string        `json:"current_mode_id,omitempty"`
+	// PendingUpdates carries session/update notifications that the agent
+	// pushed while session/new was still in flight (config_option_update,
+	// available_commands_update, …). The client replays these through its
+	// normal ingest pipeline immediately after registering the session
+	// locally so the chat header has model/commands/etc. populated from
+	// frame one. Field is the raw ACP `update` body, same shape as
+	// ChatUpdateEvent.Update.
+	PendingUpdates []json.RawMessage `json:"pending_updates,omitempty"`
 }
 
 type ChatPromptRequest struct {
@@ -91,12 +103,8 @@ type ChatPromptRequest struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
-// Attachment is a file or image the user dropped into the chat composer.
-// Either Data (base64-encoded inline payload) or URI (file://...) is set;
-// MimeType is informational. The chatrouter translates these into ACP
-// content blocks before forwarding to the agent.
 type Attachment struct {
-	Type     string `json:"type"` // "image" | "file"
+	Type     string `json:"type"`     // "image" | "file"
 	Name     string `json:"name"`
 	Data     string `json:"data,omitempty"`     // base64
 	URI      string `json:"uri,omitempty"`      // file://...
@@ -124,6 +132,15 @@ type ChatResolvePermissionRequest struct {
 type ChatSetModeRequest struct {
 	SessionID string `json:"session_id"`
 	ModeID    string `json:"mode_id"`
+}
+
+// ChatSetConfigOptionRequest forwards `session/set_config_option` to the
+// agent. ConfigID is the option id (e.g. "model"), Value is the new
+// `currentValue`.
+type ChatSetConfigOptionRequest struct {
+	SessionID string `json:"session_id"`
+	ConfigID  string `json:"config_id"`
+	Value     string `json:"value"`
 }
 
 // ChatGetHistoryRequest fetches the daemon's persisted snapshot of one

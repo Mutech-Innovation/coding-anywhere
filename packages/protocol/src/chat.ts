@@ -19,6 +19,12 @@ export const ChatMethod = {
   GetHistory: 'get_history',
   /** Switch the agent's session mode (ACP `session/set_mode`). */
   SetMode: 'set_mode',
+  /**
+   * Change a session-scoped config option (ACP `session/set_config_option`).
+   * The web UI's model picker uses this to switch the active model; the
+   * agent responds with an updated `config_option_update` event.
+   */
+  SetConfigOption: 'set_config_option',
 } as const;
 export type ChatMethod = (typeof ChatMethod)[keyof typeof ChatMethod];
 

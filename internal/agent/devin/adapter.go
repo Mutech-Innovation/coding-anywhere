@@ -224,6 +224,20 @@ func (a *Adapter) SetMode(ctx context.Context, sessionID, modeID string) error {
 	}, nil)
 }
 
+// SetConfigOption forwards an ACP `session/set_config_option` request,
+// changing a single session-scoped option (e.g. the active model). The
+// agent's response is a fresh configOptions snapshot which we ignore —
+// the same payload arrives moments later as a `config_option_update`
+// session/update event that our update fan-out already broadcasts to
+// clients.
+func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) error {
+	return a.cli.Call(ctx, acp.MethodSessionSetConfigOption, acp.SessionSetConfigOptionRequest{
+		SessionID: sessionID,
+		ConfigID:  configID,
+		Value:     value,
+	}, nil)
+}
+
 // LoadSession resumes a previously persisted session. Requires the agent
 // to advertise the loadSession capability.
 func (a *Adapter) LoadSession(ctx context.Context, sessionID, cwd string, mcp []acp.MCPServer) error {

@@ -105,6 +105,12 @@ interface ChatStore {
   closeSession(sessionId: string): Promise<void>;
   resolvePermission(sessionId: string, requestId: string, decision: unknown): Promise<void>;
   setMode(sessionId: string, modeId: string): Promise<void>;
+  /**
+   * Change one session-scoped config option (e.g. switch the active model).
+   * Optimistically updates local `configOptions`; the daemon's
+   * `config_option_update` broadcast eventually reconciles.
+   */
+  setConfigOption(sessionId: string, configId: string, value: string): Promise<void>;
   /** Reload one session's full snapshot (updates + prompts + modes) from the daemon. */
   refreshHistory(sessionId: string): Promise<void>;
   /** Locally clear messages/tool calls/plan for the session — used by /clear etc. */
@@ -286,6 +292,11 @@ export const useChat = create<ChatStore>((set, get) => ({
       session: ChatSession;
       available_modes?: SessionMode[];
       current_mode_id?: string;
+      // Raw ACP session/update bodies that arrived on the daemon while
+      // session/new was still in flight (Devin emits configOptions /
+      // availableCommands before answering). Replayed below so the
+      // initial chat header has model/commands populated from frame one.
+      pending_updates?: Array<Record<string, unknown>>;
     };
     set((s) => ({
       sessions: {
@@ -298,6 +309,11 @@ export const useChat = create<ChatStore>((set, get) => ({
       },
       activeId: payload.session.id,
     }));
+    // Replay the buffered updates through the same ingest pipeline as
+    // live ChatEventUpdate events.
+    for (const update of payload.pending_updates ?? []) {
+      ingestUpdate(set, get, { session_id: payload.session.id, update });
+    }
     return payload.session;
   },
 
@@ -393,6 +409,52 @@ export const useChat = create<ChatStore>((set, get) => ({
       };
     });
     await sendRequest(ChatMethod.SetMode, { session_id: sessionId, mode_id: modeId });
+  },
+
+  async setConfigOption(sessionId, configId, value) {
+    // Optimistically reflect the new value so the UI updates immediately.
+    // The agent emits a `config_option_update` shortly after which the
+    // ingest handler will reconcile against; if the request errors we
+    // revert to the previous value below.
+    let previous: unknown;
+    set((s) => {
+      const cur = s.sessions[sessionId];
+      if (!cur) return {};
+      const next = cur.configOptions.map((opt) => {
+        if (opt.id !== configId) return opt;
+        previous = opt.currentValue;
+        return { ...opt, currentValue: value };
+      });
+      return {
+        sessions: {
+          ...s.sessions,
+          [sessionId]: { ...cur, configOptions: next },
+        },
+      };
+    });
+    try {
+      await sendRequest(ChatMethod.SetConfigOption, {
+        session_id: sessionId,
+        config_id: configId,
+        value,
+      });
+    } catch (err) {
+      // Roll back the optimistic update on failure.
+      set((s) => {
+        const cur = s.sessions[sessionId];
+        if (!cur) return {};
+        const next = cur.configOptions.map((opt) =>
+          opt.id === configId ? { ...opt, currentValue: previous } : opt,
+        );
+        return {
+          sessions: {
+            ...s.sessions,
+            [sessionId]: { ...cur, configOptions: next },
+          },
+        };
+      });
+      throw err;
+    }
   },
 
   async refreshHistory(sessionId) {

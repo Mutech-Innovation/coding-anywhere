@@ -49,6 +49,14 @@ type Router struct {
 	devin      *devin.Adapter // nil until first session
 	sessions   map[string]*session
 	defaultCwd string
+	// earlyUpdates buffers session/update notifications that arrive while a
+	// `chat.create_session` (and the underlying ACP `session/new`) is still
+	// in flight — Devin sends configOptions / modes / availableCommands
+	// before answering session/new, so we'd otherwise drop them on the
+	// floor (no daemon-side session record yet) and the web UI would never
+	// see the initial model / mode metadata. Keyed by native session id.
+	// Drained by handleCreateSession once the session is registered.
+	earlyUpdates map[string][]json.RawMessage
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingPermission // request_id → channel
@@ -143,6 +151,7 @@ func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, def
 		runCancel:    cancel,
 		sessions:     make(map[string]*session),
 		defaultCwd:   cwd,
+		earlyUpdates: make(map[string][]json.RawMessage),
 		pending:      make(map[string]*pendingPermission),
 	}
 	cli.Handle(wire.ChannelChat, r.handle)
@@ -214,6 +223,12 @@ func (r *Router) handle(env wire.Envelope) error {
 			return nil
 		}
 		r.handleSetMode(env, req)
+	case wire.ChatMethodSetConfigOption:
+		var req wire.ChatSetConfigOptionRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		r.handleSetConfigOption(env, req)
 	case wire.ChatMethodGetHistory:
 		var req wire.ChatGetHistoryRequest
 		if err := r.parse(env, &req); err != nil {
@@ -277,6 +292,11 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	nativeID, modes, err := a.NewSession(callCtx, req.Cwd, nil)
 	if err != nil {
 		r.respondErr(env, "agent_new_session_failed", err.Error())
+		// Drop any buffered updates for this native id — there's no
+		// session to attach them to.
+		r.mu.Lock()
+		delete(r.earlyUpdates, nativeID)
+		r.mu.Unlock()
 		return
 	}
 	id := ulid.Make().String()
@@ -298,14 +318,33 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		}
 		s.currentModeID = modes.CurrentModeID
 	}
+
+	// Atomically claim any buffered updates and register the session.
+	// Holding r.mu across both steps ensures no further notification can
+	// be buffered under this native id after we drain — the next call to
+	// handleAgentUpdate will find the registered session and process
+	// normally.
 	r.mu.Lock()
+	buffered := r.earlyUpdates[nativeID]
+	delete(r.earlyUpdates, nativeID)
 	r.sessions[id] = s
 	r.mu.Unlock()
+
+	// Replay buffered updates onto the snapshot + state. We don't
+	// broadcast here because the client hasn't yet been told about the
+	// session; instead we ship them inline with the create_session
+	// response below, and the client replays them through its own
+	// ingest pipeline after registering the session locally.
+	for _, u := range buffered {
+		s.appendUpdate(u)
+		r.applyUpdateStateMutations(s, u)
+	}
 
 	r.respondOK(env, wire.ChatCreateSessionResponse{
 		Session:        s.ChatSession,
 		AvailableModes: s.modes,
 		CurrentModeID:  s.currentModeID,
+		PendingUpdates: buffered,
 	})
 	r.broadcastEvent(wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
 }
@@ -327,6 +366,7 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 	// originating message even if the agent closes mid-turn.
 	s.appendPrompt(req.Text, req.Attachments)
 
+	// Convert attachments to ACP ContentBlocks
 	contentBlocks := r.attachmentsToContentBlocks(req.Text, req.Attachments)
 
 	r.setStatus(s, "thinking")
@@ -351,36 +391,43 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 	}()
 }
 
-// attachmentsToContentBlocks lifts the wire-side Attachment list into ACP
-// ContentBlocks the agent can consume. Images are emitted as inline
-// `image` blocks (base64 data); files with inline data are summarised as
-// a `text` block (Phase 1) and files with a URI are emitted as
-// `resource_link`. Devin's ACP server accepts the unknown extra fields
-// (`data`, `mime_type`) thanks to the round-trippable Extra map on
-// ContentBlock.
+// attachmentsToContentBlocks converts wire attachments to ACP ContentBlocks
 func (r *Router) attachmentsToContentBlocks(text string, attachments []wire.Attachment) []acp.ContentBlock {
 	var blocks []acp.ContentBlock
+
+	// Add text content if present
 	if text != "" {
-		blocks = append(blocks, acp.ContentBlock{Type: "text", Text: text})
+		blocks = append(blocks, acp.ContentBlock{
+			Type: "text",
+			Text: text,
+		})
 	}
+
+	// Add attachments
 	for _, att := range attachments {
-		switch att.Type {
-		case "image":
+		if att.Type == "image" {
+			// Image as image content block with base64 data
+			extra := map[string]any{
+				"data":      att.Data,
+				"mime_type": att.MimeType,
+			}
 			blocks = append(blocks, acp.ContentBlock{
-				Type: "image",
-				Extra: map[string]any{
-					"data":      att.Data,
-					"mime_type": att.MimeType,
-				},
+				Type:  "image",
+				Extra: extra,
 			})
-		case "file":
+		} else if att.Type == "file" {
+			// File as resource_link or text with base64 data
+			// For Phase 1, we'll include file data as base64 in a text block
+			// In Phase 2, this would use a proper file upload API
 			if att.Data != "" {
+				fileInfo := fmt.Sprintf("[File: %s, Type: %s, Size: %d bytes (base64 encoded)]",
+					att.Name, att.MimeType, len(att.Data))
 				blocks = append(blocks, acp.ContentBlock{
 					Type: "text",
-					Text: fmt.Sprintf("[File: %s, Type: %s, Size: %d bytes (base64 encoded)]",
-						att.Name, att.MimeType, len(att.Data)),
+					Text: fileInfo,
 				})
 			} else if att.URI != "" {
+				// If we have a URI, use resource_link
 				blocks = append(blocks, acp.ContentBlock{
 					Type: "resource_link",
 					URI:  att.URI,
@@ -392,6 +439,7 @@ func (r *Router) attachmentsToContentBlocks(text string, attachments []wire.Atta
 			}
 		}
 	}
+
 	return blocks
 }
 
@@ -492,43 +540,71 @@ func (r *Router) daemonSessionID(nativeID string) string {
 // session and broadcasts it to clients. Updates that mutate session-level
 // state (e.g. current_mode_update) are also folded into the session struct
 // so chat.list_sessions and chat.get_history reflect the latest values.
+//
+// Notifications can arrive while a `chat.create_session` is still in flight
+// (Devin emits configOptions / modes / availableCommands before answering
+// session/new). For those, we don't yet have a daemon session record to
+// route to, so the update is buffered keyed by native session id and
+// drained by handleCreateSession after registration.
 func (r *Router) handleAgentUpdate(nativeSessionID string, update json.RawMessage) {
-	daemonID := r.daemonSessionID(nativeSessionID)
 	r.mu.Lock()
-	s, ok := r.sessions[daemonID]
-	r.mu.Unlock()
-	var seq uint64
-	if ok {
-		seq = s.appendUpdate(update)
-		// Best-effort decode of the discriminator so we can pick out
-		// state-mutating updates without forcing a full schema.
-		var head struct {
-			Kind  string  `json:"sessionUpdate"`
-			Mode  string  `json:"currentModeId"`
-			Title *string `json:"title"`
-		}
-		if err := json.Unmarshal(update, &head); err == nil {
-			switch head.Kind {
-			case "current_mode_update":
-				if head.Mode != "" {
-					r.mu.Lock()
-					s.currentModeID = head.Mode
-					r.mu.Unlock()
-				}
-			case "session_info_update":
-				if head.Title != nil {
-					r.mu.Lock()
-					s.Title = *head.Title
-					r.mu.Unlock()
-				}
-			}
+	var (
+		s        *session
+		daemonID string
+	)
+	for _, sess := range r.sessions {
+		if sess.NativeID == nativeSessionID {
+			s = sess
+			daemonID = sess.ID
+			break
 		}
 	}
+	if s == nil {
+		// Session not registered yet — buffer for handleCreateSession to
+		// drain. We copy the bytes because json.RawMessage from the ACP
+		// decoder is reused across notifications.
+		buf := append([]byte(nil), update...)
+		r.earlyUpdates[nativeSessionID] = append(r.earlyUpdates[nativeSessionID], buf)
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+
+	seq := s.appendUpdate(update)
+	r.applyUpdateStateMutations(s, update)
 	r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
 		SessionID:  daemonID,
 		Update:     update,
 		SequenceID: seq,
 	})
+}
+
+// applyUpdateStateMutations folds the known state-mutating session/update
+// kinds (current_mode_update, session_info_update) onto the session struct
+// so chat.list_sessions and chat.get_history reflect the latest values.
+func (r *Router) applyUpdateStateMutations(s *session, update json.RawMessage) {
+	var head struct {
+		Kind  string  `json:"sessionUpdate"`
+		Mode  string  `json:"currentModeId"`
+		Title *string `json:"title"`
+	}
+	if err := json.Unmarshal(update, &head); err != nil {
+		return
+	}
+	switch head.Kind {
+	case "current_mode_update":
+		if head.Mode != "" {
+			r.mu.Lock()
+			s.currentModeID = head.Mode
+			r.mu.Unlock()
+		}
+	case "session_info_update":
+		if head.Title != nil {
+			r.mu.Lock()
+			s.Title = *head.Title
+			r.mu.Unlock()
+		}
+	}
 }
 
 func (r *Router) handleSetMode(env wire.Envelope, req wire.ChatSetModeRequest) {
@@ -559,6 +635,34 @@ func (r *Router) handleSetMode(env wire.Envelope, req wire.ChatSetModeRequest) {
 	s.currentModeID = req.ModeID
 	r.mu.Unlock()
 	r.respondOK(env, map[string]string{"mode_id": req.ModeID})
+}
+
+func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfigOptionRequest) {
+	r.mu.Lock()
+	s, ok := r.sessions[req.SessionID]
+	r.mu.Unlock()
+	if !ok {
+		r.respondErr(env, "not_found", "unknown session")
+		return
+	}
+	if r.devin == nil {
+		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
+		return
+	}
+	if req.ConfigID == "" {
+		r.respondErr(env, "bad_request", "config_id required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
+	defer cancel()
+	if err := r.devin.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value); err != nil {
+		r.respondErr(env, "agent_set_config_option_failed", err.Error())
+		return
+	}
+	// The agent emits a `config_option_update` shortly after; the client
+	// reconciles via that event. We don't echo it here to avoid double
+	// state churn.
+	r.respondOK(env, map[string]string{"config_id": req.ConfigID, "value": req.Value})
 }
 
 func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequest) {

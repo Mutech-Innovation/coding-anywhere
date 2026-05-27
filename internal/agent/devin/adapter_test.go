@@ -34,6 +34,11 @@ type mockACPServer struct {
 		sessionID string
 		modeID    string
 	}
+	lastSetConfigOption struct {
+		sessionID string
+		configID  string
+		value     string
+	}
 	cancelCh   chan struct{}
 	promptResp string
 	// modesOnNew is returned in the session/new response when set.
@@ -109,6 +114,16 @@ func (s *mockACPServer) run() {
 			s.lastSetMode.modeID = req.ModeID
 			s.mu.Unlock()
 			s.respond(idVal, map[string]any{})
+		case "session/set_config_option":
+			b, _ := json.Marshal(msg["params"])
+			var req acp.SessionSetConfigOptionRequest
+			_ = json.Unmarshal(b, &req)
+			s.mu.Lock()
+			s.lastSetConfigOption.sessionID = req.SessionID
+			s.lastSetConfigOption.configID = req.ConfigID
+			s.lastSetConfigOption.value = req.Value
+			s.mu.Unlock()
+			s.respond(idVal, map[string]any{"configOptions": []any{}})
 		case "session/prompt":
 			b, _ := json.Marshal(msg["params"])
 			var req acp.SessionPromptRequest
@@ -311,6 +326,26 @@ func TestDevinAdapterSetMode(t *testing.T) {
 	defer srv.mu.Unlock()
 	if srv.lastSetMode.sessionID != "sess-x" || srv.lastSetMode.modeID != "code" {
 		t.Fatalf("set_mode not seen: %+v", srv.lastSetMode)
+	}
+}
+
+func TestDevinAdapterSetConfigOption(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetConfigOption(ctx, "sess-y", "model", "claude-opus-4-7-max"); err != nil {
+		t.Fatalf("SetConfigOption: %v", err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	got := srv.lastSetConfigOption
+	if got.sessionID != "sess-y" || got.configID != "model" || got.value != "claude-opus-4-7-max" {
+		t.Fatalf("set_config_option not seen: %+v", got)
 	}
 }
 

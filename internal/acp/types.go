@@ -34,6 +34,10 @@ const (
 	MethodSessionPrompt      = "session/prompt"
 	MethodSessionClose       = "session/close"
 	MethodSessionSetMode     = "session/set_mode"
+	// MethodSessionSetConfigOption switches a session-scoped config option
+	// (e.g. the active model, max-turn-requests). The agent broadcasts a
+	// `config_option_update` session/update after a successful change.
+	MethodSessionSetConfigOption = "session/set_config_option"
 
 	NotificationSessionUpdate = "session/update"
 	NotificationSessionCancel = "session/cancel"
@@ -166,6 +170,16 @@ type SessionModeState struct {
 type SessionSetModeRequest struct {
 	SessionID string `json:"sessionId"`
 	ModeID    string `json:"modeId"`
+}
+
+// SessionSetConfigOptionRequest changes one session-scoped config option
+// (matched by `id` in the corresponding config_option_update event).
+// Value is the new `currentValue`; for `type: "select"` options this is one
+// of the advertised `options[].value` strings.
+type SessionSetConfigOptionRequest struct {
+	SessionID string `json:"sessionId"`
+	ConfigID  string `json:"configId"`
+	Value     string `json:"value"`
 }
 
 // SessionPromptRequest sends a user turn into a session.
