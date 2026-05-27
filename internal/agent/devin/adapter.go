@@ -225,17 +225,30 @@ func (a *Adapter) SetMode(ctx context.Context, sessionID, modeID string) error {
 }
 
 // SetConfigOption forwards an ACP `session/set_config_option` request,
-// changing a single session-scoped option (e.g. the active model). The
-// agent's response is a fresh configOptions snapshot which we ignore —
-// the same payload arrives moments later as a `config_option_update`
-// session/update event that our update fan-out already broadcasts to
-// clients.
-func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) error {
-	return a.cli.Call(ctx, acp.MethodSessionSetConfigOption, acp.SessionSetConfigOptionRequest{
+// changing a single session-scoped option (e.g. the active model).
+//
+// Devin's ACP server returns the new full configOptions snapshot in the
+// response body but — unlike most other state changes — does NOT also
+// emit a `config_option_update` session/update notification. Callers
+// that want to keep their per-session snapshot honest must therefore
+// fan out the returned `configOptions` themselves. We surface the raw
+// JSON so the chatrouter can synthesise that event without re-parsing
+// every option's `options` list.
+//
+// Returns the raw `configOptions` JSON value from the response. Empty
+// (`nil`) if the agent didn't include the field.
+func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) (json.RawMessage, error) {
+	var raw struct {
+		ConfigOptions json.RawMessage `json:"configOptions"`
+	}
+	if err := a.cli.Call(ctx, acp.MethodSessionSetConfigOption, acp.SessionSetConfigOptionRequest{
 		SessionID: sessionID,
 		ConfigID:  configID,
 		Value:     value,
-	}, nil)
+	}, &raw); err != nil {
+		return nil, err
+	}
+	return raw.ConfigOptions, nil
 }
 
 // LoadSession resumes a previously persisted session. Requires the agent

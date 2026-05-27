@@ -35,8 +35,12 @@ const (
 	MethodSessionClose       = "session/close"
 	MethodSessionSetMode     = "session/set_mode"
 	// MethodSessionSetConfigOption switches a session-scoped config option
-	// (e.g. the active model, max-turn-requests). The agent broadcasts a
-	// `config_option_update` session/update after a successful change.
+	// (e.g. the active model, max-turn-requests). The agent's response
+	// returns the new full configOptions snapshot in the result body —
+	// note that, unlike most other ACP state changes, the agent does NOT
+	// also emit a follow-up `config_option_update` notification, so
+	// callers must fan the response out themselves to keep snapshots
+	// consistent.
 	MethodSessionSetConfigOption = "session/set_config_option"
 
 	NotificationSessionUpdate = "session/update"

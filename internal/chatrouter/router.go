@@ -655,13 +655,37 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 	}
 	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
 	defer cancel()
-	if err := r.devin.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value); err != nil {
+	configOptions, err := r.devin.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value)
+	if err != nil {
 		r.respondErr(env, "agent_set_config_option_failed", err.Error())
 		return
 	}
-	// The agent emits a `config_option_update` shortly after; the client
-	// reconciles via that event. We don't echo it here to avoid double
-	// state churn.
+	// Devin's ACP returns the new configOptions snapshot in the response
+	// but — unlike most state changes — does not follow up with a
+	// `config_option_update` session/update notification. Synthesise one
+	// from the response so the per-session snapshot stays honest (page
+	// reload via chat.get_history replays from the snapshot) and other
+	// connected clients get a real-time broadcast just as if the agent
+	// had volunteered the event itself.
+	if len(configOptions) > 0 {
+		synthetic, err := json.Marshal(struct {
+			SessionUpdate string          `json:"sessionUpdate"`
+			ConfigOptions json.RawMessage `json:"configOptions"`
+		}{
+			SessionUpdate: "config_option_update",
+			ConfigOptions: configOptions,
+		})
+		if err != nil {
+			r.logger.Warn("synthesise config_option_update", "err", err)
+		} else {
+			seq := s.appendUpdate(synthetic)
+			r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+				SessionID:  s.ID,
+				Update:     synthetic,
+				SequenceID: seq,
+			})
+		}
+	}
 	r.respondOK(env, map[string]string{"config_id": req.ConfigID, "value": req.Value})
 }
 

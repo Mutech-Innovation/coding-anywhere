@@ -123,7 +123,15 @@ func (s *mockACPServer) run() {
 			s.lastSetConfigOption.configID = req.ConfigID
 			s.lastSetConfigOption.value = req.Value
 			s.mu.Unlock()
-			s.respond(idVal, map[string]any{"configOptions": []any{}})
+			// Mimic Devin's response: it echoes back the new full
+			// configOptions snapshot in the result body (no
+			// session/update follow-up — callers fan that out
+			// themselves).
+			s.respond(idVal, map[string]any{
+				"configOptions": []map[string]any{
+					{"id": req.ConfigID, "currentValue": req.Value},
+				},
+			})
 		case "session/prompt":
 			b, _ := json.Marshal(msg["params"])
 			var req acp.SessionPromptRequest
@@ -338,7 +346,8 @@ func TestDevinAdapterSetConfigOption(t *testing.T) {
 	if err := a.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SetConfigOption(ctx, "sess-y", "model", "claude-opus-4-7-max"); err != nil {
+	configOptions, err := a.SetConfigOption(ctx, "sess-y", "model", "claude-opus-4-7-max")
+	if err != nil {
 		t.Fatalf("SetConfigOption: %v", err)
 	}
 	srv.mu.Lock()
@@ -346,6 +355,9 @@ func TestDevinAdapterSetConfigOption(t *testing.T) {
 	got := srv.lastSetConfigOption
 	if got.sessionID != "sess-y" || got.configID != "model" || got.value != "claude-opus-4-7-max" {
 		t.Fatalf("set_config_option not seen: %+v", got)
+	}
+	if !strings.Contains(string(configOptions), `"claude-opus-4-7-max"`) {
+		t.Fatalf("expected configOptions snapshot in response, got %q", string(configOptions))
 	}
 }
 

@@ -535,9 +535,11 @@ type snapshotMockACP struct {
 	// *before* responding to session/new. Used to reproduce the
 	// real-world Devin behaviour where configOptions /
 	// availableCommands arrive while session/new is still in flight.
-	earlyNotifs   []map[string]any
-	lastSetModeID string
-	respWaiters   map[string]chan map[string]any
+	earlyNotifs        []map[string]any
+	lastSetModeID      string
+	lastSetConfigID    string
+	lastSetConfigValue string
+	respWaiters        map[string]chan map[string]any
 }
 
 func (m *snapshotMockACP) run() {
@@ -580,6 +582,28 @@ func (m *snapshotMockACP) run() {
 			m.lastSetModeID, _ = params["modeId"].(string)
 			m.mu.Unlock()
 			m.respond(idVal, map[string]any{})
+		case "session/set_config_option":
+			params, _ := msg["params"].(map[string]any)
+			cfg, _ := params["configId"].(string)
+			val, _ := params["value"].(string)
+			m.mu.Lock()
+			m.lastSetConfigID = cfg
+			m.lastSetConfigValue = val
+			m.mu.Unlock()
+			// Real Devin echoes the new full configOptions snapshot in
+			// the result body and (notably) does NOT emit a follow-up
+			// session/update — the chatrouter must synthesise that
+			// itself. Mirror exactly that behaviour here.
+			m.respond(idVal, map[string]any{
+				"configOptions": []map[string]any{
+					{
+						"id":           cfg,
+						"name":         "Model",
+						"type":         "select",
+						"currentValue": val,
+					},
+				},
+			})
 		case "session/prompt":
 			go func() {
 				m.notify("session/update", map[string]any{
@@ -843,5 +867,169 @@ func TestChatCreateSessionPendingUpdates(t *testing.T) {
 			t.Fatalf("expected at least 2 updates in history, got %d", len(hist.Updates))
 		}
 		return
+	}
+}
+
+// TestChatSetConfigOptionFanOut covers the snapshot/broadcast fan-out
+// after chat.set_config_option. Devin's ACP server doesn't volunteer a
+// `config_option_update` notification of its own — it just stuffs the
+// new configOptions snapshot into the response body — so the chatrouter
+// must synthesise an update event from that response and feed it through
+// both the per-session snapshot (for chat.get_history replay) and the
+// live broadcast (for other connected clients). Without this, the model
+// the user picked via the picker would silently revert the next time
+// they opened the session in a new tab.
+func TestChatSetConfigOptionFanOut(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	mock := &snapshotMockACP{
+		t:           t,
+		respWaiters: map[string]chan map[string]any{},
+	}
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	mock.in = stdinR
+	mock.wr = bufio.NewWriter(stdoutW)
+	go mock.run()
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clientWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+	awaitResp := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for response %s", id)
+			}
+		}
+	}
+	awaitChatUpdateContaining := func(needle string) wire.ChatUpdateEvent {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.Channel != wire.ChannelChat || env.Method != wire.ChatEventUpdate {
+					continue
+				}
+				if !strings.Contains(string(env.Payload), needle) {
+					continue
+				}
+				var ev wire.ChatUpdateEvent
+				if err := json.Unmarshal(env.Payload, &ev); err != nil {
+					t.Fatalf("update payload: %v", err)
+				}
+				return ev
+			case <-deadline:
+				t.Fatalf("timeout waiting for chat update containing %q", needle)
+			}
+		}
+	}
+
+	// 1. Create a session.
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res := awaitResp("c-1")
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	sessionID := createRes.Session.ID
+
+	// 2. Switch the model via chat.set_config_option.
+	req, _ = wire.MakeRequest("sc-1", wire.ChannelChat, wire.ChatMethodSetConfigOption,
+		wire.ChatSetConfigOptionRequest{
+			SessionID: sessionID,
+			ConfigID:  "model",
+			Value:     "claude-opus-4-7-max",
+		})
+	_ = wsjson.Write(ctx, clientWS, req)
+
+	// The router should both:
+	//   (a) broadcast a synthetic `config_option_update` event so other
+	//       connected clients converge in real time,
+	//   (b) include that update in the session snapshot so a fresh
+	//       chat.get_history sees it.
+	ev := awaitChatUpdateContaining("config_option_update")
+	if !strings.Contains(string(ev.Update), "claude-opus-4-7-max") {
+		t.Fatalf("synthetic update missing new model: %s", string(ev.Update))
+	}
+	if ev.SessionID != sessionID {
+		t.Fatalf("synthetic update had wrong session id: %s vs %s", ev.SessionID, sessionID)
+	}
+	awaitResp("sc-1")
+
+	// Verify the mock saw the right ACP call.
+	mock.mu.Lock()
+	if mock.lastSetConfigID != "model" || mock.lastSetConfigValue != "claude-opus-4-7-max" {
+		mock.mu.Unlock()
+		t.Fatalf("mock saw wrong set_config_option: %s=%s",
+			mock.lastSetConfigID, mock.lastSetConfigValue)
+	}
+	mock.mu.Unlock()
+
+	// 3. chat.get_history must replay the synthetic update so a tab
+	// reload still shows the model the user picked.
+	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: sessionID})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("h-1")
+	var hist wire.ChatGetHistoryResponse
+	if err := json.Unmarshal(res.Payload, &hist); err != nil {
+		t.Fatalf("history payload: %v", err)
+	}
+	found := false
+	for _, u := range hist.Updates {
+		if strings.Contains(string(u), "config_option_update") &&
+			strings.Contains(string(u), "claude-opus-4-7-max") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("config_option_update with new model not in history snapshot; got %d updates",
+			len(hist.Updates))
 	}
 }
