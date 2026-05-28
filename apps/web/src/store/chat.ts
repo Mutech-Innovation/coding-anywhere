@@ -115,6 +115,15 @@ interface ChatStore {
   refreshHistory(sessionId: string): Promise<void>;
   /** Locally clear messages/tool calls/plan for the session — used by /clear etc. */
   resetLocalSession(sessionId: string): void;
+  /**
+   * Marks the currently-streaming agent message (if any) as finished so
+   * the *next* `agent_message_chunk` starts a fresh bubble. Called from
+   * `sendPrompt` after `session/prompt` resolves: Devin doesn't emit an
+   * "end of turn" `session/update`, so without this nudge the chunks
+   * for back-to-back prompts (e.g. typing `/status` then `/workspace`)
+   * pile into the same assistant bubble.
+   */
+  closeLiveAgentMessage(sessionId: string): void;
 }
 
 const pending = new Map<
@@ -374,7 +383,15 @@ export const useChat = create<ChatStore>((set, get) => ({
       // see what they typed in the transcript.
       setTimeout(() => get().resetLocalSession(sessionId), 0);
     }
-    await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text, attachments });
+    try {
+      await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text, attachments });
+    } finally {
+      // The session/prompt response arriving means Devin has finished
+      // this turn. Close the live assistant bubble so the next prompt
+      // (or a quick follow-up message_chunk for a different turn) opens
+      // a fresh bubble instead of appending to the previous one.
+      get().closeLiveAgentMessage(sessionId);
+    }
   },
 
   async cancel(sessionId) {
@@ -546,6 +563,19 @@ export const useChat = create<ChatStore>((set, get) => ({
             availableCommands: cur.availableCommands,
             configOptions: cur.configOptions,
           },
+        },
+      };
+    });
+  },
+
+  closeLiveAgentMessage(sessionId) {
+    set((s) => {
+      const cur = s.sessions[sessionId];
+      if (!cur || !cur.liveAgentMessageId) return {};
+      return {
+        sessions: {
+          ...s.sessions,
+          [sessionId]: closeLiveMessage(cur),
         },
       };
     });
