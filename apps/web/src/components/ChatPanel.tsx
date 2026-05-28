@@ -28,6 +28,7 @@ import type {
   AvailableCommand,
   ChatAttachment,
   ChatConfigOption,
+  ChatSessionStatus,
   FilesEntry,
   PlanEntry,
   ChatUsage,
@@ -587,15 +588,6 @@ function ChatView({ sessionId }: { sessionId: string }) {
               transitionDuration={0}
             />
           ) : null}
-          {modelOption ? (
-            <ModelPicker
-              option={modelOption}
-              onChange={(value) =>
-                void setConfigOption(sessionId, modelOption.id, value)
-              }
-            />
-          ) : null}
-          {session.usage ? <UsagePill usage={session.usage} /> : null}
           {status === 'awaiting_permission' ? (
             <Tooltip
               label={'智能体在等待授权 — 请在下方"需要授权"卡片里点允许或拒绝'}
@@ -609,13 +601,6 @@ function ChatView({ sessionId }: { sessionId: string }) {
               {status}
             </Badge>
           )}
-          {status === 'thinking' || status === 'awaiting_permission' ? (
-            <Tooltip label="取消">
-              <ActionIcon variant="subtle" color="red" onClick={() => void cancel(sessionId)}>
-                <IconPlayerStop size={14} />
-              </ActionIcon>
-            </Tooltip>
-          ) : null}
         </Group>
       </Group>
 
@@ -666,6 +651,13 @@ function ChatView({ sessionId }: { sessionId: string }) {
         busy={busy}
         attachments={attachments}
         onAttachmentsChange={setAttachments}
+        status={status}
+        onCancel={() => void cancel(sessionId)}
+        modelOption={modelOption}
+        onModelChange={(value) =>
+          modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
+        }
+        usage={session.usage}
       />
     </Stack>
   );
@@ -1035,6 +1027,11 @@ function CommandInput({
   busy,
   attachments,
   onAttachmentsChange,
+  status,
+  onCancel,
+  modelOption,
+  onModelChange,
+  usage,
 }: {
   commands: AvailableCommand[];
   value: string;
@@ -1043,6 +1040,11 @@ function CommandInput({
   busy: boolean;
   attachments: ChatAttachment[];
   onAttachmentsChange: (attachments: ChatAttachment[]) => void;
+  status: ChatSessionStatus;
+  onCancel: () => void;
+  modelOption: ChatConfigOption | null;
+  onModelChange: (value: string) => void;
+  usage: ChatUsage | null;
 }) {
   // Show the typeahead only when the user has typed `/` as the very first
   // non-whitespace character and the cursor sits in the command word.
@@ -1155,17 +1157,14 @@ function CommandInput({
           </Stack>
         </Paper>
       ) : null}
-      <Group gap="xs" align="flex-end">
-        <ActionIcon component="label" variant="subtle" size="lg" aria-label="Attach files">
-          <IconUpload size={18} />
-          <input
-            type="file"
-            hidden
-            multiple
-            accept="image/*,.pdf,.doc,.docx,.txt,.md,.json"
-            onChange={(e) => void handleFileSelect(e.target.files)}
-          />
-        </ActionIcon>
+      <Box
+        p="xs"
+        style={{
+          border: '1px solid var(--mantine-color-default-border)',
+          borderRadius: 12,
+          background: 'light-dark(#ffffff, var(--mantine-color-dark-7))',
+        }}
+      >
         <Textarea
           ref={ref}
           placeholder="问问 Devin…(试试 /plan、/clear、/fork)"
@@ -1173,7 +1172,8 @@ function CommandInput({
           minRows={1}
           maxRows={6}
           value={value}
-          style={{ flex: 1 }}
+          variant="unstyled"
+          styles={{ input: { padding: '4px 6px' } }}
           onChange={(e) => onChange(e.currentTarget.value)}
           onPaste={(e) => void handlePaste(e)}
           onCompositionStart={() => {
@@ -1198,10 +1198,62 @@ function CommandInput({
             }
           }}
         />
-        <Button leftSection={<IconSend size={14} />} onClick={() => void onSubmit()} loading={busy}>
-          发送
-        </Button>
-      </Group>
+        <Group gap="xs" mt={6} wrap="nowrap" align="center">
+          {/* Left: upload + model + context */}
+          <ActionIcon
+            component="label"
+            variant="subtle"
+            size="md"
+            aria-label="Attach files"
+          >
+            <IconUpload size={16} />
+            <input
+              type="file"
+              hidden
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.txt,.md,.json"
+              onChange={(e) => void handleFileSelect(e.target.files)}
+            />
+          </ActionIcon>
+          {modelOption ? (
+            <ModelPicker option={modelOption} onChange={onModelChange} />
+          ) : null}
+          {usage ? <UsagePill usage={usage} /> : null}
+          <Box style={{ flex: 1 }} />
+          {/* Right: send / stop morph. Idle → send; thinking or
+              awaiting_permission → stop (cancels the in-flight prompt
+              and clears the awaiting_permission banner). */}
+          {status === 'thinking' || status === 'awaiting_permission' ? (
+            <Tooltip label="停止">
+              <ActionIcon
+                size="lg"
+                radius="xl"
+                color="red"
+                variant="filled"
+                onClick={onCancel}
+                aria-label="Stop"
+              >
+                <IconPlayerStop size={16} />
+              </ActionIcon>
+            </Tooltip>
+          ) : (
+            <Tooltip label="发送 (Enter)">
+              <ActionIcon
+                size="lg"
+                radius="xl"
+                color="brand"
+                variant="filled"
+                onClick={() => void onSubmit()}
+                loading={busy}
+                disabled={!value.trim() && attachments.length === 0}
+                aria-label="Send"
+              >
+                <IconSend size={16} />
+              </ActionIcon>
+            </Tooltip>
+          )}
+        </Group>
+      </Box>
     </Stack>
   );
 }
