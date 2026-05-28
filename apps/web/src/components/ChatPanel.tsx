@@ -615,7 +615,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
           flex: 1,
           minHeight: 0,
           width: '100%',
-          maxWidth: 820,
+          maxWidth: 1000,
           alignSelf: 'center',
         }}
       >
