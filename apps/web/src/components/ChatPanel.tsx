@@ -604,34 +604,28 @@ function ChatView({ sessionId }: { sessionId: string }) {
         </Group>
       </Group>
 
-      {/* The header above spans the full chat panel; from here down we
-          constrain to a centered "reading column" so the composer and
-          transcript don't sprawl across ultra-wide displays — same
-          pattern as ChatGPT / Claude. The ScrollArea still gets the
-          flex:1 to fill all remaining vertical space.
-          NOTE: we center with `margin: auto` rather than
-          `alignSelf: center` because the latter conflicts with
-          `width: 100%` (the element ends up full-width and the
-          centering becomes a no-op). */}
-      <Stack
-        gap="xs"
-        style={{
-          flex: 1,
-          minHeight: 0,
-          width: '100%',
-          maxWidth: 1000,
-          marginLeft: 'auto',
-          marginRight: 'auto',
-        }}
-      >
-        {session.plan && session.plan.length > 0 ? <PlanCard entries={session.plan} /> : null}
+      {/* Header above spans the full chat panel. Below we keep the
+          ScrollArea at full panel width (so its vertical scrollbar
+          stays glued to the panel's right edge — moving the scrollbar
+          into the middle of the panel was the chief visual complaint),
+          while constraining individual sections (plan card, messages,
+          permission cards, error alert, composer) to a centered
+          "reading column" so the layout doesn't sprawl across
+          ultra-wide displays. ReadingColumn is just a thin wrapper
+          that does width:100% + maxWidth + margin:auto. */}
+      {session.plan && session.plan.length > 0 ? (
+        <ReadingColumn>
+          <PlanCard entries={session.plan} />
+        </ReadingColumn>
+      ) : null}
 
-        <ScrollArea
-          viewportRef={scrollRef}
-          style={{ flex: 1, minHeight: 0 }}
-          type="auto"
-          offsetScrollbars
-        >
+      <ScrollArea
+        viewportRef={scrollRef}
+        style={{ flex: 1, minHeight: 0 }}
+        type="auto"
+        offsetScrollbars
+      >
+        <ReadingColumn>
           <Stack gap="sm" px="xs">
             {transcriptItems.map((item) =>
               item.type === 'message' ? (
@@ -641,9 +635,11 @@ function ChatView({ sessionId }: { sessionId: string }) {
               ),
             )}
           </Stack>
-        </ScrollArea>
+        </ReadingColumn>
+      </ScrollArea>
 
-        {pendingPermissions.length > 0 ? (
+      {pendingPermissions.length > 0 ? (
+        <ReadingColumn>
           <Stack gap="xs" px="xs" mt="sm">
             {pendingPermissions.map((p) => (
               <PermissionCard
@@ -655,14 +651,18 @@ function ChatView({ sessionId }: { sessionId: string }) {
               />
             ))}
           </Stack>
-        ) : null}
+        </ReadingColumn>
+      ) : null}
 
-        {error ? (
+      {error ? (
+        <ReadingColumn>
           <Alert color="red" variant="light" radius="md">
             {error}
           </Alert>
-        ) : null}
+        </ReadingColumn>
+      ) : null}
 
+      <ReadingColumn>
         <CommandInput
           commands={session.availableCommands}
           value={draft}
@@ -679,8 +679,27 @@ function ChatView({ sessionId }: { sessionId: string }) {
           }
           usage={session.usage}
         />
-      </Stack>
+      </ReadingColumn>
     </Stack>
+  );
+}
+
+// Centers its child within a max-width column. Used to give the chat
+// transcript / composer / status cards a comfortable reading width on
+// wide screens without affecting the ScrollArea's full-width scrollbar
+// or the header's full-width layout.
+function ReadingColumn({ children }: { children: ReactNode }) {
+  return (
+    <Box
+      style={{
+        width: '100%',
+        maxWidth: 1000,
+        marginLeft: 'auto',
+        marginRight: 'auto',
+      }}
+    >
+      {children}
+    </Box>
   );
 }
 
