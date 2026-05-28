@@ -604,61 +604,77 @@ function ChatView({ sessionId }: { sessionId: string }) {
         </Group>
       </Group>
 
-      {session.plan && session.plan.length > 0 ? <PlanCard entries={session.plan} /> : null}
-
-      <ScrollArea
-        viewportRef={scrollRef}
-        style={{ flex: 1, minHeight: 0 }}
-        type="auto"
-        offsetScrollbars
+      {/* The header above spans the full chat panel; from here down we
+          constrain to a centered "reading column" so the composer and
+          transcript don't sprawl across ultra-wide displays — same
+          pattern as ChatGPT / Claude. The ScrollArea still gets the
+          flex:1 to fill all remaining vertical space. */}
+      <Stack
+        gap="xs"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          width: '100%',
+          maxWidth: 820,
+          alignSelf: 'center',
+        }}
       >
-        <Stack gap="sm" px="xs">
-          {transcriptItems.map((item) =>
-            item.type === 'message' ? (
-              <MessageBubble key={`message-${item.id}`} message={item.message} />
-            ) : (
-              <ToolCallCard key={`tool-${item.id}`} call={item.call} />
-            ),
-          )}
-        </Stack>
-      </ScrollArea>
+        {session.plan && session.plan.length > 0 ? <PlanCard entries={session.plan} /> : null}
 
-      {pendingPermissions.length > 0 ? (
-        <Stack gap="xs" px="xs" mt="sm">
-          {pendingPermissions.map((p) => (
-            <PermissionCard
-              key={p.requestId}
-              params={p.params}
-              onResolve={(decision) =>
-                void resolvePermission(sessionId, p.requestId, decision)
-              }
-            />
-          ))}
-        </Stack>
-      ) : null}
+        <ScrollArea
+          viewportRef={scrollRef}
+          style={{ flex: 1, minHeight: 0 }}
+          type="auto"
+          offsetScrollbars
+        >
+          <Stack gap="sm" px="xs">
+            {transcriptItems.map((item) =>
+              item.type === 'message' ? (
+                <MessageBubble key={`message-${item.id}`} message={item.message} />
+              ) : (
+                <ToolCallCard key={`tool-${item.id}`} call={item.call} />
+              ),
+            )}
+          </Stack>
+        </ScrollArea>
 
-      {error ? (
-        <Alert color="red" variant="light" radius="md">
-          {error}
-        </Alert>
-      ) : null}
+        {pendingPermissions.length > 0 ? (
+          <Stack gap="xs" px="xs" mt="sm">
+            {pendingPermissions.map((p) => (
+              <PermissionCard
+                key={p.requestId}
+                params={p.params}
+                onResolve={(decision) =>
+                  void resolvePermission(sessionId, p.requestId, decision)
+                }
+              />
+            ))}
+          </Stack>
+        ) : null}
 
-      <CommandInput
-        commands={session.availableCommands}
-        value={draft}
-        onChange={setDraft}
-        onSubmit={onSend}
-        busy={busy}
-        attachments={attachments}
-        onAttachmentsChange={setAttachments}
-        status={status}
-        onCancel={() => void cancel(sessionId)}
-        modelOption={modelOption}
-        onModelChange={(value) =>
-          modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
-        }
-        usage={session.usage}
-      />
+        {error ? (
+          <Alert color="red" variant="light" radius="md">
+            {error}
+          </Alert>
+        ) : null}
+
+        <CommandInput
+          commands={session.availableCommands}
+          value={draft}
+          onChange={setDraft}
+          onSubmit={onSend}
+          busy={busy}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          status={status}
+          onCancel={() => void cancel(sessionId)}
+          modelOption={modelOption}
+          onModelChange={(value) =>
+            modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
+          }
+          usage={session.usage}
+        />
+      </Stack>
     </Stack>
   );
 }
