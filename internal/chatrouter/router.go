@@ -391,55 +391,65 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 	}()
 }
 
-// attachmentsToContentBlocks converts wire attachments to ACP ContentBlocks
+// attachmentsToContentBlocks converts wire attachments to ACP ContentBlocks.
+//
+// All ACP field names are camelCase (`mimeType`, not `mime_type`). The
+// agent's deserialiser rejects snake_case with a -32602 Invalid params
+// error and `missing field "mimeType"`, so the wire-side Attachment's
+// snake_case `mime_type` JSON tag is only an artefact of our daemon ↔
+// web protocol — we translate to camelCase here on the way into the
+// agent.
+//
+// ACP `image` blocks REQUIRE both `data` (base64 string) and `mimeType`.
+// URI-only image references are not valid. ACP `resource_link` blocks
+// require `uri`; `name` and `mimeType` are optional.
 func (r *Router) attachmentsToContentBlocks(text string, attachments []wire.Attachment) []acp.ContentBlock {
 	var blocks []acp.ContentBlock
-
-	// Add text content if present
 	if text != "" {
-		blocks = append(blocks, acp.ContentBlock{
-			Type: "text",
-			Text: text,
-		})
+		blocks = append(blocks, acp.ContentBlock{Type: "text", Text: text})
 	}
-
-	// Add attachments
 	for _, att := range attachments {
-		if att.Type == "image" {
-			// Image as image content block with base64 data
-			extra := map[string]any{
-				"data":      att.Data,
-				"mime_type": att.MimeType,
+		switch att.Type {
+		case "image":
+			if att.Data == "" || att.MimeType == "" {
+				r.logger.Warn("dropping image attachment without data+mimeType",
+					"name", att.Name)
+				continue
 			}
 			blocks = append(blocks, acp.ContentBlock{
-				Type:  "image",
-				Extra: extra,
+				Type: "image",
+				Extra: map[string]any{
+					"data":     att.Data,
+					"mimeType": att.MimeType,
+				},
 			})
-		} else if att.Type == "file" {
-			// File as resource_link or text with base64 data
-			// For Phase 1, we'll include file data as base64 in a text block
-			// In Phase 2, this would use a proper file upload API
+		case "file":
+			// Phase 1: agents without a file-upload API only see a
+			// synthetic summary for inline data; URI-only files become
+			// `resource_link` blocks (the agent can fetch via its own
+			// fs/read_text_file capability if it supports it).
 			if att.Data != "" {
-				fileInfo := fmt.Sprintf("[File: %s, Type: %s, Size: %d bytes (base64 encoded)]",
-					att.Name, att.MimeType, len(att.Data))
 				blocks = append(blocks, acp.ContentBlock{
 					Type: "text",
-					Text: fileInfo,
+					Text: fmt.Sprintf("[File: %s, Type: %s, Size: %d bytes (base64 encoded)]",
+						att.Name, att.MimeType, len(att.Data)),
 				})
 			} else if att.URI != "" {
-				// If we have a URI, use resource_link
+				extra := map[string]any{}
+				if att.Name != "" {
+					extra["name"] = att.Name
+				}
+				if att.MimeType != "" {
+					extra["mimeType"] = att.MimeType
+				}
 				blocks = append(blocks, acp.ContentBlock{
-					Type: "resource_link",
-					URI:  att.URI,
-					Extra: map[string]any{
-						"name":      att.Name,
-						"mime_type": att.MimeType,
-					},
+					Type:  "resource_link",
+					URI:   att.URI,
+					Extra: extra,
 				})
 			}
 		}
 	}
-
 	return blocks
 }
 
