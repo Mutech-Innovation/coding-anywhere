@@ -608,7 +608,11 @@ function ChatView({ sessionId }: { sessionId: string }) {
           constrain to a centered "reading column" so the composer and
           transcript don't sprawl across ultra-wide displays — same
           pattern as ChatGPT / Claude. The ScrollArea still gets the
-          flex:1 to fill all remaining vertical space. */}
+          flex:1 to fill all remaining vertical space.
+          NOTE: we center with `margin: auto` rather than
+          `alignSelf: center` because the latter conflicts with
+          `width: 100%` (the element ends up full-width and the
+          centering becomes a no-op). */}
       <Stack
         gap="xs"
         style={{
@@ -616,7 +620,8 @@ function ChatView({ sessionId }: { sessionId: string }) {
           minHeight: 0,
           width: '100%',
           maxWidth: 1000,
-          alignSelf: 'center',
+          marginLeft: 'auto',
+          marginRight: 'auto',
         }}
       >
         {session.plan && session.plan.length > 0 ? <PlanCard entries={session.plan} /> : null}
