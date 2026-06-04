@@ -17,6 +17,7 @@ import {
   ScrollArea,
   SegmentedControl,
   Stack,
+  Table,
   Text,
   Textarea,
   TextInput,
@@ -39,6 +40,7 @@ import {
   IconBolt,
   IconBrain,
   IconChevronDown,
+  IconChevronLeft,
   IconChevronRight,
   IconCheck,
   IconCircle,
@@ -822,49 +824,42 @@ function stringValue(value: unknown): string | null {
 // --- Model picker ---------------------------------------------------------
 //
 // The agent ships ~80 model identifiers in a single flat `options` array
-// (`Claude Opus 4.7 Max`, `GPT-5.5 Low Thinking`, `Gemini 3.5 Flash`, …).
-// We group by detected family so the dropdown is scannable and provide a
-// text filter for power users. Unknown labels fall through to "Other".
+// (`Claude Opus 4.8 Max`, `GPT-5.5 Low Thinking`, `Gemini 3.5 Flash`, …).
+// We expose them as a two-level picker: the first view lists model
+// families and clicking a family drills into its variants. Families are
+// derived automatically by stripping the trailing effort/speed tokens
+// from each label, so a brand-new model line (e.g. a future "Claude Opus
+// 4.9") groups itself without any hardcoded rule. The search box stays
+// available across both views and switches to a flat result list (with
+// full family-qualified names) whenever it has text.
 
-interface ModelFamilyRule {
-  test: RegExp;
-  family: string;
-}
-
-const MODEL_FAMILY_RULES: ModelFamilyRule[] = [
-  { test: /^Claude Opus 4\.7\b/, family: 'Claude Opus 4.7' },
-  { test: /^Claude Opus 4\.6\b/, family: 'Claude Opus 4.6' },
-  { test: /^Claude Opus 4\.5\b/, family: 'Claude Opus 4.5' },
-  { test: /^Claude Sonnet 4\.6\b/, family: 'Claude Sonnet 4.6' },
-  { test: /^Claude Sonnet 4\.5\b/, family: 'Claude Sonnet 4.5' },
-  { test: /^Claude Haiku/, family: 'Claude Haiku' },
-  { test: /^GPT-5\.5\b/, family: 'GPT-5.5' },
-  { test: /^GPT-5\.4 Mini\b/, family: 'GPT-5.4 Mini' },
-  { test: /^GPT-5\.4\b/, family: 'GPT-5.4' },
-  { test: /^GPT-5\.3-Codex\b/, family: 'GPT-5.3 Codex' },
-  { test: /^GPT-5\.2\b/, family: 'GPT-5.2' },
-  { test: /^Gemini 3\.5 Flash\b/, family: 'Gemini 3.5 Flash' },
-  { test: /^Gemini 3\.1 Pro\b/, family: 'Gemini 3.1 Pro' },
-  { test: /^Gemini 3 Flash\b/, family: 'Gemini 3 Flash' },
-  { test: /^SWE-1\.6\b/, family: 'SWE-1.6' },
-  { test: /^SWE-1\.5\b/, family: 'SWE-1.5' },
-  { test: /^Kimi\b/, family: 'Kimi' },
-  { test: /^DeepSeek/, family: 'DeepSeek' },
-  { test: /^GLM/, family: 'GLM' },
-  { test: /^Adaptive\b/, family: 'Adaptive' },
-];
+// Effort / speed suffixes that distinguish variants *within* a family.
+// The family name is everything up to the first trailing token from this
+// set, so "Claude Opus 4.8 Low Fast" → family "Claude Opus 4.8".
+const MODEL_VARIANT_TOKENS = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'minimal',
+  'fast',
+  'thinking',
+  'reasoning',
+]);
 
 function familyForModel(label: string): string {
-  for (const rule of MODEL_FAMILY_RULES) {
-    if (rule.test.test(label)) return rule.family;
+  const parts = label.trim().split(/\s+/);
+  let end = parts.length;
+  while (end > 1 && MODEL_VARIANT_TOKENS.has((parts[end - 1] ?? '').toLowerCase())) {
+    end -= 1;
   }
-  return 'Other';
+  return parts.slice(0, end).join(' ') || label.trim();
 }
 
 interface ModelChoice {
   value: string;
   label: string;
-  variant: string;
   description: string | null;
 }
 
@@ -877,6 +872,7 @@ function ModelPicker({
 }) {
   const [opened, setOpened] = useState(false);
   const [filter, setFilter] = useState('');
+  const [selectedFamily, setSelectedFamily] = useState<string | null>(null);
 
   const choices = useMemo<ModelChoice[]>(
     () =>
@@ -885,17 +881,10 @@ function ModelPicker({
         if (!value) return [];
         const label =
           stringValue(raw.label) ?? stringValue(raw.name) ?? value;
-        const fam = familyForModel(label);
-        // Strip the family prefix from the label so the per-row text
-        // doesn't repeat the section header (e.g. "Medium" instead of
-        // "Claude Opus 4.7 Medium" under the "Claude Opus 4.7" group).
-        const stripped = label.startsWith(fam) ? label.slice(fam.length).trim() : label;
-        const variant = stripped || label;
         return [
           {
             value,
             label,
-            variant,
             description: stringValue(raw.description),
           },
         ];
@@ -903,30 +892,52 @@ function ModelPicker({
     [option.options],
   );
 
-  const grouped = useMemo(() => {
-    const lower = filter.trim().toLowerCase();
-    const filtered = lower
-      ? choices.filter(
-          (c) =>
-            c.label.toLowerCase().includes(lower) || c.value.toLowerCase().includes(lower),
-        )
-      : choices;
+  // Bucket every model into its detected family, preserving the agent's
+  // own ordering via first-appearance of each family.
+  const families = useMemo(() => {
     const map = new Map<string, ModelChoice[]>();
-    for (const c of filtered) {
+    for (const c of choices) {
       const fam = familyForModel(c.label);
       const list = map.get(fam) ?? [];
       list.push(c);
       map.set(fam, list);
     }
-    // Preserve declaration order from MODEL_FAMILY_RULES, then "Other".
-    const order = [...MODEL_FAMILY_RULES.map((r) => r.family), 'Other'];
-    return order
-      .filter((f) => map.has(f))
-      .map((f) => ({ family: f, items: map.get(f)! }));
+    return [...map.entries()].map(([family, items]) => ({ family, items }));
+  }, [choices]);
+
+  // Flat search results across all families. Only used while the search
+  // box has text; otherwise we fall back to the family / variant views.
+  const searchResults = useMemo(() => {
+    const lower = filter.trim().toLowerCase();
+    if (!lower) return [];
+    return choices.filter(
+      (c) =>
+        c.label.toLowerCase().includes(lower) || c.value.toLowerCase().includes(lower),
+    );
   }, [choices, filter]);
 
   const currentValue = stringValue(option.currentValue);
   const currentLabel = configOptionCurrentLabel(option) ?? '(unset)';
+
+  const isSearching = filter.trim().length > 0;
+  const drilled =
+    !isSearching && selectedFamily
+      ? families.find((g) => g.family === selectedFamily) ?? null
+      : null;
+
+  // Reset the drill-in + filter whenever the popover closes so reopening
+  // always lands on the family list.
+  useEffect(() => {
+    if (!opened) {
+      setFilter('');
+      setSelectedFamily(null);
+    }
+  }, [opened]);
+
+  const handlePick = (value: string) => {
+    setOpened(false);
+    if (value !== currentValue) onChange(value);
+  };
 
   return (
     <Popover
@@ -967,71 +978,146 @@ function ModelPicker({
               leftSection={<IconSearch size={12} />}
             />
           </Box>
+          {drilled ? (
+            <UnstyledButton
+              onClick={() => setSelectedFamily(null)}
+              px="sm"
+              py={8}
+              style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}
+              aria-label="返回模型族列表"
+            >
+              <Group gap={6} wrap="nowrap">
+                <IconChevronLeft size={14} />
+                <Text
+                  size="xs"
+                  fw={600}
+                  c="dimmed"
+                  style={{ textTransform: 'uppercase', letterSpacing: 0.3 }}
+                >
+                  {drilled.family}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  · {drilled.items.length} 个变体
+                </Text>
+              </Group>
+            </UnstyledButton>
+          ) : null}
           <ScrollArea.Autosize mah={360} type="auto">
-            {grouped.length === 0 ? (
+            {isSearching ? (
+              searchResults.length === 0 ? (
+                <Text size="xs" c="dimmed" p="md" ta="center">
+                  没有匹配的模型
+                </Text>
+              ) : (
+                <Stack gap={2} p={4}>
+                  {searchResults.map((item) => (
+                    <ModelRow
+                      key={item.value}
+                      label={item.label}
+                      description={item.description}
+                      active={item.value === currentValue}
+                      onClick={() => handlePick(item.value)}
+                    />
+                  ))}
+                </Stack>
+              )
+            ) : drilled ? (
+              <Stack gap={2} p={4}>
+                {drilled.items.map((item) => (
+                  <ModelRow
+                    key={item.value}
+                    label={item.label}
+                    description={item.description}
+                    active={item.value === currentValue}
+                    onClick={() => handlePick(item.value)}
+                  />
+                ))}
+              </Stack>
+            ) : families.length === 0 ? (
               <Text size="xs" c="dimmed" p="md" ta="center">
-                没有匹配的模型
+                没有可用的模型
               </Text>
             ) : (
               <Stack gap={2} p={4}>
-                {grouped.map((group) => (
-                  <Box key={group.family}>
-                    <Text
-                      size="xs"
-                      fw={600}
-                      c="dimmed"
-                      px="xs"
-                      py={4}
-                      style={{ textTransform: 'uppercase', letterSpacing: 0.3 }}
+                {families.map((group) => {
+                  const containsCurrent = group.items.some((i) => i.value === currentValue);
+                  return (
+                    <UnstyledButton
+                      key={group.family}
+                      onClick={() => setSelectedFamily(group.family)}
+                      p="xs"
+                      w="100%"
+                      style={{
+                        borderRadius: 4,
+                        background: containsCurrent
+                          ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+                          : 'transparent',
+                      }}
                     >
-                      {group.family}
-                    </Text>
-                    {group.items.map((item) => {
-                      const active = item.value === currentValue;
-                      return (
-                        <UnstyledButton
-                          key={item.value}
-                          onClick={() => {
-                            setOpened(false);
-                            if (item.value !== currentValue) onChange(item.value);
-                          }}
-                          p="xs"
-                          w="100%"
-                          style={{
-                            borderRadius: 4,
-                            background: active
-                              ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
-                              : 'transparent',
-                          }}
-                        >
-                          <Group gap="xs" justify="space-between" wrap="nowrap">
-                            <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
-                              <Text size="sm" fw={active ? 600 : 500} truncate>
-                                {item.variant}
-                              </Text>
-                              {item.description ? (
-                                <Text size="xs" c="dimmed" truncate>
-                                  {item.description}
-                                </Text>
-                              ) : null}
-                            </Stack>
-                            {active ? (
-                              <ThemeIcon size="xs" color="brand" variant="light">
-                                <IconCheck size={10} />
-                              </ThemeIcon>
-                            ) : null}
-                          </Group>
-                        </UnstyledButton>
-                      );
-                    })}
-                  </Box>
-                ))}
+                      <Group gap="xs" justify="space-between" wrap="nowrap">
+                        <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
+                          <Text size="sm" fw={containsCurrent ? 600 : 500} truncate>
+                            {group.family}
+                          </Text>
+                          <Text size="xs" c="dimmed" truncate>
+                            {group.items.length} 个变体
+                          </Text>
+                        </Stack>
+                        <IconChevronRight size={14} stroke={1.5} />
+                      </Group>
+                    </UnstyledButton>
+                  );
+                })}
               </Stack>
             )}
           </ScrollArea.Autosize>
         </Stack>
       </Popover.Dropdown>
     </Popover>
+  );
+}
+
+function ModelRow({
+  label,
+  description,
+  active,
+  onClick,
+}: {
+  label: string;
+  description: string | null;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <UnstyledButton
+      onClick={onClick}
+      p="xs"
+      w="100%"
+      style={{
+        borderRadius: 4,
+        background: active
+          ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
+          : 'transparent',
+      }}
+    >
+      <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
+          <Text size="sm" fw={active ? 600 : 500} truncate>
+            {label}
+          </Text>
+          {description ? (
+            <Text size="xs" c="dimmed" truncate>
+              {description}
+            </Text>
+          ) : null}
+        </Stack>
+        {active ? (
+          <ThemeIcon size="xs" color="brand" variant="light">
+            <IconCheck size={10} />
+          </ThemeIcon>
+        ) : null}
+      </Group>
+    </UnstyledButton>
   );
 }
 
@@ -1459,17 +1545,20 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
   );
 }
 
+type TableAlign = 'left' | 'center' | 'right';
+
 type MarkdownBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; level: number; text: string }
   | { type: 'list'; ordered: boolean; items: string[] }
-  | { type: 'code'; language?: string; text: string };
+  | { type: 'code'; language?: string; text: string }
+  | { type: 'table'; header: string[]; align: (TableAlign | null)[]; rows: string[][] };
 
 function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 'sm'; c?: string }) {
   const blocks = parseMarkdownBlocks(text);
   if (blocks.length === 0) return null;
   return (
-    <Stack gap={6}>
+    <Stack gap={6} style={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>
       {blocks.map((block, i) => {
         if (block.type === 'code') {
           return (
@@ -1479,10 +1568,46 @@ function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 's
                   {block.language}
                 </Text>
               ) : null}
-              <Code block style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+              <Code block style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}>
                 {block.text}
               </Code>
             </Box>
+          );
+        }
+        if (block.type === 'table') {
+          return (
+            <Table.ScrollContainer key={i} minWidth={0} type="native">
+              <Table
+                striped
+                withTableBorder
+                withColumnBorders
+                verticalSpacing={4}
+                horizontalSpacing="xs"
+                fz={size}
+                style={c ? { color: c } : undefined}
+              >
+                <Table.Thead>
+                  <Table.Tr>
+                    {block.header.map((cell, j) => (
+                      <Table.Th key={j} style={{ textAlign: block.align[j] ?? undefined }}>
+                        {renderInlineMarkdown(cell)}
+                      </Table.Th>
+                    ))}
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {block.rows.map((row, r) => (
+                    <Table.Tr key={r}>
+                      {block.header.map((_, j) => (
+                        <Table.Td key={j} style={{ textAlign: block.align[j] ?? undefined }}>
+                          {renderInlineMarkdown(row[j] ?? '')}
+                        </Table.Td>
+                      ))}
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           );
         }
         if (block.type === 'heading') {
@@ -1502,13 +1627,23 @@ function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 's
               c={c}
             >
               {block.items.map((item, j) => (
-                <List.Item key={j}>{renderInlineMarkdown(item)}</List.Item>
+                // Mantine's List.Item is `white-space: nowrap` by default,
+                // which lets long inline content overflow the bubble; force
+                // wrapping so list items behave like paragraphs.
+                <List.Item key={j} style={{ whiteSpace: 'normal' }}>
+                  {renderInlineMarkdown(item)}
+                </List.Item>
               ))}
             </List>
           );
         }
         return (
-          <Text key={i} size={size} c={c} style={{ whiteSpace: 'pre-wrap' }}>
+          <Text
+            key={i}
+            size={size}
+            c={c}
+            style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+          >
             {renderInlineMarkdown(block.text)}
           </Text>
         );
@@ -1546,6 +1681,21 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
       i++;
       continue;
     }
+    // GFM table: a header row followed by a |---|---| delimiter row.
+    if (line.includes('|') && isTableDelimiterRow(lines[i + 1] ?? '')) {
+      const header = parseTableRow(line);
+      const align = parseTableRow(lines[i + 1] ?? '').map(tableCellAlign);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length) {
+        const candidate = lines[i] ?? '';
+        if (!candidate.trim() || !candidate.includes('|')) break;
+        rows.push(parseTableRow(candidate));
+        i++;
+      }
+      blocks.push({ type: 'table', header, align, rows });
+      continue;
+    }
     const unordered = line.match(/^\s*[-*]\s+(.+)$/);
     const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
     if (unordered || ordered) {
@@ -1571,7 +1721,8 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
         candidate.match(/^```/) ||
         candidate.match(/^(#{1,4})\s+(.+)$/) ||
         candidate.match(/^\s*[-*]\s+(.+)$/) ||
-        candidate.match(/^\s*\d+\.\s+(.+)$/)
+        candidate.match(/^\s*\d+\.\s+(.+)$/) ||
+        (candidate.includes('|') && isTableDelimiterRow(lines[i + 1] ?? ''))
       ) {
         break;
       }
@@ -1581,6 +1732,32 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
     blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
   }
   return blocks;
+}
+
+// A GFM delimiter row looks like `|---|:--:|---:|`: only pipes, dashes,
+// colons and whitespace, with at least one dash and one column separator.
+function isTableDelimiterRow(line: string): boolean {
+  const s = line.trim();
+  if (!s.includes('-') || !s.includes('|')) return false;
+  return /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/.test(s);
+}
+
+// Split a table row into trimmed cells, dropping the leading/trailing
+// pipes and honouring backslash-escaped pipes inside a cell.
+function parseTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  return s.split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, '|').trim());
+}
+
+function tableCellAlign(cell: string): TableAlign | null {
+  const left = cell.startsWith(':');
+  const right = cell.endsWith(':');
+  if (left && right) return 'center';
+  if (right) return 'right';
+  if (left) return 'left';
+  return null;
 }
 
 function renderInlineMarkdown(text: string): ReactNode[] {
@@ -1594,7 +1771,7 @@ function renderInlineMarkdown(text: string): ReactNode[] {
     const key = `${match.index}-${token}`;
     if (token.startsWith('`')) {
       nodes.push(
-        <Code key={key} fz="0.85em">
+        <Code key={key} fz="0.85em" style={{ overflowWrap: 'anywhere' }}>
           {token.slice(1, -1)}
         </Code>,
       );
