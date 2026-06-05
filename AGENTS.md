@@ -138,6 +138,50 @@ Run commands from the repo root unless there is a reason not to.
 - Daemon credentials are stored at `$XDG_DATA_HOME/coding-anywhere/credentials.json` by default, implemented in `apps/daemon/internal/credentials/credentials.go`.
 - Daemon pairing CLI is in `apps/daemon/internal/initcmd/initcmd.go`.
 
+## Guest "ask"-mode share links
+
+A short-lived, read-only public link that lets someone chat with the account's
+Devin in **ask** mode without pairing. Security is enforced at the relay (who
+can do/see what) and the daemon (the agent stays read-only); the web UI hiding
+controls is cosmetic only.
+
+- **Token**: a new device kind `auth.DeviceGuest` (`internal/auth/jwt.go`). Guest
+  JWTs have an `exp` and **no refresh token** — they just expire. The JWT
+  `sub`/device id is the share id.
+- **Share record**: `guest_shares` table (`migrations/0004_guest_shares.sql`,
+  repo methods in `store/repos.go`) holds account, expiry, `revoked`, and the
+  caller-chosen `prompt_limit` / `max_sessions`.
+- **Issue / revoke** (owner-authenticated): `POST /v1/share/ask` and
+  `DELETE /v1/share/{id}` in `apps/relay/internal/server/share.go`. TTL, prompt
+  limit, and session count are all fixed at issuance. Config bounds live in
+  `config.go` (`CA_GUEST_MAX_TTL`, `GuestDefaultTTL`, optional
+  `CA_GUEST_WEB_BASE_URL`).
+- **Relay enforcement** (`apps/relay/internal/server/guest.go`, wired in
+  `ws.go` + `hub.go`):
+  - chat-only allowlist (`create_session`/`prompt`/`cancel`/`get_history`);
+    rejects `set_mode`, `resolve_permission`, all non-chat channels.
+  - session isolation: a guest only sees/sends to sessions it created; the hub
+    filters daemon→guest fan-out by owned session id.
+  - per-link prompt + session caps; auto-disconnect at token expiry; live
+    disconnect on revoke (`Hub.CloseGuest`).
+  - stamps `wire.Envelope.Origin = "guest"` on forwarded traffic and strips any
+    client-set Origin on ingress (trust marker for the daemon).
+- **Daemon enforcement** (`internal/chatrouter/router.go`): a session whose
+  create request carries `Origin=guest` is forced into ask mode at creation
+  (`askModeID` + `SetMode`) and **auto-denies every permission request**
+  (`handleAgentPermissionRequest` returns a `cancelled` outcome).
+- **Web**: standalone page at `/guest?token=...&relay=...`
+  (`apps/web/src/GuestApp.tsx` + `components/GuestChat.tsx`), routed in
+  `main.tsx`, reusing the `useChat` store with a stripped chat-only UI. The
+  owner mints links from the device menu (`components/ShareAskMenu.tsx` →
+  `connection.ts` `createAskShare` → `PairingClient.createAskShare`).
+- **Tests**: `apps/relay/internal/server/guest_internal_test.go` (gating logic),
+  `guest_e2e_test.go` (force-ask + gating + isolation + permission auto-deny
+  end to end), `store/store_test.go` (`TestGuestShareCRUD`).
+- **Deploying the guest page behind a reverse proxy**: `/guest` is a client-side
+  route, so the static host needs SPA fallback (serve `index.html` for unknown
+  paths). Vite dev does this automatically.
+
 ## Web app orientation
 
 - Entry: `apps/web/src/App.tsx`
@@ -217,11 +261,11 @@ container:
 
 ```yaml
 labels:
-  - "traefik.enable=true"
-  - "traefik.http.routers.ca-relay.rule=Host(`relay.example.com`)"
-  - "traefik.http.routers.ca-relay.entrypoints=websecure"
-  - "traefik.http.routers.ca-relay.tls.certresolver=le"
-  - "traefik.http.services.ca-relay.loadbalancer.server.port=8443"
+  - 'traefik.enable=true'
+  - 'traefik.http.routers.ca-relay.rule=Host(`relay.example.com`)'
+  - 'traefik.http.routers.ca-relay.entrypoints=websecure'
+  - 'traefik.http.routers.ca-relay.tls.certresolver=le'
+  - 'traefik.http.services.ca-relay.loadbalancer.server.port=8443'
 ```
 
 ### Endpoints to verify a live relay
@@ -261,35 +305,3 @@ Run the relevant subset locally before pushing to keep CI green.
 - For Go changes, run targeted package tests first, then `go test ./...` when scope is broad.
 - If you touch `proto/`, run `pnpm codegen` and commit the regenerated output.
 - Keep generated/build output out of git unless explicitly intended.
-
-## Devin CLI version pinning (ACP regression workaround)
-
-The daemon spawns `devin acp` as a subprocess (see `internal/agent/devin/adapter.go`). The `acp` subcommand has been less stable than the interactive REPL — at least one shipped version (`2026.5.26-0`) regressed `session/prompt` for Pro accounts so every prompt comes back as JSON-RPC error `-32013` *"Permission denied: ... an internal error occurred (trace ID: ...)"*. The interactive `devin --print` path was unaffected, so plain `devin auth status` looks fine even when chat is broken.
-
-Symptoms in `make dev` chat:
-- New session can be created (status → `idle`).
-- Sending the first message fails immediately with `prompt_failed: rpc error -32013: Permission denied: ...`.
-- The daemon's stderr (from `pumpStderr`, when `--log-level=debug`) shows `WARN chisel_core::translator: ACP: agent error (Internal): Permission denied` and a giveaway `WARN agent_ext::raindrop: 403: Telemetry proxy is only available for free-tier users` even on Pro accounts.
-
-### Detect
-
-`scripts/check-devin-acp.py` drives a `devin acp` subprocess through `initialize` → `session/new` → `session/prompt` and exits 0 on PASS / 2 on regression. Use it before adopting any new `devin` version:
-
-```bash
-# Test whatever `devin` is on PATH:
-scripts/check-devin-acp.py
-# Test a specific binary (use this against newly downloaded versions):
-scripts/check-devin-acp.py --devin ~/.local/share/devin/cli/_versions/<ver>/bin/devin
-```
-
-### Pin to a working version
-
-The `devin` installer keeps every downloaded version under `~/.local/share/devin/cli/_versions/<ver>` and points `~/.local/share/devin/cli/_versions/current` at the active one. To pin a specific version:
-
-1. Disable background updates so `devin` doesn't quietly re-promote a broken release. In `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows) set `"auto_update": false`.
-2. Repoint the symlink: `ln -sfn <ver> ~/.local/share/devin/cli/_versions/current` (e.g. `2026.5.6-12` for the regression above).
-3. Restart `make dev` so the daemon respawns `devin acp` against the new binary. The previous `devin acp` child keeps running until the daemon exits.
-
-### Re-evaluate later
-
-When a new `devin` release comes out, don't just flip `auto_update` back on. Download the candidate (e.g. via `devin update --force` to populate `_versions/`, or by grabbing the installer manually), run `scripts/check-devin-acp.py --devin <candidate>` against it, and only repoint `current` after PASS.
