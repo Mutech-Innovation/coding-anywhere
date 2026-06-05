@@ -1,27 +1,94 @@
 # Agent notes for coding-anywhere
 
-This repo is a monorepo for **Coding Anywhere**: a Go relay + Go daemon + React/Vite web client for controlling a dev machine through an outbound relay connection.
+This repo is a monorepo for **Coding Anywhere**: a Go relay + Go daemon +
+React/Vite web client for controlling a dev machine through an outbound relay
+connection. The dev machine opens no inbound ports — both the daemon and the
+browser dial **outbound** to the relay over WSS.
 
-## Repository shape
+```
+┌───────────────┐      ┌──────────────────┐      ┌──────────────────┐
+│  Client (web) │<─wss─│  Relay (VPS)     │<─wss─│  Dev machine     │
+│  React + Vite │      │  Go: pair/JWT/   │      │  daemon (Go):    │
+│               │      │  route/proxy/push│      │  PTY, Devin ACP, │
+│               │      │  + SQLite state  │      │  files, diff,... │
+└───────────────┘      └──────────────────┘      └──────────────────┘
+```
 
-- `apps/relay/`: Go relay service. Handles pairing, JWT auth, WebSocket routing, HTTP proxy, Web Push, and SQLite-backed auth/routing state.
-- `apps/daemon/`: Go daemon that runs on the dev machine. It loads persisted credentials, connects outbound to the relay, and exposes terminals, chat/Devin, files, git diff, and localhost ports.
-- `apps/web/`: React + Vite + Mantine browser UI.
-- `packages/protocol/`: TypeScript protocol package. Contains REST pairing client, WebSocket client, zod schemas, and channel payload types.
-- `packages/agents/`, `packages/state/`, `packages/tokens/`, `packages/utils/`: shared TS packages.
-- `internal/`: Go libraries used by daemon/relay: auth, pairing client, relay client, PTY mux, chat router, file/diff/ports APIs, wire protocol, etc.
-- `proto/`: JSON schemas used by codegen.
-- `docs/`: architecture/setup docs and service templates.
-- `docker/relay/`: relay Dockerfile, compose file, and Caddy config.
+See `docs/architecture.md` for the full design and `docs/setup.md` for an
+end-to-end setup walkthrough.
+
+## Repository layout
+
+```
+.
+├── apps/
+│   ├── relay/                 # Go relay service (VPS-side broker)
+│   │   ├── cmd/main.go        #   entry point + flag/env wiring
+│   │   └── internal/server/   #   HTTP/WS server, hub, pairing, proxy, push
+│   ├── daemon/                # Go daemon (runs on each dev machine)
+│   │   ├── cmd/main.go        #   entry point + CLI flags
+│   │   └── internal/          #   credentials, init/pair CLI
+│   ├── web/                   # React + Vite + Mantine browser UI
+│   │   └── src/               #   App.tsx, components/, store/ (zustand), test/
+│   └── mobile/                # v3 React Native placeholder (currently empty)
+├── packages/                  # Shared TypeScript packages (pnpm workspace)
+│   ├── protocol/              #   REST pair client, WS client, zod schemas
+│   ├── agents/                #   agent metadata/types
+│   ├── state/                 #   shared state helpers (web + future mobile)
+│   ├── tokens/                #   design tokens
+│   └── utils/                 #   misc shared utils
+├── internal/                  # Go libraries shared by daemon + relay
+│   ├── auth/                  #   JWT signer/verifier, device kinds, claims
+│   ├── wire/                  #   envelope types, channel enum, generated/
+│   ├── relayclient/           #   daemon's WS client to the relay (+ reconnect)
+│   ├── relayproto/            #   shared relay protocol doc/constants
+│   ├── pairingclient/         #   REST pairing client used by the daemon
+│   ├── ptymux/                #   PTY multiplexer for terminals
+│   ├── terminalrouter/        #   terminal channel handler (daemon side)
+│   ├── chatrouter/            #   chat channel handler ↔ ACP
+│   ├── agent/devin/           #   Devin ACP subprocess adapter
+│   ├── acp/                   #   Agent Client Protocol (JSON-RPC) framing
+│   ├── fileapi/ filesrouter/  #   files API + files channel handler
+│   ├── diffapi/ diffrouter/   #   git diff API + diff channel handler
+│   ├── portsapi/ portsrouter/ #   localhost ports API + ports channel handler
+│   └── version/               #   version string (ldflags-injected)
+├── proto/                     # JSON Schemas: single source of truth for wire types
+├── tools/codegen/             # proto/*.json → generated TS + Go (pnpm codegen)
+├── docker/relay/              # relay Dockerfile, compose.yml, Caddyfile, .env.example
+├── docs/                      # architecture.md, setup.md, service templates
+├── scripts/                   # check-devin-acp.py, democlient/, smoke.sh
+├── bin/                       # built Go binaries (gitignored)
+├── Makefile                   # make install/dev/build/test/lint/fmt/clean
+├── turbo.json                 # turbo task graph for the JS side
+├── go.mod                     # module github.com/Mutech-Innovation/coding-anywhere
+└── pnpm-workspace.yaml        # workspaces: apps/*, packages/*, tools/*
+```
+
+Note: `internal/files/` and `internal/ports/` are empty placeholders; the real
+code lives in `internal/fileapi` / `internal/portsapi` (+ the matching routers).
+
+## Tech stack & toolchain
+
+- **Go 1.25** (single module at repo root, `go build ./...`).
+- **Node >=22**, **pnpm 10.9** (pinned via `packageManager`), **turbo** for the
+  JS task graph.
+- Web: **React + Vite + Mantine**, **zustand** stores, **CodeMirror** (file
+  viewer), **xterm.js** (terminals).
+- Relay persistence: **SQLite** (auth/routing/push state only — never chat
+  content).
+- Lint/format: **prettier** + **golangci-lint v2** + `gofmt` + `go vet`.
 
 ## Common commands
 
 Run commands from the repo root unless there is a reason not to.
 
-- Install deps: `make install`
-- Full dev stack: `make dev`
+- Install deps: `make install` (= `pnpm install` + `go mod tidy`)
+- Full dev stack: `make dev` (= `turbo run dev --parallel`: web + daemon + relay)
 - Full build: `make build`
-- Full test: `make test`
+- Full test: `make test` (= `pnpm test` + `go test ./...`)
+- Lint: `make lint` (= `pnpm lint` + `go vet ./...`); Go lint: `golangci-lint run ./...`
+- Format everything: `make fmt`
+- Regenerate wire types: `pnpm codegen`
 - JS/TS:
   - Web tests: `pnpm --filter @coding-anywhere/web test`
   - Web typecheck: `pnpm --filter @coding-anywhere/web typecheck`
@@ -32,6 +99,22 @@ Run commands from the repo root unless there is a reason not to.
   - Full Go build: `go build ./...`
   - Format Go files: `gofmt -w <files>`
 - Whitespace check before finishing: `git diff --check`
+
+## Code generation (wire protocol)
+
+`proto/*.json` are hand-written JSON Schemas (draft-2020-12) that are the
+**single source of truth** for messages on the WebSocket wire.
+
+- `pnpm codegen` runs `tools/codegen/src/index.ts`, which reads `proto/` and is
+  intended to emit TypeScript into `packages/protocol/src/generated/` and Go
+  structs into `internal/wire/generated/`. NOTE: the generator is still a
+  placeholder today (it scans `proto/` and prints what it would emit); the
+  `generated/` dirs are not produced yet. Real generation lands later.
+- Identifiers are `snake_case` on the wire; codegen converts to `camelCase`
+  (TS) and `PascalCase` (Go).
+- Never hand-edit anything under `**/generated/` — it is overwritten on
+  `pnpm codegen`. Edit the schema in `proto/` instead.
+- See `proto/README.md` for the channel-file conventions.
 
 ## Pairing and auth flow
 
@@ -45,7 +128,8 @@ Run commands from the repo root unless there is a reason not to.
   - Routes: `apps/relay/internal/server/routes.go`
   - WS auth/connect: `apps/relay/internal/server/ws.go`
   - SQLite repos/types: `apps/relay/internal/store/`
-- Access tokens are JWTs. Refresh tokens are random opaque tokens stored only as SHA-256 hashes in relay SQLite.
+- Access tokens are JWTs (HS256, 1h for clients, 30d for daemons). Refresh
+  tokens are random opaque tokens stored only as SHA-256 hashes in relay SQLite.
 - Web credentials are browser-local: `localStorage["coding-anywhere/credentials"]`. Different browsers do not share this state; a new browser must pair again or use a future account/login/import flow.
 - Web-side credential code:
   - Storage: `apps/web/src/store/credentials.ts`
@@ -72,6 +156,13 @@ Run commands from the repo root unless there is a reason not to.
 
 - CLI entry: `apps/daemon/cmd/main.go`
 - The daemon loads credentials, constructs `internal/relayclient.Client`, registers channel handlers, and runs until interrupted.
+- CLI flags:
+  - `-relay-url` — override the relay URL stored in credentials
+  - `-workspace` — workspace root for the files API (default `$HOME`)
+  - `-credentials` — path to the credentials file
+  - `-log-level` — `debug|info|warn|error`
+  - `-version`
+  - `init` subcommand — interactive pairing (prints a 6-digit code)
 - Channel routers:
   - Terminals: `internal/terminalrouter`
   - Chat/Devin ACP: `internal/chatrouter`, `internal/agent/devin`, `internal/acp`
@@ -81,12 +172,84 @@ Run commands from the repo root unless there is a reason not to.
 
 ## Relay orientation
 
-- CLI entry: `apps/relay/cmd/main.go`
+- CLI entry: `apps/relay/cmd/main.go` (flags: `-addr`, `-log-level`, `-version`)
 - Config defaults/env parsing: `apps/relay/internal/server/config.go`
 - HTTP middleware/CORS: `apps/relay/internal/server/middleware.go`
 - Hub/routing: `apps/relay/internal/server/hub.go`
 - HTTP proxy for localhost preview: `apps/relay/internal/server/proxy.go`
 - Push notifications: `apps/relay/internal/server/push.go`
+- The relay serves **plain HTTP** on `CA_LISTEN_ADDR` (default `:8443`); it does
+  no TLS itself. TLS is terminated by the reverse proxy in front of it.
+- Config env vars (`apps/relay/internal/server/config.go`):
+  - `CA_RELAY_JWT_SECRET` — **required**, >=32 bytes (e.g. `openssl rand -base64 48`).
+    If unset, the relay falls back to an insecure dev default and logs a loud
+    warning — never use that in production.
+  - `CA_LISTEN_ADDR` — bind address (default `:8443`)
+  - `CA_RELAY_DATA_DIR` — SQLite/state dir (default `./relay-data`, `/data` in Docker)
+  - `CA_RELAY_JWT_ISSUER` — JWT `iss` claim (default `coding-anywhere/relay`)
+
+## Deployment
+
+The relay is meant to be deployed **standalone** on a small public VPS; the
+daemon and browser only need its public HTTPS URL.
+
+### Option A — bundled compose (Caddy terminates TLS)
+
+`docker/relay/` ships a turnkey stack (relay + Caddy with automatic Let's
+Encrypt). See `docker/relay/compose.yml` and `docs/setup.md`:
+
+```bash
+cd docker/relay
+cp .env.example .env          # set CA_DOMAIN + CA_RELAY_JWT_SECRET
+docker compose up -d --build
+```
+
+Smoke test: `curl https://<domain>/healthz` and `/v1/version` should both
+return JSON.
+
+### Option B — behind an existing reverse proxy (Traefik / Nginx)
+
+Since the relay is plain HTTP on `:8443`, drop the bundled Caddy and let your
+proxy terminate TLS and forward to `relay:8443`. WebSocket needs no special
+config (Traefik passes `Upgrade` through automatically; for Nginx set the usual
+`Upgrade`/`Connection` headers). Minimal Traefik label set on the relay
+container:
+
+```yaml
+labels:
+  - "traefik.enable=true"
+  - "traefik.http.routers.ca-relay.rule=Host(`relay.example.com`)"
+  - "traefik.http.routers.ca-relay.entrypoints=websecure"
+  - "traefik.http.routers.ca-relay.tls.certresolver=le"
+  - "traefik.http.services.ca-relay.loadbalancer.server.port=8443"
+```
+
+### Endpoints to verify a live relay
+
+- `GET /healthz` → `{"ok":true,...}`
+- `GET /v1/version` → `{"issuer":...,"protocol_version":1}`
+- `GET /v1/ws/connect` with no/invalid token → relay's own `401 unauthorized`
+  (proves the WS route + upgrade headers reach the relay, not a proxy 404/502).
+  A real `101 Switching Protocols` only happens with a valid paired JWT.
+
+### Operational notes
+
+- **Back up the relay data volume** (`relay-data` → `/data`): it holds accounts,
+  pairings, refresh-token hashes, and Web Push subscriptions. Losing it forces
+  every device to re-pair.
+- **Rotating `CA_RELAY_JWT_SECRET` invalidates all issued access tokens** —
+  devices must re-pair.
+- Never commit `.env` or the secret (`.env` is gitignored).
+
+## CI
+
+`.github/workflows/ci.yml` runs on push to `main` and on PRs:
+
+- **JS / TS**: `pnpm typecheck`, `pnpm format:check`, `pnpm test`, `pnpm build`.
+- **Go**: `go vet ./...`, `go test ./...`, `go build ./...`.
+- **golangci-lint** (v2.12.2).
+
+Run the relevant subset locally before pushing to keep CI green.
 
 ## Verification habits
 
@@ -96,6 +259,7 @@ Run commands from the repo root unless there is a reason not to.
 - For frontend production-risk changes, also run:
   - `pnpm --filter @coding-anywhere/web build`
 - For Go changes, run targeted package tests first, then `go test ./...` when scope is broad.
+- If you touch `proto/`, run `pnpm codegen` and commit the regenerated output.
 - Keep generated/build output out of git unless explicitly intended.
 
 ## Devin CLI version pinning (ACP regression workaround)
