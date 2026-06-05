@@ -38,6 +38,8 @@ interface ConnectionStore {
   revokeKeyOpen: boolean;
   /** Last error from a key-management action (show/rotate/revoke). */
   keyActionError: string | null;
+  /** UI flag for the "share read-only ask link" modal. */
+  shareAskOpen: boolean;
 
   // Actions
   hydrate(): Promise<void>;
@@ -63,6 +65,16 @@ interface ConnectionStore {
   requestRevealKey(): void;
   setRevokeKeyOpen(open: boolean): void;
   setKeyActionError(message: string | null): void;
+  setShareAskOpen(open: boolean): void;
+  /**
+   * Mint a read-only "ask"-mode guest link and return a ready-to-share URL
+   * (this app's origin + /guest) plus the expiry (unix ms).
+   */
+  createAskShare(args: {
+    ttlSeconds: number;
+    promptLimit: number;
+    maxSessions: number;
+  }): Promise<{ url: string; expiresAt: number }>;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
 }
@@ -76,6 +88,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
   pendingKeyReveal: null,
   revokeKeyOpen: false,
   keyActionError: null,
+  shareAskOpen: false,
 
   async hydrate() {
     const creds = loadCredentials();
@@ -126,6 +139,27 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
 
   setKeyActionError(message) {
     set({ keyActionError: message });
+  },
+
+  setShareAskOpen(open) {
+    set({ shareAskOpen: open });
+  },
+
+  async createAskShare({ ttlSeconds, promptLimit, maxSessions }) {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    const res = await pc.createAskShare(
+      { ttl_seconds: ttlSeconds, prompt_limit: promptLimit, max_sessions: maxSessions },
+      { bearer: credentials.bundle.access_token },
+    );
+    // Build the link from this app's origin (where /guest is served) and the
+    // relay URL the guest page needs to dial. The guest token rides in the
+    // query so a freshly opened tab connects with no further input.
+    const url =
+      `${window.location.origin}/guest?token=${encodeURIComponent(res.token)}` +
+      `&relay=${encodeURIComponent(credentials.relay_url)}`;
+    return { url, expiresAt: res.expires_at };
   },
 
   async signInWithAccountKey({ relay_url, account_key, device_label }) {

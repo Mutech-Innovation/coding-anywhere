@@ -42,7 +42,18 @@ type Envelope struct {
 	Method  string          `json:"method,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	Error   *EnvelopeError  `json:"error,omitempty"`
+	// Origin is a relay-set trust marker describing where a request came
+	// from. It is authoritative ONLY because the relay overwrites it on
+	// ingress (stamping guest connections, clearing anything a client
+	// tries to set), so daemons can trust it without further checks. It is
+	// never set by clients and is currently used to mark guest ("share")
+	// traffic so the daemon can force ask mode + auto-deny permissions.
+	Origin string `json:"origin,omitempty"`
 }
+
+// OriginGuest marks an envelope as originating from a read-only guest share
+// connection. Set by the relay; honoured by the daemon's chat router.
+const OriginGuest = "guest"
 
 // EnvelopeError is set on `res` envelopes when the request failed.
 type EnvelopeError struct {

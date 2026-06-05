@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,11 @@ type Router struct {
 type session struct {
 	wire.ChatSession
 	cancelCtx context.CancelFunc
+
+	// guest marks a session created by a read-only "ask"-mode share link
+	// (relay-stamped Origin=guest). Such sessions are forced into ask mode at
+	// creation and auto-deny every agent permission request.
+	guest bool
 
 	// modes captured from session/new, updated by current_mode_update.
 	modes         []wire.SessionMode
@@ -317,6 +323,23 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			s.modes[i] = wire.SessionMode{ID: m.ID, Name: m.Name, Description: m.Description}
 		}
 		s.currentModeID = modes.CurrentModeID
+	}
+
+	// Read-only guest ("ask"-share) sessions are forced into ask mode at
+	// creation so the agent cannot make changes, no matter what mode it
+	// defaulted to. The relay also blocks guests from calling set_mode.
+	s.guest = env.Origin == wire.OriginGuest
+	if s.guest {
+		if askID := askModeID(s.modes); askID != "" && askID != s.currentModeID {
+			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
+			if err := a.SetMode(setCtx, nativeID, askID); err != nil {
+				r.logger.Warn("force ask mode for guest session failed",
+					"native", nativeID, "err", err)
+			} else {
+				s.currentModeID = askID
+			}
+			setCancel()
+		}
 	}
 
 	// Atomically claim any buffered updates and register the session.
@@ -717,8 +740,42 @@ func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequ
 	})
 }
 
+// askModeID returns the agent mode id that corresponds to a read-only "ask"
+// mode, or "" if the agent advertises no such mode. Matches by id first
+// (e.g. "ask"), then falls back to a name containing "ask".
+func askModeID(modes []wire.SessionMode) string {
+	for _, m := range modes {
+		if strings.EqualFold(m.ID, "ask") {
+			return m.ID
+		}
+	}
+	for _, m := range modes {
+		if strings.Contains(strings.ToLower(m.Name), "ask") {
+			return m.ID
+		}
+	}
+	return ""
+}
+
+// guestDenyDecision is the ACP request_permission outcome we return for
+// read-only guest sessions: a "cancelled" outcome the agent treats as "user
+// did not grant", without surfacing the prompt to the (powerless) guest.
+var guestDenyDecision = json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`)
+
 func (r *Router) handleAgentPermissionRequest(nativeSessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
 	daemonID := r.daemonSessionID(nativeSessionID)
+
+	// Guest (read-only share) sessions never get to approve actions — the
+	// relay won't even forward a resolve_permission from a guest. Auto-deny
+	// immediately so the agent stays read-only and doesn't hang.
+	r.mu.Lock()
+	gs, ok := r.sessions[daemonID]
+	guestSession := ok && gs.guest
+	r.mu.Unlock()
+	if guestSession {
+		return guestDenyDecision, nil
+	}
+
 	requestID := ulid.Make().String()
 	pp := &pendingPermission{resCh: make(chan resolution, 1)}
 	r.pendingMu.Lock()

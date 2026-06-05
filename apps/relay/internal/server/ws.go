@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -38,6 +39,19 @@ func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Guests carry per-link limits and revocation state in the store; resolve
+	// them before accepting so a revoked/expired share can't open a socket.
+	var guest *guestState
+	if claims.Kind == auth.DeviceGuest {
+		gs, err := s.resolveGuest(r.Context(), claims)
+		if err != nil {
+			s.logger.Warn("guest connect rejected", "err", err, "remote", r.RemoteAddr)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		guest = gs
+	}
+
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Accept connections from any origin since the dev machine may be on
 		// a different LAN than the client.
@@ -56,11 +70,12 @@ func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 		kind:      claims.Kind,
 		ws:        ws,
 		send:      make(chan wire.Envelope, peerSendBuffer),
+		guest:     guest,
 	}
 	s.hub.Register(conn)
 	logger := s.logger.With("acc", conn.accountID, "dev", conn.deviceID, "kind", conn.kind, "conn", conn.id)
 	logger.Info("ws connected")
-	if s.store != nil {
+	if s.store != nil && !conn.isGuest() {
 		_ = s.store.TouchDevice(r.Context(), conn.deviceID)
 	}
 
@@ -70,8 +85,17 @@ func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 		logger.Info("ws disconnected")
 	}()
 
+	// Connection-scoped context. Guests get a hard deadline at token expiry so
+	// an already-open socket can't outlive the share.
+	connCtx := r.Context()
+	if conn.isGuest() && claims.ExpiresAt != nil {
+		var cancelDeadline context.CancelFunc
+		connCtx, cancelDeadline = context.WithDeadline(connCtx, claims.ExpiresAt.Time)
+		defer cancelDeadline()
+	}
+
 	// Writer pump.
-	writerCtx, cancelWriter := context.WithCancel(r.Context())
+	writerCtx, cancelWriter := context.WithCancel(connCtx)
 	defer cancelWriter()
 	writerDone := make(chan struct{})
 	go func() {
@@ -82,13 +106,37 @@ func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	if err := s.wsReadLoop(r.Context(), conn, logger); err != nil &&
+	if err := s.wsReadLoop(connCtx, conn, logger); err != nil &&
 		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
 		websocket.CloseStatus(err) == -1 {
 		logger.Warn("read loop ended", "err", err)
 	}
 	cancelWriter()
 	<-writerDone
+}
+
+// resolveGuest validates a guest's share record (existence, revocation,
+// expiry) and returns freshly-seeded per-connection guest state with the
+// share's limits.
+func (s *Server) resolveGuest(ctx context.Context, claims *auth.Claims) (*guestState, error) {
+	if s.store == nil {
+		return nil, errors.New("store unavailable")
+	}
+	share, err := s.store.GetGuestShare(ctx, claims.DeviceID)
+	if err != nil {
+		return nil, fmt.Errorf("guest share lookup: %w", err)
+	}
+	if share.AccountID != claims.AccountID {
+		return nil, errors.New("guest share account mismatch")
+	}
+	if share.Revoked {
+		return nil, errors.New("guest share revoked")
+	}
+	if time.Now().UTC().After(share.ExpiresAt) {
+		return nil, errors.New("guest share expired")
+	}
+	return newGuestState(share.PromptLimit, share.MaxSessions), nil
 }
 
 // wsReadLoop is the per-connection read pump.
@@ -98,6 +146,9 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 		if err := wsjson.Read(ctx, conn.ws, &env); err != nil {
 			return err
 		}
+		// Origin is a relay-set trust marker; never honour one a peer set.
+		// guestGate re-stamps it for allowed guest traffic below.
+		env.Origin = ""
 		if env.ID == "" {
 			conn.deliver(ctx, mustEnvelope(wire.MakeResponse("0", env.Channel, nil, &wire.EnvelopeError{
 				Code:    "invalid_envelope",
@@ -133,6 +184,13 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 			env.Type == wire.TypeEvent &&
 			env.Channel == wire.ChannelNotifications {
 			go s.dispatchEnvelopePush(ctx, conn.accountID, env, logger)
+		}
+
+		// Guests are restricted to a safe chat subset, session-isolated, and
+		// rate-limited. guestGate rejects disallowed traffic locally and
+		// stamps Origin=guest on what it forwards.
+		if conn.isGuest() && !s.guestGate(ctx, conn, &env) {
+			continue
 		}
 
 		// Fan out to peers. Senders never see their own message.

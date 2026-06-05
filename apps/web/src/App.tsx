@@ -42,6 +42,7 @@ import { FilesPanel } from './components/FilesPanel.js';
 import { NotificationsMenu } from './components/NotificationsMenu.js';
 import { PairScreen } from './components/PairScreen.js';
 import { PortsPanel } from './components/PortsPanel.js';
+import { ShareAskMenu, ShareAskModal } from './components/ShareAskMenu.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
 import { WelcomeTab } from './components/WelcomeTab.js';
 import { useConnection } from './store/connection.js';
@@ -144,9 +145,9 @@ function MainShell() {
                 </ActionIcon>
               </Menu.Target>
               <Menu.Dropdown>
-                <Menu.Label>
-                  账户：{credentials?.bundle.account_id.slice(0, 12) ?? '—'}
-                </Menu.Label>
+                <Menu.Label>账户：{credentials?.bundle.account_id.slice(0, 12) ?? '—'}</Menu.Label>
+                <ShareAskMenu />
+                <Menu.Divider />
                 <AccountKeyMenu />
                 <Menu.Divider />
                 <Menu.Item leftSection={<IconLogout size={14} />} onClick={signOut}>
@@ -163,6 +164,7 @@ function MainShell() {
         for the full rationale.
       */}
       <AccountKeyModals />
+      <ShareAskModal />
       <AppShell.Main
         style={{
           display: 'flex',

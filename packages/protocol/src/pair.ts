@@ -61,6 +61,18 @@ export const RotateKeyResponse = z.object({
 });
 export type RotateKeyResponse = z.infer<typeof RotateKeyResponse>;
 
+/** Response from POST /v1/share/ask — a short-lived read-only "ask" link. */
+export const AskShareResponse = z.object({
+  share_id: z.string(),
+  token: z.string(),
+  expires_at: z.number(), // unix milliseconds
+  expires_in: z.number(), // seconds
+  prompt_limit: z.number(),
+  max_sessions: z.number(),
+  url: z.string().optional(),
+});
+export type AskShareResponse = z.infer<typeof AskShareResponse>;
+
 /**
  * Canonical prefix on every account key. Used for cheap shape validation in
  * UI forms before hitting the network.
@@ -202,6 +214,18 @@ export class PairingClient {
    */
   rotateAccountKey(opts: RequestOpts & { bearer: string }) {
     return postJSON(`${this.base}/v1/auth/key/rotate`, {}, RotateKeyResponse, opts);
+  }
+
+  /**
+   * Mint a short-lived, read-only "ask"-mode guest link. The caller's limits
+   * (ttl/prompt/session caps) are fixed at issuance. Returns a guest token the
+   * guest page presents to the relay; the link itself is built by the caller.
+   */
+  createAskShare(
+    args: { ttl_seconds?: number; prompt_limit?: number; max_sessions?: number },
+    opts: RequestOpts & { bearer: string },
+  ) {
+    return postJSON(`${this.base}/v1/share/ask`, args, AskShareResponse, opts);
   }
 
   /**

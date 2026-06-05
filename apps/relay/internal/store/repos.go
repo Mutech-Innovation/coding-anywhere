@@ -346,6 +346,76 @@ func (s *Store) RevokeRefreshTokensForDevice(ctx context.Context, deviceID strin
 	return err
 }
 
+// PutGuestShare stores a guest-share row. The id is caller-provided (a ULID
+// that also becomes the guest JWT's device id).
+func (s *Store) PutGuestShare(ctx context.Context, g GuestShare) error {
+	if g.ID == "" || g.AccountID == "" {
+		return errors.New("guest share id/account required")
+	}
+	if g.MaxSessions <= 0 {
+		g.MaxSessions = 1
+	}
+	if g.CreatedAt.IsZero() {
+		g.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO guest_shares(id, account_id, created_at, expires_at, prompt_limit, max_sessions)
+		VALUES(?, ?, ?, ?, ?, ?)`,
+		g.ID, g.AccountID, g.CreatedAt.UnixMilli(), g.ExpiresAt.UnixMilli(),
+		g.PromptLimit, g.MaxSessions)
+	return err
+}
+
+// GetGuestShare looks up a guest share by id, or ErrNotFound.
+func (s *Store) GetGuestShare(ctx context.Context, id string) (GuestShare, error) {
+	var g GuestShare
+	var createdAt, expiresAt int64
+	var revoked int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, account_id, created_at, expires_at, revoked, prompt_limit, max_sessions
+		FROM guest_shares WHERE id = ?`, id,
+	).Scan(&g.ID, &g.AccountID, &createdAt, &expiresAt, &revoked, &g.PromptLimit, &g.MaxSessions)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GuestShare{}, ErrNotFound
+	}
+	if err != nil {
+		return GuestShare{}, err
+	}
+	g.CreatedAt = time.UnixMilli(createdAt).UTC()
+	g.ExpiresAt = time.UnixMilli(expiresAt).UTC()
+	g.Revoked = revoked != 0
+	return g, nil
+}
+
+// RevokeGuestShare marks a guest share as revoked. Returns ErrNotFound when
+// no row matches.
+func (s *Store) RevokeGuestShare(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE guest_shares SET revoked = 1 WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PurgeExpiredGuestShares deletes guest shares whose expires_at is before
+// `cutoff`. Returns the number of rows deleted.
+func (s *Store) PurgeExpiredGuestShares(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM guest_shares WHERE expires_at < ?`, cutoff.UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func nullableString(p *string) any {
 	if p == nil {
 		return nil

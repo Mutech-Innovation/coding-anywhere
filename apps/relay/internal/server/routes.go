@@ -31,6 +31,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/push/unsubscribe", s.handlePushUnsubscribe)
 	mux.HandleFunc("POST /v1/push/test", s.handlePushTest)
 
+	// Guest "ask"-mode share links
+	mux.HandleFunc("POST /v1/share/ask", s.handleShareAsk)
+	mux.HandleFunc("DELETE /v1/share/{id}", s.handleShareRevoke)
+
 	// WebSocket
 	mux.HandleFunc("GET /v1/ws/connect", s.handleWSConnect)
 

@@ -26,6 +26,17 @@ type Config struct {
 	// devices; daemons get longer-lived tokens.
 	ClientTokenTTL time.Duration
 	DaemonTokenTTL time.Duration
+	// GuestMaxTTL is the upper bound on a guest ("ask"-share) token's
+	// lifetime. The caller chooses the actual TTL at issuance but cannot
+	// exceed this.
+	GuestMaxTTL time.Duration
+	// GuestDefaultTTL is used when a share request omits a TTL.
+	GuestDefaultTTL time.Duration
+	// GuestWebBaseURL, when set, is prefixed to the generated guest link
+	// (e.g. "https://app.example.com" → ".../guest?token=..."). When empty
+	// the relay returns just the token and the web client builds the URL
+	// from its own origin.
+	GuestWebBaseURL string
 	// ReadHeaderTimeout protects against slow-loris on plaintext front-ends
 	// when the relay isn't behind Caddy.
 	ReadHeaderTimeout time.Duration
@@ -40,6 +51,8 @@ func Defaults() Config {
 		PairingTTL:        5 * time.Minute,
 		ClientTokenTTL:    1 * time.Hour,
 		DaemonTokenTTL:    30 * 24 * time.Hour,
+		GuestMaxTTL:       24 * time.Hour,
+		GuestDefaultTTL:   30 * time.Minute,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 }
@@ -58,6 +71,16 @@ func FromEnv() (Config, error) {
 	}
 	if v := os.Getenv("CA_RELAY_DATA_DIR"); v != "" {
 		cfg.DataDir = v
+	}
+	if v := os.Getenv("CA_GUEST_MAX_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("CA_GUEST_MAX_TTL: %w", err)
+		}
+		cfg.GuestMaxTTL = d
+	}
+	if v := os.Getenv("CA_GUEST_WEB_BASE_URL"); v != "" {
+		cfg.GuestWebBaseURL = strings.TrimRight(v, "/")
 	}
 	return cfg, cfg.Validate()
 }

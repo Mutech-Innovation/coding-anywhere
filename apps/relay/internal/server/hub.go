@@ -40,13 +40,39 @@ type Conn struct {
 	// the channel and skips peer fan-out.
 	serverPendingMu sync.Mutex
 	serverPending   map[string]chan wire.Envelope
+
+	// guest holds the per-connection state for a read-only "ask"-mode share.
+	// nil for daemon/client connections.
+	guest *guestState
+}
+
+// guestState carries the isolation + rate-limit bookkeeping for one guest
+// (share-link) connection. All access is guarded by mu.
+type guestState struct {
+	mu sync.Mutex
+	// owned is the set of chat session ids this guest created and is allowed
+	// to send to / receive events for.
+	owned map[string]bool
+	// pending maps an in-flight request id (sent by the guest) to its chat
+	// method, so the relay can route the daemon's response back to only this
+	// guest and learn the session id from a create_session response.
+	pending map[string]string
+	// limits, fixed at issuance.
+	promptLimit int
+	maxSessions int
+	// counters.
+	promptsUsed     int
+	sessionsCreated int
 }
 
 // Account aggregates all connections for one account.
 type Account struct {
 	daemons map[string]*Conn // device_id → conn
 	clients map[string]*Conn // device_id → conn
+	guests  map[string]*Conn // device_id (share id) → conn
 }
+
+func (c *Conn) isGuest() bool { return c.guest != nil }
 
 // Hub is the in-memory routing table. It is safe for concurrent use.
 type Hub struct {
@@ -74,6 +100,7 @@ func (h *Hub) Register(c *Conn) {
 		acc = &Account{
 			daemons: make(map[string]*Conn),
 			clients: make(map[string]*Conn),
+			guests:  make(map[string]*Conn),
 		}
 		h.accs[c.accountID] = acc
 	}
@@ -88,6 +115,11 @@ func (h *Hub) Register(c *Conn) {
 			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
 		}
 		acc.clients[c.deviceID] = c
+	case auth.DeviceGuest:
+		if old := acc.guests[c.deviceID]; old != nil && old != c {
+			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
+		}
+		acc.guests[c.deviceID] = c
 	}
 }
 
@@ -111,9 +143,28 @@ func (h *Hub) Unregister(c *Conn) {
 		if acc.clients[c.deviceID] == c {
 			delete(acc.clients, c.deviceID)
 		}
+	case auth.DeviceGuest:
+		if acc.guests[c.deviceID] == c {
+			delete(acc.guests, c.deviceID)
+		}
 	}
-	if len(acc.daemons) == 0 && len(acc.clients) == 0 {
+	if len(acc.daemons) == 0 && len(acc.clients) == 0 && len(acc.guests) == 0 {
 		delete(h.accs, c.accountID)
+	}
+}
+
+// CloseGuest drops any live guest connection for the given account whose
+// device id (share id) matches. Used when a share is revoked.
+func (h *Hub) CloseGuest(accountID, shareID string) {
+	h.mu.RLock()
+	acc, ok := h.accs[accountID]
+	var conn *Conn
+	if ok {
+		conn = acc.guests[shareID]
+	}
+	h.mu.RUnlock()
+	if conn != nil {
+		_ = conn.ws.Close(websocket.StatusPolicyViolation, "share revoked")
 	}
 }
 
@@ -198,12 +249,17 @@ func (c *Conn) takeServerPending(id string) (chan wire.Envelope, bool) {
 var ErrNoDaemon = errors.New("no daemon connected for account")
 
 // Broadcast forwards env to peers on the same account, with kind-aware
-// fan-out: a daemon's envelope goes to every client; a client's envelope
-// goes to every daemon. Senders never receive their own message.
+// fan-out: a daemon's envelope goes to every client; a client's (or guest's)
+// envelope goes to every daemon. Senders never receive their own message.
+//
+// Guest connections are session-isolated: a daemon's envelope is delivered to
+// a guest only if it concerns a chat session the guest owns (or is the
+// response to one of the guest's own requests). See deliverToGuest.
 func (h *Hub) Broadcast(from *Conn, env wire.Envelope) {
 	targets := h.targetsFor(from)
 	if len(targets) == 0 {
-		if from.kind == auth.DeviceClient && env.Type == wire.TypeRequest {
+		if (from.kind == auth.DeviceClient || from.kind == auth.DeviceGuest) &&
+			env.Type == wire.TypeRequest {
 			from.deliver(context.Background(), mustEnvelope(wire.MakeResponse(env.ID, env.Channel, nil, &wire.EnvelopeError{
 				Code:    "no_daemon",
 				Message: "no daemon connected for this account; sign out and pair with the active daemon",
@@ -212,6 +268,10 @@ func (h *Hub) Broadcast(from *Conn, env wire.Envelope) {
 		return
 	}
 	for _, peer := range targets {
+		if peer.isGuest() {
+			h.deliverToGuest(peer, env)
+			continue
+		}
 		select {
 		case peer.send <- env:
 		default:
@@ -219,6 +279,22 @@ func (h *Hub) Broadcast(from *Conn, env wire.Envelope) {
 				"acc", peer.accountID, "dev", peer.deviceID, "kind", peer.kind)
 			peer.markStuck()
 		}
+	}
+}
+
+// deliverToGuest forwards a daemon envelope to a guest only when the guest is
+// allowed to see it. It also learns the guest's session ownership from a
+// create_session response so subsequent events for that session pass the
+// isolation filter.
+func (h *Hub) deliverToGuest(g *Conn, env wire.Envelope) {
+	if !guestMayReceive(g, env) {
+		return
+	}
+	select {
+	case g.send <- env:
+	default:
+		h.logger.Warn("dropping envelope to slow guest", "acc", g.accountID, "dev", g.deviceID)
+		g.markStuck()
 	}
 }
 
@@ -237,7 +313,10 @@ func (h *Hub) targetsFor(from *Conn) []*Conn {
 		for _, c := range acc.clients {
 			targets = append(targets, c)
 		}
-	case auth.DeviceClient:
+		for _, c := range acc.guests {
+			targets = append(targets, c)
+		}
+	case auth.DeviceClient, auth.DeviceGuest:
 		for _, c := range acc.daemons {
 			targets = append(targets, c)
 		}

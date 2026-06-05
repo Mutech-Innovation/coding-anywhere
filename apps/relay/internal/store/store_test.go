@@ -21,6 +21,73 @@ func newStore(t *testing.T) *store.Store {
 	return s
 }
 
+func TestGuestShareCRUD(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	if _, err := s.CreateAccount(ctx, "acc-g"); err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	share := store.GuestShare{
+		ID:          "share-1",
+		AccountID:   "acc-g",
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(30 * time.Minute),
+		PromptLimit: 20,
+		MaxSessions: 1,
+	}
+	if err := s.PutGuestShare(ctx, share); err != nil {
+		t.Fatalf("PutGuestShare: %v", err)
+	}
+
+	got, err := s.GetGuestShare(ctx, "share-1")
+	if err != nil {
+		t.Fatalf("GetGuestShare: %v", err)
+	}
+	if got.AccountID != "acc-g" || got.PromptLimit != 20 || got.MaxSessions != 1 || got.Revoked {
+		t.Fatalf("unexpected share: %+v", got)
+	}
+	if !got.ExpiresAt.Equal(share.ExpiresAt) {
+		t.Fatalf("expires mismatch: got %v want %v", got.ExpiresAt, share.ExpiresAt)
+	}
+
+	if err := s.RevokeGuestShare(ctx, "share-1"); err != nil {
+		t.Fatalf("RevokeGuestShare: %v", err)
+	}
+	got, err = s.GetGuestShare(ctx, "share-1")
+	if err != nil {
+		t.Fatalf("GetGuestShare after revoke: %v", err)
+	}
+	if !got.Revoked {
+		t.Fatal("expected share to be revoked")
+	}
+
+	// MaxSessions defaults to 1 when unset.
+	if err := s.PutGuestShare(ctx, store.GuestShare{
+		ID: "share-2", AccountID: "acc-g", ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("PutGuestShare #2: %v", err)
+	}
+	g2, _ := s.GetGuestShare(ctx, "share-2")
+	if g2.MaxSessions != 1 {
+		t.Fatalf("expected default MaxSessions=1, got %d", g2.MaxSessions)
+	}
+
+	if _, err := s.GetGuestShare(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	// Purge removes expired shares.
+	n, err := s.PurgeExpiredGuestShares(ctx, now.Add(45*time.Minute))
+	if err != nil {
+		t.Fatalf("PurgeExpiredGuestShares: %v", err)
+	}
+	if n != 1 { // share-1 (30m) expired; share-2 (1h) survives
+		t.Fatalf("expected 1 purged, got %d", n)
+	}
+}
+
 func TestMigrationsApplyOnce(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "relay.db")
 	s, err := store.Open(context.Background(), dbPath)

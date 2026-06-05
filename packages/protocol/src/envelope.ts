@@ -35,6 +35,12 @@ export const Envelope = z.object({
   method: z.string().optional(),
   /** Channel-specific payload. Kept as `unknown` here; refined per channel. */
   payload: z.unknown().optional(),
+  /**
+   * Relay-set trust marker (e.g. "guest"). Stamped by the relay on guest
+   * traffic and stripped from anything a client sets, so the daemon can
+   * trust it. Clients never set this.
+   */
+  origin: z.string().optional(),
   /** Present on `res` envelopes when the request failed. */
   error: z
     .object({

@@ -1,0 +1,284 @@
+package server_test
+
+// End-to-end test for the guest "ask"-mode share path:
+//
+//   guest WS ─ chat.* ──▶ relay (guest gate) ──▶ daemon (chatrouter, ask-lock)
+//
+// Verifies that a guest token, minted via POST /v1/share/ask, can chat but:
+//   - the daemon forces the session into ask mode at creation,
+//   - the relay rejects set_mode, non-chat channels, and prompts to sessions
+//     the guest does not own (isolation).
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/devin"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/pairingclient"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+)
+
+func TestGuestAskShareEndToEnd(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	// Mock agent advertises ask+code, currently in "code" — so the daemon must
+	// actively force "ask" for the guest session.
+	mock := &snapshotMockACP{
+		t:           t,
+		respWaiters: map[string]chan map[string]any{},
+		modes: map[string]any{
+			"currentModeId": "code",
+			"availableModes": []map[string]any{
+				{"id": "ask", "name": "Ask"},
+				{"id": "code", "name": "Code"},
+			},
+		},
+	}
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	mock.in = stdinR
+	mock.wr = bufio.NewWriter(stdoutW)
+	go mock.run()
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mint a guest token via the share endpoint using the client's bearer.
+	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken)
+
+	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
+	if err != nil {
+		t.Fatalf("guest dial: %v", err)
+	}
+	t.Cleanup(func() { _ = guestWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, guestWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+	awaitResp := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for response %s", id)
+			}
+		}
+	}
+
+	// 1. Guest create_session succeeds and the daemon forces ask mode.
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	res := awaitResp("c-1")
+	if res.Error != nil {
+		t.Fatalf("guest create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	guestSession := createRes.Session.ID
+	if guestSession == "" {
+		t.Fatal("empty guest session id")
+	}
+	mock.mu.Lock()
+	forced := mock.lastSetModeID
+	mock.mu.Unlock()
+	if forced != "ask" {
+		t.Fatalf("daemon should force ask mode for guest, got %q", forced)
+	}
+
+	// 2. Guest set_mode is rejected by the relay (can't escape ask).
+	req, _ = wire.MakeRequest("m-1", wire.ChannelChat, wire.ChatMethodSetMode,
+		wire.ChatSetModeRequest{SessionID: guestSession, ModeID: "code"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	if res = awaitResp("m-1"); res.Error == nil {
+		t.Fatal("expected guest set_mode to be rejected")
+	}
+
+	// 3. Guest cannot use non-chat channels.
+	req, _ = wire.MakeRequest("t-1", wire.ChannelTerminal, "open", map[string]any{})
+	_ = wsjson.Write(ctx, guestWS, req)
+	if res = awaitResp("t-1"); res.Error == nil {
+		t.Fatal("expected guest terminal request to be rejected")
+	}
+
+	// 4. Isolation: a guest cannot prompt a session it does not own.
+	req, _ = wire.MakeRequest("p-x", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: "not-the-guests-session", Text: "hi"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	if res = awaitResp("p-x"); res.Error == nil {
+		t.Fatal("expected prompt to an unowned session to be rejected")
+	}
+}
+
+// TestGuestPermissionAutoDeny verifies that when the agent asks for permission
+// on a guest session, the daemon auto-denies it: the guest never receives a
+// permission_request event, and the prompt still completes.
+func TestGuestPermissionAutoDeny(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	// This mock pushes a session/request_permission during every prompt and
+	// blocks until it sees a decision — so if the daemon did NOT auto-deny,
+	// the prompt would hang and the test would time out.
+	_, stdout, stdin := newChatMockACP(t)
+	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+		return devin.NewWithStreams(stdin, stdout, opts), nil
+	}, "/tmp")
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken)
+	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
+	if err != nil {
+		t.Fatalf("guest dial: %v", err)
+	}
+	t.Cleanup(func() { _ = guestWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, guestWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+
+	// create_session
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	var guestSession string
+	for guestSession == "" {
+		select {
+		case env := <-envCh:
+			if env.ID == "c-1" && env.Type == wire.TypeResponse {
+				if env.Error != nil {
+					t.Fatalf("create_session error: %+v", env.Error)
+				}
+				var crResp wire.ChatCreateSessionResponse
+				_ = json.Unmarshal(env.Payload, &crResp)
+				guestSession = crResp.Session.ID
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout creating guest session")
+		}
+	}
+
+	// prompt — the mock will request permission; the daemon must auto-deny so
+	// the prompt completes and no permission_request reaches the guest.
+	req, _ = wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: guestSession, Text: "hello"})
+	_ = wsjson.Write(ctx, guestWS, req)
+
+	deadline := time.After(8 * time.Second)
+	for {
+		select {
+		case env := <-envCh:
+			if env.Channel == wire.ChannelChat && env.Method == wire.ChatEventPermissionRequest {
+				t.Fatal("guest must NOT receive a permission_request event")
+			}
+			if env.ID == "p-1" && env.Type == wire.TypeResponse {
+				if env.Error != nil {
+					t.Fatalf("prompt failed: %+v", env.Error)
+				}
+				return // success: prompt completed without surfacing a permission
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for prompt to complete (auto-deny may be broken)")
+		}
+	}
+}
+
+func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"ttl_seconds": 600, "prompt_limit": 5, "max_sessions": 1,
+	})
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/share/ask", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("authorization", "Bearer "+bearer)
+	httpReq.Header.Set("content-type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("share request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("share status %d: %s", resp.StatusCode, b)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode share: %v", err)
+	}
+	if out.Token == "" {
+		t.Fatal("empty guest token from share endpoint")
+	}
+	return out.Token
+}

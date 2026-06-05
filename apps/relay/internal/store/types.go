@@ -62,3 +62,21 @@ type RefreshToken struct {
 	ExpiresAt time.Time
 	Revoked   bool
 }
+
+// GuestShare is a short-lived, read-only "ask"-mode share link. Its ID
+// doubles as the DeviceID embedded in the guest JWT so the relay can re-check
+// revocation and per-link limits on every connect. Guests never get a refresh
+// token; the JWT simply expires at ExpiresAt.
+type GuestShare struct {
+	ID        string
+	AccountID string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	Revoked   bool
+	// PromptLimit caps how many prompts a guest may send across the share's
+	// lifetime. 0 means unlimited.
+	PromptLimit int
+	// MaxSessions caps how many chat sessions the guest may create. Values
+	// <= 0 are treated as 1 by the relay.
+	MaxSessions int
+}

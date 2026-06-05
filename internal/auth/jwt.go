@@ -17,6 +17,12 @@ type DeviceKind string
 const (
 	DeviceDaemon DeviceKind = "daemon"
 	DeviceClient DeviceKind = "client"
+	// DeviceGuest is a short-lived, read-only "ask"-mode share. Guests have
+	// no refresh token; their access token expires and cannot be renewed.
+	// The relay restricts guest connections to a safe chat subset (see the
+	// WS read loop) and the daemon forces ask mode + auto-denies permission
+	// requests on guest-originated sessions.
+	DeviceGuest DeviceKind = "guest"
 )
 
 // Claims is the JWT payload we sign. Account groups all devices that share a
@@ -86,7 +92,8 @@ func (s *Signer) Verify(token string) (*Claims, error) {
 	if !parsed.Valid {
 		return nil, ErrTokenInvalid
 	}
-	if c.AccountID == "" || c.DeviceID == "" || (c.Kind != DeviceDaemon && c.Kind != DeviceClient) {
+	if c.AccountID == "" || c.DeviceID == "" ||
+		(c.Kind != DeviceDaemon && c.Kind != DeviceClient && c.Kind != DeviceGuest) {
 		return nil, fmt.Errorf("%w: missing claims", ErrTokenInvalid)
 	}
 	return c, nil
