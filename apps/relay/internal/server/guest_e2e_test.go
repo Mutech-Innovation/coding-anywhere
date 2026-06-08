@@ -75,7 +75,11 @@ func TestGuestAskShareEndToEnd(t *testing.T) {
 	}
 
 	// Mint a guest token via the share endpoint using the client's bearer.
-	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken)
+	// The share carries the owner-chosen cwd + model; this daemon's chatrouter
+	// has NO defaultCwd, so the create_session below succeeds only if the relay
+	// injects the share cwd (the guest sends none), and the daemon must apply
+	// the locked model via set_config_option.
+	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "gpt-5-high")
 
 	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
 	if err != nil {
@@ -108,9 +112,10 @@ func TestGuestAskShareEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 1. Guest create_session succeeds and the daemon forces ask mode.
+	// 1. Guest create_session succeeds and the daemon forces ask mode. The
+	// guest deliberately sends NO cwd — the relay must inject the share's.
 	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
-		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+		wire.ChatCreateSessionRequest{AgentID: "devin"})
 	_ = wsjson.Write(ctx, guestWS, req)
 	res := awaitResp("c-1")
 	if res.Error != nil {
@@ -126,9 +131,15 @@ func TestGuestAskShareEndToEnd(t *testing.T) {
 	}
 	mock.mu.Lock()
 	forced := mock.lastSetModeID
+	forcedConfigID := mock.lastSetConfigID
+	forcedModel := mock.lastSetConfigValue
 	mock.mu.Unlock()
 	if forced != "ask" {
 		t.Fatalf("daemon should force ask mode for guest, got %q", forced)
+	}
+	// The daemon must lock the share's model via set_config_option.
+	if forcedConfigID != "model" || forcedModel != "gpt-5-high" {
+		t.Fatalf("daemon should force share model, got %s=%s", forcedConfigID, forcedModel)
 	}
 
 	// 2. Guest set_mode is rejected by the relay (can't escape ask).
@@ -187,7 +198,7 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken)
+	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "")
 	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
 	if err != nil {
 		t.Fatalf("guest dial: %v", err)
@@ -205,9 +216,9 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 		}
 	}()
 
-	// create_session
+	// create_session (no cwd — the relay injects the share's)
 	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
-		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/tmp"})
+		wire.ChatCreateSessionRequest{AgentID: "devin"})
 	_ = wsjson.Write(ctx, guestWS, req)
 	var guestSession string
 	for guestSession == "" {
@@ -251,10 +262,10 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 	}
 }
 
-func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer string) string {
+func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer, cwd, model string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
-		"ttl_seconds": 600, "prompt_limit": 5, "max_sessions": 1,
+		"ttl_seconds": 600, "prompt_limit": 5, "max_sessions": 1, "cwd": cwd, "model": model,
 	})
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/share/ask", bytes.NewReader(body))
 	if err != nil {

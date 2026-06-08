@@ -6,17 +6,20 @@ import {
   Menu,
   Modal,
   NumberInput,
+  Select,
   Stack,
   Text,
   TextInput,
   Tooltip,
 } from '@mantine/core';
 import { IconShare3 } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { RelayError } from '@coding-anywhere/protocol';
 
+import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
+import { DirectoryPicker } from './ChatPanel.js';
 
 /**
  * Menu item that opens the "share a read-only ask link" modal. Like
@@ -42,6 +45,10 @@ export function ShareAskModal() {
   const setOpen = useConnection((s) => s.setShareAskOpen);
   const createAskShare = useConnection((s) => s.createAskShare);
 
+  const sessions = useChat((s) => s.sessions);
+
+  const [cwd, setCwd] = useState('');
+  const [model, setModel] = useState<string | null>(null);
   const [ttlMinutes, setTtlMinutes] = useState<number | string>(30);
   const [promptLimit, setPromptLimit] = useState<number | string>(20);
   const [maxSessions, setMaxSessions] = useState<number | string>(1);
@@ -49,6 +56,27 @@ export function ShareAskModal() {
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
+
+  // Model choices are advertised per-session by the agent; reuse them from
+  // any open session so the owner can lock a model for the guest. Empty when
+  // no session has surfaced a model option yet (guest then uses the default).
+  const modelChoices = useMemo(() => {
+    for (const s of Object.values(sessions)) {
+      const opt = s.configOptions.find((o) => o.id.toLowerCase() === 'model');
+      if (opt?.options?.length) {
+        const seen = new Set<string>();
+        const out: { value: string; label: string }[] = [];
+        for (const c of opt.options) {
+          const value = c.value == null ? '' : String(c.value);
+          if (!value || seen.has(value)) continue;
+          seen.add(value);
+          out.push({ value, label: asString(c.label) ?? asString(c.name) ?? value });
+        }
+        return out;
+      }
+    }
+    return [];
+  }, [sessions]);
 
   function reset() {
     setLink(null);
@@ -71,6 +99,8 @@ export function ShareAskModal() {
         ttlSeconds: Math.max(1, Number(ttlMinutes) || 0) * 60,
         promptLimit: Math.max(0, Number(promptLimit) || 0),
         maxSessions: Math.max(1, Number(maxSessions) || 1),
+        cwd: cwd.trim(),
+        model: model ?? '',
       });
       setLink(res.url);
       setExpiresAt(res.expiresAt);
@@ -130,6 +160,30 @@ export function ShareAskModal() {
           </Stack>
         ) : (
           <Stack gap="sm">
+            <TextInput
+              label="工作目录"
+              description="必填。访客的 Devin 会在这个目录里运行 —— 请选一个具体的项目目录（Devin 不会在 $HOME 这类宽泛根目录上工作）。访客无法更改它。"
+              placeholder="选择下方的一个目录"
+              value={cwd}
+              onChange={(e) => setCwd(e.currentTarget.value)}
+            />
+            <DirectoryPicker opened={opened} selectedPath={cwd} onSelect={setCwd} />
+            <Select
+              label="模型"
+              description={
+                modelChoices.length > 0
+                  ? '可选。锁定访客使用的模型；留空则用 Devin 默认模型。访客无法更改。'
+                  : '打开一个会话后这里才会出现可选模型；当前留空，访客将使用 Devin 默认模型。'
+              }
+              placeholder={modelChoices.length > 0 ? '默认模型' : '（无可选模型）'}
+              data={modelChoices}
+              value={model}
+              onChange={setModel}
+              disabled={modelChoices.length === 0}
+              clearable
+              searchable
+              nothingFoundMessage="没有匹配的模型"
+            />
             <NumberInput
               label="有效期（分钟）"
               min={1}
@@ -152,7 +206,7 @@ export function ShareAskModal() {
               <Button variant="default" onClick={close} disabled={busy}>
                 取消
               </Button>
-              <Button onClick={() => void onGenerate()} loading={busy}>
+              <Button onClick={() => void onGenerate()} loading={busy} disabled={!cwd.trim()}>
                 生成链接
               </Button>
             </Group>
@@ -167,4 +221,9 @@ function formatShareError(err: unknown): string {
   if (err instanceof RelayError) return `${err.code}: ${err.message}`;
   if (err instanceof Error) return err.message;
   return '生成失败，请重试。';
+}
+
+// asString narrows an unknown config-option field to a non-empty string.
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }

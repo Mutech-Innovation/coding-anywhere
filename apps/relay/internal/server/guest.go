@@ -8,8 +8,8 @@ import (
 )
 
 // newGuestState builds the per-connection bookkeeping for a guest, seeded with
-// the share's limits.
-func newGuestState(promptLimit, maxSessions int) *guestState {
+// the share's limits, owner-chosen working directory, and locked model.
+func newGuestState(promptLimit, maxSessions int, cwd, model string) *guestState {
 	if maxSessions <= 0 {
 		maxSessions = 1
 	}
@@ -18,6 +18,8 @@ func newGuestState(promptLimit, maxSessions int) *guestState {
 		pending:     make(map[string]string),
 		promptLimit: promptLimit,
 		maxSessions: maxSessions,
+		cwd:         cwd,
+		model:       model,
 	}
 }
 
@@ -134,6 +136,19 @@ func (s *Server) guestGate(ctx context.Context, conn *Conn, env *wire.Envelope) 
 			s.rejectGuest(ctx, conn, *env, "limit_reached", "session limit reached for this link")
 			return false
 		}
+		// Force the owner-chosen cwd and model onto the session: guests have
+		// no directory/model picker and must not be able to pick/omit either.
+		// Empty share values leave that field untouched (legacy shares /
+		// default model).
+		if gs.cwd != "" || gs.model != "" {
+			payload, err := injectCreateFields(env.Payload, gs.cwd, gs.model)
+			if err != nil {
+				gs.releaseSessionSlot()
+				s.rejectGuest(ctx, conn, *env, "bad_request", "invalid create_session payload")
+				return false
+			}
+			env.Payload = payload
+		}
 		gs.addPending(env.ID, env.Method)
 	case wire.ChatMethodPrompt:
 		if sid := sessionIDFromPayload(env.Payload); sid == "" || !gs.owns(sid) {
@@ -168,6 +183,30 @@ func (s *Server) rejectGuest(ctx context.Context, conn *Conn, env wire.Envelope,
 		Code:    code,
 		Message: msg,
 	})))
+}
+
+// injectCreateFields overwrites the "cwd" and/or "model" fields of a
+// create_session payload with the owner-chosen values, preserving any other
+// fields the guest sent (agent_id, title). Empty values are left untouched. It
+// returns an error only when the payload is present but not a JSON object.
+func injectCreateFields(payload json.RawMessage, cwd, model string) (json.RawMessage, error) {
+	fields := map[string]json.RawMessage{}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			return nil, err
+		}
+	}
+	for key, value := range map[string]string{"cwd": cwd, "model": model} {
+		if value == "" {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		fields[key] = encoded
+	}
+	return json.Marshal(fields)
 }
 
 // sessionIDFromPayload extracts a chat session id from an envelope payload,

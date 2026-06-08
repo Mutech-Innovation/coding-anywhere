@@ -1,19 +1,9 @@
-import {
-  ActionIcon,
-  Badge,
-  Box,
-  Group,
-  Paper,
-  ScrollArea,
-  Stack,
-  Text,
-  Textarea,
-  Tooltip,
-} from '@mantine/core';
-import { IconPlayerStopFilled, IconSend, IconTool } from '@tabler/icons-react';
+import { ActionIcon, Box, Group, ScrollArea, Stack, Text, Textarea, Tooltip } from '@mantine/core';
+import { IconPlayerStopFilled, IconSend } from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { type ChatMessage, type ChatToolCall, useChat } from '../store/chat.js';
+import { MessageBubble, ToolCallCard } from './ChatPanel.js';
 
 type TranscriptItem =
   | { kind: 'msg'; order: number; msg: ChatMessage }
@@ -69,15 +59,20 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
       <ScrollArea style={{ flex: 1, minHeight: 0 }} viewportRef={viewportRef}>
         <Stack gap="sm" p="md" maw={820} mx="auto">
           {items.length === 0 ? (
-            <Text c="dimmed" size="sm" ta="center" py="xl">
-              问点什么吧 —— 这是一个只读（ask）会话，Devin 不会改动任何文件。
-            </Text>
+            <Stack gap={4} align="center" py="xl">
+              <Text c="dimmed" size="sm" ta="center">
+                问点什么吧 —— 这是一个只读（ask）会话，Devin 不会改动任何文件。
+              </Text>
+              <Text c="dimmed" size="xs" ta="center">
+                提示：对话只保留在本页，刷新或关闭后会开始新的对话。
+              </Text>
+            </Stack>
           ) : (
             items.map((item) =>
               item.kind === 'msg' ? (
-                <MessageBubble key={item.msg.id} msg={item.msg} />
+                <MessageBubble key={item.msg.id} message={item.msg} />
               ) : (
-                <ToolLine key={item.tool.id} tool={item.tool} />
+                <ToolCallCard key={item.tool.id} call={item.tool} />
               ),
             )
           )}
@@ -90,90 +85,48 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
       </ScrollArea>
 
       <Box className="cw-hairline-t" p="sm">
-        <Group gap="xs" align="flex-end" maw={820} mx="auto" w="100%">
-          <Textarea
-            flex={1}
-            autosize
-            minRows={1}
-            maxRows={6}
-            placeholder={disabled ? '会话已结束' : '给 Devin 发消息…'}
-            value={text}
-            disabled={disabled}
-            onChange={(e) => setText(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-          />
-          {thinking ? (
-            <Tooltip label="停止">
-              <ActionIcon
-                size="lg"
-                color="red"
-                variant="light"
-                onClick={() => void cancel(sessionId)}
-              >
-                <IconPlayerStopFilled size={18} />
-              </ActionIcon>
-            </Tooltip>
-          ) : (
-            <Tooltip label="发送">
-              <ActionIcon size="lg" variant="filled" disabled={!canSend} onClick={submit}>
-                <IconSend size={18} />
-              </ActionIcon>
-            </Tooltip>
-          )}
-        </Group>
+        <Stack gap={6} maw={820} mx="auto" w="100%">
+          <Group gap="xs" align="flex-end" w="100%">
+            <Textarea
+              flex={1}
+              autosize
+              minRows={1}
+              maxRows={6}
+              placeholder={disabled ? '会话已结束' : '给 Devin 发消息…'}
+              value={text}
+              disabled={disabled}
+              onChange={(e) => setText(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            {thinking ? (
+              <Tooltip label="停止">
+                <ActionIcon
+                  size="lg"
+                  color="red"
+                  variant="light"
+                  onClick={() => void cancel(sessionId)}
+                >
+                  <IconPlayerStopFilled size={18} />
+                </ActionIcon>
+              </Tooltip>
+            ) : (
+              <Tooltip label="发送">
+                <ActionIcon size="lg" variant="filled" disabled={!canSend} onClick={submit}>
+                  <IconSend size={18} />
+                </ActionIcon>
+              </Tooltip>
+            )}
+          </Group>
+          <Text c="dimmed" size="xs" ta="center">
+            对话不会保存，刷新或关闭页面后会开始新的对话。
+          </Text>
+        </Stack>
       </Box>
     </Stack>
-  );
-}
-
-function MessageBubble({ msg }: { msg: ChatMessage }) {
-  if (msg.role === 'user') {
-    return (
-      <Group justify="flex-end">
-        <Paper bg="brand.6" c="white" px="md" py="xs" radius="md" maw="80%">
-          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-            {msg.text}
-          </Text>
-        </Paper>
-      </Group>
-    );
-  }
-  if (msg.role === 'agent_thought') {
-    return (
-      <Text c="dimmed" size="sm" fs="italic" style={{ whiteSpace: 'pre-wrap' }}>
-        {msg.text}
-      </Text>
-    );
-  }
-  if (msg.role === 'system') {
-    return (
-      <Text c="dimmed" size="xs" ta="center" style={{ whiteSpace: 'pre-wrap' }}>
-        {msg.text}
-      </Text>
-    );
-  }
-  return (
-    <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-      {msg.text}
-    </Text>
-  );
-}
-
-function ToolLine({ tool }: { tool: ChatToolCall }) {
-  return (
-    <Group gap={6} c="dimmed">
-      <IconTool size={14} />
-      <Text size="xs">{tool.title ?? tool.kind ?? '工具调用'}</Text>
-      {tool.status ? (
-        <Badge size="xs" variant="light" color={tool.status === 'failed' ? 'red' : 'gray'}>
-          {tool.status}
-        </Badge>
-      ) : null}
-    </Group>
   );
 }

@@ -74,6 +74,8 @@ interface ConnectionStore {
     ttlSeconds: number;
     promptLimit: number;
     maxSessions: number;
+    cwd: string;
+    model: string;
   }): Promise<{ url: string; expiresAt: number }>;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
@@ -145,12 +147,18 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     set({ shareAskOpen: open });
   },
 
-  async createAskShare({ ttlSeconds, promptLimit, maxSessions }) {
+  async createAskShare({ ttlSeconds, promptLimit, maxSessions, cwd, model }) {
     const { credentials } = get();
     if (!credentials) throw new Error('not signed in');
     const pc = new PairingClient(credentials.relay_url);
     const res = await pc.createAskShare(
-      { ttl_seconds: ttlSeconds, prompt_limit: promptLimit, max_sessions: maxSessions },
+      {
+        ttl_seconds: ttlSeconds,
+        prompt_limit: promptLimit,
+        max_sessions: maxSessions,
+        cwd,
+        model,
+      },
       { bearer: credentials.bundle.access_token },
     );
     // Build the link from this app's origin (where /guest is served) and the

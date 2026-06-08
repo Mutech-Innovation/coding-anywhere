@@ -36,6 +36,8 @@ func TestGuestShareCRUD(t *testing.T) {
 		ExpiresAt:   now.Add(30 * time.Minute),
 		PromptLimit: 20,
 		MaxSessions: 1,
+		Cwd:         "/home/me/project",
+		Model:       "gpt-5-high",
 	}
 	if err := s.PutGuestShare(ctx, share); err != nil {
 		t.Fatalf("PutGuestShare: %v", err)
@@ -47,6 +49,12 @@ func TestGuestShareCRUD(t *testing.T) {
 	}
 	if got.AccountID != "acc-g" || got.PromptLimit != 20 || got.MaxSessions != 1 || got.Revoked {
 		t.Fatalf("unexpected share: %+v", got)
+	}
+	if got.Cwd != "/home/me/project" {
+		t.Fatalf("cwd mismatch: got %q", got.Cwd)
+	}
+	if got.Model != "gpt-5-high" {
+		t.Fatalf("model mismatch: got %q", got.Model)
 	}
 	if !got.ExpiresAt.Equal(share.ExpiresAt) {
 		t.Fatalf("expires mismatch: got %v want %v", got.ExpiresAt, share.ExpiresAt)

@@ -298,7 +298,7 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
   );
 }
 
-function DirectoryPicker({
+export function DirectoryPicker({
   opened,
   selectedPath,
   onSelect,
@@ -1446,7 +1446,7 @@ function AttachmentPreview({
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const isThought = message.role === 'agent_thought';
   const isSystem = message.role === 'system';
@@ -1812,7 +1812,7 @@ const TOOL_STATUS_COLOR: Record<string, string> = {
   failed: 'red',
 };
 
-function ToolCallCard({ call }: { call: ChatToolCall }) {
+export function ToolCallCard({ call }: { call: ChatToolCall }) {
   const [expanded, setExpanded] = useState(false);
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';

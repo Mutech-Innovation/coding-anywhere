@@ -340,6 +340,18 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			}
 			setCancel()
 		}
+		// Lock the owner-chosen model (the relay injects it into the guest's
+		// create_session). The guest can't change it — the relay blocks
+		// set_config_option. We only fire the side effect; the model is not
+		// surfaced in the guest UI, so we don't fold the snapshot.
+		if req.Model != "" {
+			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
+			if _, err := a.SetConfigOption(setCtx, nativeID, modelConfigID, req.Model); err != nil {
+				r.logger.Warn("force model for guest session failed",
+					"native", nativeID, "model", req.Model, "err", err)
+			}
+			setCancel()
+		}
 	}
 
 	// Atomically claim any buffered updates and register the session.
@@ -739,6 +751,11 @@ func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequ
 		UserPrompts:    prompts,
 	})
 }
+
+// modelConfigID is the session-scoped config option id Devin uses for the
+// active model. The web model picker keys off the same id (lower-cased), and
+// guest "ask"-share sessions force the owner-chosen model via this option.
+const modelConfigID = "model"
 
 // askModeID returns the agent mode id that corresponds to a read-only "ask"
 // mode, or "" if the agent advertises no such mode. Matches by id first

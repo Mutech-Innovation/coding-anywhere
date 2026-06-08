@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/auth"
@@ -9,13 +10,17 @@ import (
 )
 
 func newTestGuestConn(promptLimit, maxSessions int) *Conn {
+	return newTestGuestConnFields(promptLimit, maxSessions, "", "")
+}
+
+func newTestGuestConnFields(promptLimit, maxSessions int, cwd, model string) *Conn {
 	return &Conn{
 		id:        "conn-1",
 		accountID: "acc-1",
 		deviceID:  "share-1",
 		kind:      auth.DeviceGuest,
 		send:      make(chan wire.Envelope, 32),
-		guest:     newGuestState(promptLimit, maxSessions),
+		guest:     newGuestState(promptLimit, maxSessions, cwd, model),
 	}
 }
 
@@ -93,6 +98,48 @@ func TestGuestGateAllowsCreateSessionAndStampsOrigin(t *testing.T) {
 	env2 := chatReq(t, "c-2", wire.ChatMethodCreateSession, wire.ChatCreateSessionRequest{AgentID: "devin"})
 	if s.guestGate(context.Background(), conn, &env2) {
 		t.Fatal("expected second create_session to hit the session cap")
+	}
+}
+
+func TestGuestGateInjectsShareCwdAndModel(t *testing.T) {
+	s := &Server{}
+	conn := newTestGuestConnFields(0, 1, "/srv/app", "gpt-5-high")
+	// The guest tries to pick its own cwd/model; the relay must overwrite
+	// both with the owner-chosen share values while preserving other fields.
+	env := chatReq(t, "c-1", wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/etc", Model: "sneaky", Title: "hi"})
+	if !s.guestGate(context.Background(), conn, &env) {
+		t.Fatal("expected create_session to be allowed")
+	}
+	var got wire.ChatCreateSessionRequest
+	if err := json.Unmarshal(env.Payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.Cwd != "/srv/app" {
+		t.Fatalf("expected injected cwd /srv/app, got %q", got.Cwd)
+	}
+	if got.Model != "gpt-5-high" {
+		t.Fatalf("expected injected model gpt-5-high, got %q", got.Model)
+	}
+	if got.AgentID != "devin" || got.Title != "hi" {
+		t.Fatalf("expected other fields preserved, got %+v", got)
+	}
+}
+
+func TestGuestGateLeavesFieldsWhenShareUnset(t *testing.T) {
+	s := &Server{}
+	conn := newTestGuestConnFields(0, 1, "", "") // no owner cwd/model
+	env := chatReq(t, "c-1", wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/guest/pick", Model: "guest-model"})
+	if !s.guestGate(context.Background(), conn, &env) {
+		t.Fatal("expected create_session to be allowed")
+	}
+	var got wire.ChatCreateSessionRequest
+	if err := json.Unmarshal(env.Payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.Cwd != "/guest/pick" || got.Model != "guest-model" {
+		t.Fatalf("expected guest fields preserved when share has none, got %+v", got)
 	}
 }
 

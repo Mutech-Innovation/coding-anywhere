@@ -19,6 +19,15 @@ type shareAskRequest struct {
 	PromptLimit int `json:"prompt_limit,omitempty"`
 	// MaxSessions caps how many chat sessions the guest may create. <=0 → 1.
 	MaxSessions int `json:"max_sessions,omitempty"`
+	// Cwd is the working directory the guest's chat session runs in. Guests
+	// have no directory picker, so the owner picks it here; the relay injects
+	// it into the guest's create_session. Empty leaves cwd to the daemon
+	// (which generally rejects chat sessions without an explicit cwd).
+	Cwd string `json:"cwd,omitempty"`
+	// Model, when set, locks the guest session to this model. The relay
+	// injects it into create_session and the daemon applies it via
+	// set_config_option. Empty uses the agent's default model.
+	Model string `json:"model,omitempty"`
 }
 
 type shareAskResponse struct {
@@ -87,6 +96,8 @@ func (s *Server) handleShareAsk(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   expiresAt,
 		PromptLimit: req.PromptLimit,
 		MaxSessions: maxSessions,
+		Cwd:         req.Cwd,
+		Model:       req.Model,
 	}); err != nil {
 		s.logger.Error("PutGuestShare", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "store")

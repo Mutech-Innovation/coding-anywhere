@@ -79,6 +79,10 @@ type ChatCreateSessionRequest struct {
 	AgentID string `json:"agent_id"`
 	Cwd     string `json:"cwd,omitempty"`
 	Title   string `json:"title,omitempty"`
+	// Model, when set, is applied via session/set_config_option right after
+	// session creation. Used by guest "ask"-share sessions, where the relay
+	// injects the share's owner-chosen model so the guest cannot change it.
+	Model string `json:"model,omitempty"`
 }
 
 type ChatCreateSessionResponse struct {

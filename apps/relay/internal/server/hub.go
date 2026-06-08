@@ -60,6 +60,14 @@ type guestState struct {
 	// limits, fixed at issuance.
 	promptLimit int
 	maxSessions int
+	// cwd is the owner-chosen working directory injected into the guest's
+	// create_session. Immutable after construction. Empty means "don't
+	// inject" — the daemon then applies its own cwd policy.
+	cwd string
+	// model is the owner-chosen model injected into the guest's
+	// create_session. Immutable after construction. Empty means "don't
+	// inject" — the guest session uses the agent's default model.
+	model string
 	// counters.
 	promptsUsed     int
 	sessionsCreated int

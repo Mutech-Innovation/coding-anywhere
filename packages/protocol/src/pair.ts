@@ -222,7 +222,13 @@ export class PairingClient {
    * guest page presents to the relay; the link itself is built by the caller.
    */
   createAskShare(
-    args: { ttl_seconds?: number; prompt_limit?: number; max_sessions?: number },
+    args: {
+      ttl_seconds?: number;
+      prompt_limit?: number;
+      max_sessions?: number;
+      cwd?: string;
+      model?: string;
+    },
     opts: RequestOpts & { bearer: string },
   ) {
     return postJSON(`${this.base}/v1/share/ask`, args, AskShareResponse, opts);

@@ -148,14 +148,24 @@ controls is cosmetic only.
 - **Token**: a new device kind `auth.DeviceGuest` (`internal/auth/jwt.go`). Guest
   JWTs have an `exp` and **no refresh token** — they just expire. The JWT
   `sub`/device id is the share id.
-- **Share record**: `guest_shares` table (`migrations/0004_guest_shares.sql`,
-  repo methods in `store/repos.go`) holds account, expiry, `revoked`, and the
-  caller-chosen `prompt_limit` / `max_sessions`.
+- **Share record**: `guest_shares` table (`migrations/0004_guest_shares.sql` +
+  `0005_guest_share_cwd.sql` + `0006_guest_share_model.sql`, repo methods in
+  `store/repos.go`) holds account, expiry, `revoked`, the caller-chosen
+  `prompt_limit` / `max_sessions`, and the owner-chosen `cwd` / `model`.
 - **Issue / revoke** (owner-authenticated): `POST /v1/share/ask` and
   `DELETE /v1/share/{id}` in `apps/relay/internal/server/share.go`. TTL, prompt
-  limit, and session count are all fixed at issuance. Config bounds live in
-  `config.go` (`CA_GUEST_MAX_TTL`, `GuestDefaultTTL`, optional
+  limit, session count, cwd, and model are all fixed at issuance. Config bounds
+  live in `config.go` (`CA_GUEST_MAX_TTL`, `GuestDefaultTTL`, optional
   `CA_GUEST_WEB_BASE_URL`).
+- **Working directory + model**: guests have no directory/model picker, but the
+  daemon's chat agent (Devin) refuses to run without an explicit project cwd.
+  The owner picks the cwd (required) and optionally a model when minting the
+  share; the relay **injects** both into the guest's `create_session`
+  (`injectCreateFields` in `guest.go`), so the guest can neither omit nor tamper
+  with them. The daemon then applies the locked model via `set_config_option`
+  (config id `model`) right after creating a guest session
+  (`chatrouter.handleCreateSession`). An empty cwd (legacy shares) fails with
+  `cwd required` until re-issued; an empty model falls back to Devin's default.
 - **Relay enforcement** (`apps/relay/internal/server/guest.go`, wired in
   `ws.go` + `hub.go`):
   - chat-only allowlist (`create_session`/`prompt`/`cancel`/`get_history`);
@@ -174,7 +184,11 @@ controls is cosmetic only.
   (`apps/web/src/GuestApp.tsx` + `components/GuestChat.tsx`), routed in
   `main.tsx`, reusing the `useChat` store with a stripped chat-only UI. The
   owner mints links from the device menu (`components/ShareAskMenu.tsx` →
-  `connection.ts` `createAskShare` → `PairingClient.createAskShare`).
+  `connection.ts` `createAskShare` → `PairingClient.createAskShare`); the share
+  modal reuses `ChatPanel`'s exported `DirectoryPicker` for the cwd and a
+  `Select` for the model (choices pulled from any open session's `model` config
+  option). The guest page also reuses `ChatPanel`'s exported `MessageBubble` /
+  `ToolCallCard` so it renders markdown/tool cards like the main chat.
 - **Tests**: `apps/relay/internal/server/guest_internal_test.go` (gating logic),
   `guest_e2e_test.go` (force-ask + gating + isolation + permission auto-deny
   end to end), `store/store_test.go` (`TestGuestShareCRUD`).

@@ -79,4 +79,12 @@ type GuestShare struct {
 	// MaxSessions caps how many chat sessions the guest may create. Values
 	// <= 0 are treated as 1 by the relay.
 	MaxSessions int
+	// Cwd is the owner-chosen working directory the guest's chat session runs
+	// in. The relay injects it into the guest's create_session so the guest
+	// cannot omit or tamper with it. Empty means "no owner-chosen cwd".
+	Cwd string
+	// Model is the owner-chosen model locked for the guest session. The relay
+	// injects it into create_session and the daemon applies it via
+	// set_config_option. Empty means "use the agent's default model".
+	Model string
 }
