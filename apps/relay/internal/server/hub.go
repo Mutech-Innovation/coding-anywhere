@@ -77,7 +77,12 @@ type guestState struct {
 type Account struct {
 	daemons map[string]*Conn // device_id → conn
 	clients map[string]*Conn // device_id → conn
-	guests  map[string]*Conn // device_id (share id) → conn
+	// guests is keyed by the unique connection id, NOT the device id: all
+	// viewers of one share link share a single device id (the share id), so
+	// keying by device id would force a single guest and make concurrent
+	// viewers evict each other in a reconnect storm. Multiple guests per
+	// share must coexist.
+	guests map[string]*Conn // conn id → conn
 }
 
 func (c *Conn) isGuest() bool { return c.guest != nil }
@@ -124,10 +129,9 @@ func (h *Hub) Register(c *Conn) {
 		}
 		acc.clients[c.deviceID] = c
 	case auth.DeviceGuest:
-		if old := acc.guests[c.deviceID]; old != nil && old != c {
-			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
-		}
-		acc.guests[c.deviceID] = c
+		// No eviction: keyed by connection id so multiple viewers of the
+		// same share link coexist instead of evicting each other.
+		acc.guests[c.id] = c
 	}
 }
 
@@ -152,8 +156,8 @@ func (h *Hub) Unregister(c *Conn) {
 			delete(acc.clients, c.deviceID)
 		}
 	case auth.DeviceGuest:
-		if acc.guests[c.deviceID] == c {
-			delete(acc.guests, c.deviceID)
+		if acc.guests[c.id] == c {
+			delete(acc.guests, c.id)
 		}
 	}
 	if len(acc.daemons) == 0 && len(acc.clients) == 0 && len(acc.guests) == 0 {
@@ -161,17 +165,23 @@ func (h *Hub) Unregister(c *Conn) {
 	}
 }
 
-// CloseGuest drops any live guest connection for the given account whose
-// device id (share id) matches. Used when a share is revoked.
+// CloseGuest drops every live guest connection for the given account whose
+// device id (share id) matches. Used when a share is revoked. Guests are
+// keyed by connection id, so a single share may have several live viewers —
+// all of them must be dropped.
 func (h *Hub) CloseGuest(accountID, shareID string) {
 	h.mu.RLock()
 	acc, ok := h.accs[accountID]
-	var conn *Conn
+	var conns []*Conn
 	if ok {
-		conn = acc.guests[shareID]
+		for _, c := range acc.guests {
+			if c.deviceID == shareID {
+				conns = append(conns, c)
+			}
+		}
 	}
 	h.mu.RUnlock()
-	if conn != nil {
+	for _, conn := range conns {
 		_ = conn.ws.Close(websocket.StatusPolicyViolation, "share revoked")
 	}
 }

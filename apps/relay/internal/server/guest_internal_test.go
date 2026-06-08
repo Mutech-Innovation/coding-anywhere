@@ -143,6 +143,39 @@ func TestGuestGateLeavesFieldsWhenShareUnset(t *testing.T) {
 	}
 }
 
+// TestHubConcurrentGuestsSameShare guards the fix for the reconnect storm:
+// all viewers of one share link share a single device id (the share id), so
+// the hub must key guests by connection id and let multiple coexist instead
+// of evicting each other.
+func TestHubConcurrentGuestsSameShare(t *testing.T) {
+	h := NewHub(nil)
+	mk := func(id string) *Conn {
+		return &Conn{
+			id:        id,
+			accountID: "acc",
+			deviceID:  "share-1", // same share id for every viewer
+			kind:      auth.DeviceGuest,
+			send:      make(chan wire.Envelope, 1),
+			guest:     newGuestState(0, 1, "", ""),
+		}
+	}
+	g1, g2 := mk("conn-1"), mk("conn-2")
+	h.Register(g1)
+	h.Register(g2)
+
+	acc := h.accs["acc"]
+	if acc == nil || len(acc.guests) != 2 {
+		t.Fatalf("expected 2 concurrent guests for one share, got %d", len(acc.guests))
+	}
+
+	// Unregistering one viewer must leave the other connected.
+	h.Unregister(g1)
+	acc = h.accs["acc"]
+	if acc == nil || len(acc.guests) != 1 || acc.guests["conn-2"] != g2 {
+		t.Fatalf("expected only conn-2 to survive, got %+v", acc)
+	}
+}
+
 func TestGuestSessionIsolationAndPromptCap(t *testing.T) {
 	s := &Server{}
 	conn := newTestGuestConn(1, 1) // promptLimit=1, maxSessions=1

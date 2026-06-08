@@ -172,6 +172,10 @@ controls is cosmetic only.
     rejects `set_mode`, `resolve_permission`, all non-chat channels.
   - session isolation: a guest only sees/sends to sessions it created; the hub
     filters daemon→guest fan-out by owned session id.
+  - concurrent viewers: the hub keys guests by **connection id** (not the
+    shared share-id/device-id), so multiple people can open the same link at
+    once without evicting each other. `Hub.CloseGuest` (revoke) drops every
+    connection whose device id matches the share.
   - per-link prompt + session caps; auto-disconnect at token expiry; live
     disconnect on revoke (`Hub.CloseGuest`).
   - stamps `wire.Envelope.Origin = "guest"` on forwarded traffic and strips any
