@@ -387,7 +387,7 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	if r.perSessionProcess(req.AgentID) {
 		// cursor-agent: one subprocess per session, model pinned at spawn
 		// (set_model can't change a running process's generation model).
-		a, err = r.buildAdapter(req.AgentID, req.Model)
+		a, err = r.buildAdapterForSession(req.AgentID, req.Model)
 	} else {
 		a, err = r.ensureAgent(req.AgentID)
 	}
@@ -536,7 +536,7 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 	}
 	r.mu.Unlock()
 
-	a, err := r.buildAdapter(s.AgentID, model)
+	a, err := r.buildAdapterForSession(s.AgentID, model)
 	if err != nil {
 		return err
 	}
@@ -554,7 +554,7 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 		_ = a.Close()
 		// The old process is already gone — try to restore the session on a
 		// process pinned to the previous model so it keeps working.
-		if restored, rerr := r.buildAdapter(s.AgentID, prevModel); rerr == nil {
+		if restored, rerr := r.buildAdapterForSession(s.AgentID, prevModel); rerr == nil {
 			if lerr := load(restored); lerr == nil {
 				r.mu.Lock()
 				s.adapter = restored
@@ -815,6 +815,86 @@ func (r *Router) buildAdapter(agentID, model string) (*acpagent.Adapter, error) 
 		return nil, err
 	}
 	return a, nil
+}
+
+// buildAdapterForSession builds a per-session adapter, retrying with
+// alternative model-id spellings when the spawn dies on the requested one.
+//
+// cursor-agent's `--model` flag speaks a different id dialect
+// (`claude-fable-5-thinking-high`) than the decorated ids its ACP advertises
+// in availableModels (`claude-fable-5[thinking=true,context=300k,effort=high]`).
+// MOST decorated ids happen to parse, but some don't — the process then
+// prints "Cannot use this model: ..." and exits, killing the handshake. Try
+// the exact id first, then a translated flag spelling, then the bare base.
+func (r *Router) buildAdapterForSession(agentID, model string) (*acpagent.Adapter, error) {
+	candidates := modelSpawnCandidates(model)
+	var firstErr error
+	for i, m := range candidates {
+		a, err := r.buildAdapter(agentID, m)
+		if err == nil {
+			if i > 0 {
+				r.logger.Info("agent spawn fell back to alternate model id",
+					"agent", agentID, "requested", model, "used", m)
+			}
+			return a, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		r.logger.Warn("agent spawn failed for model candidate",
+			"agent", agentID, "model", m, "err", err)
+	}
+	return nil, firstErr
+}
+
+// modelSpawnCandidates expands a decorated ACP model id into the spellings
+// worth trying as a spawn-time `--model` value, most specific first:
+//
+//	claude-fable-5[thinking=true,context=300k,effort=high]
+//	  → [ itself, "claude-fable-5-thinking-high", "claude-fable-5" ]
+//
+// Param translation mirrors cursor's flag dialect: thinking=true →
+// "-thinking", effort/reasoning level → "-<level>", fast=true → "-fast".
+// Ids without brackets (or an empty model) get no fallbacks.
+func modelSpawnCandidates(model string) []string {
+	out := []string{model}
+	open := strings.IndexByte(model, '[')
+	if model == "" || open <= 0 || !strings.HasSuffix(model, "]") {
+		return out
+	}
+	base := model[:open]
+	params := map[string]string{}
+	for _, kv := range strings.Split(model[open+1:len(model)-1], ",") {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			params[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	translated := base
+	if params["thinking"] == "true" {
+		translated += "-thinking"
+	}
+	level := params["effort"]
+	if level == "" {
+		level = params["reasoning"]
+	}
+	switch level {
+	case "low", "medium", "high", "xhigh", "max":
+		translated += "-" + level
+	}
+	if params["fast"] == "true" {
+		translated += "-fast"
+	}
+	add := func(c string) {
+		for _, existing := range out {
+			if existing == c {
+				return
+			}
+		}
+		out = append(out, c)
+	}
+	add(translated)
+	add(base)
+	return out
 }
 
 // earlyKey namespaces buffered pre-registration updates by agent so two

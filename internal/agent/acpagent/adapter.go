@@ -105,6 +105,12 @@ type Adapter struct {
 	initialized bool
 	initRes     acp.InitializeResponse
 	runDone     chan error
+
+	// stderrTail keeps the last few subprocess stderr lines so handshake
+	// errors can say WHY the process died (e.g. cursor-agent's "Cannot use
+	// this model: ..." exits between initialize and authenticate).
+	stderrMu   sync.Mutex
+	stderrTail []string
 }
 
 // NewSubprocess returns an adapter that, on Start, will spawn the given
@@ -205,7 +211,7 @@ func (a *Adapter) start(ctx context.Context) error {
 			Version: version.Version,
 		},
 	}, &initRes); err != nil {
-		return fmt.Errorf("initialize: %w", err)
+		return fmt.Errorf("initialize: %w%s", err, a.stderrSuffix())
 	}
 	a.mu.Lock()
 	a.initialized = true
@@ -252,12 +258,31 @@ func (a *Adapter) authenticate(ctx context.Context, initRes acp.InitializeRespon
 		MethodID: a.opts.AuthMethodID,
 	}, nil); err != nil {
 		if a.opts.AuthHint != "" {
-			return fmt.Errorf("authenticate (%s): %w — %s", a.opts.AuthMethodID, err, a.opts.AuthHint)
+			return fmt.Errorf("authenticate (%s): %w%s — %s",
+				a.opts.AuthMethodID, err, a.stderrSuffix(), a.opts.AuthHint)
 		}
-		return fmt.Errorf("authenticate (%s): %w", a.opts.AuthMethodID, err)
+		return fmt.Errorf("authenticate (%s): %w%s", a.opts.AuthMethodID, err, a.stderrSuffix())
 	}
 	a.logger.Info("acp authenticated", "method", a.opts.AuthMethodID)
 	return nil
+}
+
+// stderrSuffix renders the subprocess's recent stderr for embedding in
+// handshake errors. The process usually prints its reason for dying there
+// (e.g. "Cannot use this model: ..."), which would otherwise only be visible
+// at debug log level. A short grace period lets the pump drain lines that
+// raced with the failure.
+func (a *Adapter) stderrSuffix() string {
+	if a.cmd == nil {
+		return "" // stream-injected (tests) — no subprocess stderr
+	}
+	time.Sleep(200 * time.Millisecond)
+	a.stderrMu.Lock()
+	defer a.stderrMu.Unlock()
+	if len(a.stderrTail) == 0 {
+		return ""
+	}
+	return " (stderr: " + strings.Join(a.stderrTail, " | ") + ")"
 }
 
 // Initialized reports whether the initialize handshake has completed.
@@ -471,6 +496,18 @@ func (a *Adapter) pumpStderr(r io.Reader) {
 		if line == "" {
 			continue
 		}
+		// Keep a short tail for handshake error messages.
+		const maxLine, maxTail = 240, 5
+		clipped := line
+		if len(clipped) > maxLine {
+			clipped = clipped[:maxLine] + "…"
+		}
+		a.stderrMu.Lock()
+		a.stderrTail = append(a.stderrTail, clipped)
+		if len(a.stderrTail) > maxTail {
+			a.stderrTail = a.stderrTail[len(a.stderrTail)-maxTail:]
+		}
+		a.stderrMu.Unlock()
 		switch {
 		case strings.Contains(line, " ERROR "):
 			a.logger.Error(a.opts.LogName, "line", line)

@@ -280,6 +280,14 @@ Cursor-specific quirks, all handled inside the daemon:
   so clients don't see a duplicated transcript. `session/load`'s
   `mcpServers` must be `[]`, never `null` (cursor answers -32603).
   Per-session subprocesses are reaped on close_session / router Close.
+  Beware: `--model` speaks a different id dialect
+  (`claude-fable-5-thinking-high`) than ACP's decorated availableModels ids
+  (`claude-fable-5[thinking=true,…]`); most decorated ids happen to parse
+  but some make the process print "Cannot use this model" and exit mid-
+  handshake ("acp client closed"). `buildAdapterForSession` retries with a
+  translated spelling then the bare base (`modelSpawnCandidates`), and
+  handshake errors now embed the subprocess's stderr tail so the cause is
+  visible.
 - **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
   force `ask` the same way as Devin (`askModeID`), and guest permission
   requests are auto-denied for every agent.

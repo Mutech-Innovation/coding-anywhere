@@ -18,6 +18,7 @@ import (
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 )
 
 func TestLiveCursor(t *testing.T) {
@@ -101,4 +102,32 @@ func TestLiveCursor(t *testing.T) {
 	if !strings.Contains(saw, "agent_message_chunk") {
 		t.Fatalf("no agent_message_chunk seen: %s", saw)
 	}
+}
+
+// TestLiveCursorFableFallback reproduces the exact share-link failure: the
+// decorated id of claude-fable-5 is rejected by cursor's --model parser (the
+// process prints "Cannot use this model" and exits during the handshake).
+// buildAdapterForSession must fall back to the translated flag spelling and
+// produce a working session.
+func TestLiveCursorFableFallback(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	cli := relayclient.New(relayclient.Config{RelayURL: "ws://127.0.0.1:1", AccessToken: "x"}, logger)
+	r := chatrouter.New(cli, logger, nil)
+	t.Cleanup(func() { _ = r.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	a, err := chatrouter.BuildAdapterForSessionForTest(r,
+		chatrouter.AgentCursor, "claude-fable-5[thinking=true,context=300k,effort=high]")
+	if err != nil {
+		t.Fatalf("fallback spawn failed: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	cwd, _ := os.Getwd()
+	res, err := a.NewSession(ctx, cwd, nil)
+	if err != nil {
+		t.Fatalf("NewSession on fallback process: %v", err)
+	}
+	t.Logf("session=%s current=%v", res.SessionID, res.Models != nil)
 }

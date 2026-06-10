@@ -77,8 +77,8 @@ func TestAttachmentsToContentBlocks_DropsInvalidImage(t *testing.T) {
 	r := &Router{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
 	cases := []wire.Attachment{
-		{Type: "image", Name: "noop.png"},                            // no data, no mime
-		{Type: "image", Name: "no-mime.png", Data: "AAA="},           // no mime
+		{Type: "image", Name: "noop.png"},                           // no data, no mime
+		{Type: "image", Name: "no-mime.png", Data: "AAA="},          // no mime
 		{Type: "image", Name: "no-data.png", MimeType: "image/png"}, // no data
 	}
 	for _, att := range cases {
@@ -97,5 +97,55 @@ func TestAttachmentsToContentBlocks_TextOnly(t *testing.T) {
 	blocks := r.attachmentsToContentBlocks("just text", nil)
 	if len(blocks) != 1 || blocks[0].Type != "text" || blocks[0].Text != "just text" {
 		t.Fatalf("unexpected blocks: %+v", blocks)
+	}
+}
+
+// TestModelSpawnCandidates pins the decorated-id → cursor `--model` flag
+// translation used when a spawn dies with "Cannot use this model".
+func TestModelSpawnCandidates(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{
+			in: "claude-fable-5[thinking=true,context=300k,effort=high]",
+			want: []string{
+				"claude-fable-5[thinking=true,context=300k,effort=high]",
+				"claude-fable-5-thinking-high",
+				"claude-fable-5",
+			},
+		},
+		{
+			in: "gpt-5.5[context=272k,reasoning=medium,fast=false]",
+			want: []string{
+				"gpt-5.5[context=272k,reasoning=medium,fast=false]",
+				"gpt-5.5-medium",
+				"gpt-5.5",
+			},
+		},
+		{
+			in: "claude-opus-4-8[thinking=true,effort=high,fast=true]",
+			want: []string{
+				"claude-opus-4-8[thinking=true,effort=high,fast=true]",
+				"claude-opus-4-8-thinking-high-fast",
+				"claude-opus-4-8",
+			},
+		},
+		// No brackets → no fallbacks.
+		{in: "composer-2.5", want: []string{"composer-2.5"}},
+		// Empty params → translated == base, deduped.
+		{in: "default[]", want: []string{"default[]", "default"}},
+		{in: "", want: []string{""}},
+	}
+	for _, tc := range cases {
+		got := modelSpawnCandidates(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("%q: got %v want %v", tc.in, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%q: got %v want %v", tc.in, got, tc.want)
+			}
+		}
 	}
 }
