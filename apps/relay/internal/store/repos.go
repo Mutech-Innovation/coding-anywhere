@@ -359,10 +359,10 @@ func (s *Store) PutGuestShare(ctx context.Context, g GuestShare) error {
 		g.CreatedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO guest_shares(id, account_id, created_at, expires_at, prompt_limit, max_sessions, cwd, model)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO guest_shares(id, account_id, created_at, expires_at, prompt_limit, max_sessions, cwd, model, agent_id)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		g.ID, g.AccountID, g.CreatedAt.UnixMilli(), g.ExpiresAt.UnixMilli(),
-		g.PromptLimit, g.MaxSessions, g.Cwd, g.Model)
+		g.PromptLimit, g.MaxSessions, g.Cwd, g.Model, g.AgentID)
 	return err
 }
 
@@ -372,9 +372,9 @@ func (s *Store) GetGuestShare(ctx context.Context, id string) (GuestShare, error
 	var createdAt, expiresAt int64
 	var revoked int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, account_id, created_at, expires_at, revoked, prompt_limit, max_sessions, cwd, model
+		SELECT id, account_id, created_at, expires_at, revoked, prompt_limit, max_sessions, cwd, model, agent_id
 		FROM guest_shares WHERE id = ?`, id,
-	).Scan(&g.ID, &g.AccountID, &createdAt, &expiresAt, &revoked, &g.PromptLimit, &g.MaxSessions, &g.Cwd, &g.Model)
+	).Scan(&g.ID, &g.AccountID, &createdAt, &expiresAt, &revoked, &g.PromptLimit, &g.MaxSessions, &g.Cwd, &g.Model, &g.AgentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GuestShare{}, ErrNotFound
 	}

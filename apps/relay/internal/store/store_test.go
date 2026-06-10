@@ -38,6 +38,7 @@ func TestGuestShareCRUD(t *testing.T) {
 		MaxSessions: 1,
 		Cwd:         "/home/me/project",
 		Model:       "gpt-5-high",
+		AgentID:     "cursor-cli",
 	}
 	if err := s.PutGuestShare(ctx, share); err != nil {
 		t.Fatalf("PutGuestShare: %v", err)
@@ -55,6 +56,9 @@ func TestGuestShareCRUD(t *testing.T) {
 	}
 	if got.Model != "gpt-5-high" {
 		t.Fatalf("model mismatch: got %q", got.Model)
+	}
+	if got.AgentID != "cursor-cli" {
+		t.Fatalf("agent mismatch: got %q", got.AgentID)
 	}
 	if !got.ExpiresAt.Equal(share.ExpiresAt) {
 		t.Fatalf("expires mismatch: got %v want %v", got.ExpiresAt, share.ExpiresAt)

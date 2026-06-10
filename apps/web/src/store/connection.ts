@@ -76,6 +76,7 @@ interface ConnectionStore {
     maxSessions: number;
     cwd: string;
     model: string;
+    agentId: string;
   }): Promise<{ url: string; expiresAt: number }>;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
@@ -147,7 +148,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     set({ shareAskOpen: open });
   },
 
-  async createAskShare({ ttlSeconds, promptLimit, maxSessions, cwd, model }) {
+  async createAskShare({ ttlSeconds, promptLimit, maxSessions, cwd, model, agentId }) {
     const { credentials } = get();
     if (!credentials) throw new Error('not signed in');
     const pc = new PairingClient(credentials.relay_url);
@@ -158,6 +159,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
         max_sessions: maxSessions,
         cwd,
         model,
+        agent_id: agentId,
       },
       { bearer: credentials.bundle.access_token },
     );

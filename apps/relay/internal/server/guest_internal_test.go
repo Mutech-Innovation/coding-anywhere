@@ -10,17 +10,17 @@ import (
 )
 
 func newTestGuestConn(promptLimit, maxSessions int) *Conn {
-	return newTestGuestConnFields(promptLimit, maxSessions, "", "")
+	return newTestGuestConnFields(promptLimit, maxSessions, "", "", "")
 }
 
-func newTestGuestConnFields(promptLimit, maxSessions int, cwd, model string) *Conn {
+func newTestGuestConnFields(promptLimit, maxSessions int, cwd, model, agentID string) *Conn {
 	return &Conn{
 		id:        "conn-1",
 		accountID: "acc-1",
 		deviceID:  "share-1",
 		kind:      auth.DeviceGuest,
 		send:      make(chan wire.Envelope, 32),
-		guest:     newGuestState(promptLimit, maxSessions, cwd, model),
+		guest:     newGuestState(promptLimit, maxSessions, cwd, model, agentID),
 	}
 }
 
@@ -101,11 +101,12 @@ func TestGuestGateAllowsCreateSessionAndStampsOrigin(t *testing.T) {
 	}
 }
 
-func TestGuestGateInjectsShareCwdAndModel(t *testing.T) {
+func TestGuestGateInjectsShareCwdModelAndAgent(t *testing.T) {
 	s := &Server{}
-	conn := newTestGuestConnFields(0, 1, "/srv/app", "gpt-5-high")
-	// The guest tries to pick its own cwd/model; the relay must overwrite
-	// both with the owner-chosen share values while preserving other fields.
+	conn := newTestGuestConnFields(0, 1, "/srv/app", "gpt-5-high", "cursor-cli")
+	// The guest tries to pick its own cwd/model/agent; the relay must
+	// overwrite all three with the owner-chosen share values while
+	// preserving other fields.
 	env := chatReq(t, "c-1", wire.ChatMethodCreateSession,
 		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/etc", Model: "sneaky", Title: "hi"})
 	if !s.guestGate(context.Background(), conn, &env) {
@@ -121,14 +122,17 @@ func TestGuestGateInjectsShareCwdAndModel(t *testing.T) {
 	if got.Model != "gpt-5-high" {
 		t.Fatalf("expected injected model gpt-5-high, got %q", got.Model)
 	}
-	if got.AgentID != "devin" || got.Title != "hi" {
+	if got.AgentID != "cursor-cli" {
+		t.Fatalf("expected injected agent cursor-cli, got %q", got.AgentID)
+	}
+	if got.Title != "hi" {
 		t.Fatalf("expected other fields preserved, got %+v", got)
 	}
 }
 
 func TestGuestGateLeavesFieldsWhenShareUnset(t *testing.T) {
 	s := &Server{}
-	conn := newTestGuestConnFields(0, 1, "", "") // no owner cwd/model
+	conn := newTestGuestConnFields(0, 1, "", "", "") // no owner cwd/model/agent
 	env := chatReq(t, "c-1", wire.ChatMethodCreateSession,
 		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/guest/pick", Model: "guest-model"})
 	if !s.guestGate(context.Background(), conn, &env) {
@@ -138,7 +142,7 @@ func TestGuestGateLeavesFieldsWhenShareUnset(t *testing.T) {
 	if err := json.Unmarshal(env.Payload, &got); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if got.Cwd != "/guest/pick" || got.Model != "guest-model" {
+	if got.Cwd != "/guest/pick" || got.Model != "guest-model" || got.AgentID != "devin" {
 		t.Fatalf("expected guest fields preserved when share has none, got %+v", got)
 	}
 }
@@ -156,7 +160,7 @@ func TestHubConcurrentGuestsSameShare(t *testing.T) {
 			deviceID:  "share-1", // same share id for every viewer
 			kind:      auth.DeviceGuest,
 			send:      make(chan wire.Envelope, 1),
-			guest:     newGuestState(0, 1, "", ""),
+			guest:     newGuestState(0, 1, "", "", ""),
 		}
 	}
 	g1, g2 := mk("conn-1"), mk("conn-2")

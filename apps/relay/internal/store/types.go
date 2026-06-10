@@ -87,4 +87,8 @@ type GuestShare struct {
 	// injects it into create_session and the daemon applies it via
 	// set_config_option. Empty means "use the agent's default model".
 	Model string
+	// AgentID is the owner-chosen chat agent ("devin", "cursor-cli") the
+	// guest session runs on. The relay injects it into create_session so the
+	// guest cannot pick its own agent. Empty means "daemon default" (devin).
+	AgentID string
 }

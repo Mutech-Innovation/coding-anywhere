@@ -8,8 +8,9 @@ import (
 )
 
 // newGuestState builds the per-connection bookkeeping for a guest, seeded with
-// the share's limits, owner-chosen working directory, and locked model.
-func newGuestState(promptLimit, maxSessions int, cwd, model string) *guestState {
+// the share's limits, owner-chosen working directory, locked model, and
+// locked agent.
+func newGuestState(promptLimit, maxSessions int, cwd, model, agentID string) *guestState {
 	if maxSessions <= 0 {
 		maxSessions = 1
 	}
@@ -20,6 +21,7 @@ func newGuestState(promptLimit, maxSessions int, cwd, model string) *guestState 
 		maxSessions: maxSessions,
 		cwd:         cwd,
 		model:       model,
+		agentID:     agentID,
 	}
 }
 
@@ -136,12 +138,12 @@ func (s *Server) guestGate(ctx context.Context, conn *Conn, env *wire.Envelope) 
 			s.rejectGuest(ctx, conn, *env, "limit_reached", "session limit reached for this link")
 			return false
 		}
-		// Force the owner-chosen cwd and model onto the session: guests have
-		// no directory/model picker and must not be able to pick/omit either.
-		// Empty share values leave that field untouched (legacy shares /
-		// default model).
-		if gs.cwd != "" || gs.model != "" {
-			payload, err := injectCreateFields(env.Payload, gs.cwd, gs.model)
+		// Force the owner-chosen cwd, model, and agent onto the session:
+		// guests have no directory/model/agent picker and must not be able
+		// to pick/omit any of them. Empty share values leave that field
+		// untouched (legacy shares / daemon defaults).
+		if gs.cwd != "" || gs.model != "" || gs.agentID != "" {
+			payload, err := injectCreateFields(env.Payload, gs.cwd, gs.model, gs.agentID)
 			if err != nil {
 				gs.releaseSessionSlot()
 				s.rejectGuest(ctx, conn, *env, "bad_request", "invalid create_session payload")
@@ -185,18 +187,18 @@ func (s *Server) rejectGuest(ctx context.Context, conn *Conn, env wire.Envelope,
 	})))
 }
 
-// injectCreateFields overwrites the "cwd" and/or "model" fields of a
-// create_session payload with the owner-chosen values, preserving any other
-// fields the guest sent (agent_id, title). Empty values are left untouched. It
+// injectCreateFields overwrites the "cwd", "model", and/or "agent_id" fields
+// of a create_session payload with the owner-chosen values, preserving any
+// other fields the guest sent (title). Empty values are left untouched. It
 // returns an error only when the payload is present but not a JSON object.
-func injectCreateFields(payload json.RawMessage, cwd, model string) (json.RawMessage, error) {
+func injectCreateFields(payload json.RawMessage, cwd, model, agentID string) (json.RawMessage, error) {
 	fields := map[string]json.RawMessage{}
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &fields); err != nil {
 			return nil, err
 		}
 	}
-	for key, value := range map[string]string{"cwd": cwd, "model": model} {
+	for key, value := range map[string]string{"cwd": cwd, "model": model, "agent_id": agentID} {
 		if value == "" {
 			continue
 		}

@@ -136,7 +136,7 @@ func (s *Server) resolveGuest(ctx context.Context, claims *auth.Claims) (*guestS
 	if time.Now().UTC().After(share.ExpiresAt) {
 		return nil, errors.New("guest share expired")
 	}
-	return newGuestState(share.PromptLimit, share.MaxSessions, share.Cwd, share.Model), nil
+	return newGuestState(share.PromptLimit, share.MaxSessions, share.Cwd, share.Model, share.AgentID), nil
 }
 
 // wsReadLoop is the per-connection read pump.

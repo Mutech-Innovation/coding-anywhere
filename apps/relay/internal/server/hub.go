@@ -68,6 +68,10 @@ type guestState struct {
 	// create_session. Immutable after construction. Empty means "don't
 	// inject" — the guest session uses the agent's default model.
 	model string
+	// agentID is the owner-chosen chat agent injected into the guest's
+	// create_session. Immutable after construction. Empty means "don't
+	// inject" — the daemon then applies its default agent (devin).
+	agentID string
 	// counters.
 	promptsUsed     int
 	sessionsCreated int

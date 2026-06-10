@@ -6,6 +6,7 @@ import {
   Menu,
   Modal,
   NumberInput,
+  SegmentedControl,
   Select,
   Stack,
   Text,
@@ -13,7 +14,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconShare3 } from '@tabler/icons-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { RelayError } from '@coding-anywhere/protocol';
 
@@ -44,9 +45,13 @@ export function ShareAskModal() {
   const opened = useConnection((s) => s.shareAskOpen);
   const setOpen = useConnection((s) => s.setShareAskOpen);
   const createAskShare = useConnection((s) => s.createAskShare);
+  const status = useConnection((s) => s.status);
 
   const sessions = useChat((s) => s.sessions);
+  const agents = useChat((s) => s.agents);
+  const loadAgents = useChat((s) => s.loadAgents);
 
+  const [agentId, setAgentId] = useState('devin');
   const [cwd, setCwd] = useState('');
   const [model, setModel] = useState<string | null>(null);
   const [ttlMinutes, setTtlMinutes] = useState<number | string>(30);
@@ -57,11 +62,29 @@ export function ShareAskModal() {
   const [link, setLink] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
 
-  // Model choices are advertised per-session by the agent; reuse them from
-  // any open session so the owner can lock a model for the guest. Empty when
-  // no session has surfaced a model option yet (guest then uses the default).
+  // The modal can open before the chat tab ever loaded the agent list.
+  useEffect(() => {
+    if (!opened || status !== 'connected' || agents.length > 0) return;
+    void loadAgents().catch(() => {});
+  }, [opened, status, agents.length, loadAgents]);
+
+  const availableAgents = useMemo(() => agents.filter((a) => a.available), [agents]);
+  useEffect(() => {
+    if (availableAgents.length === 0) return;
+    if (!availableAgents.some((a) => a.id === agentId)) {
+      setAgentId(availableAgents[0]!.id);
+    }
+  }, [availableAgents, agentId]);
+
+  const agentName = agents.find((a) => a.id === agentId)?.name ?? agentDisplayName(agentId);
+
+  // Model choices are advertised per-session by the agent; reuse them from an
+  // open session of the SAME agent (model ids differ per agent) so the owner
+  // can lock a model for the guest. Empty when no such session has surfaced a
+  // model option yet (guest then uses the agent's default).
   const modelChoices = useMemo(() => {
     for (const s of Object.values(sessions)) {
+      if (s.session.agent_id !== agentId) continue;
       const opt = s.configOptions.find((o) => o.id.toLowerCase() === 'model');
       if (opt?.options?.length) {
         const seen = new Set<string>();
@@ -76,7 +99,12 @@ export function ShareAskModal() {
       }
     }
     return [];
-  }, [sessions]);
+  }, [sessions, agentId]);
+
+  // A model locked for one agent is meaningless for another.
+  useEffect(() => {
+    setModel(null);
+  }, [agentId]);
 
   function reset() {
     setLink(null);
@@ -101,6 +129,7 @@ export function ShareAskModal() {
         maxSessions: Math.max(1, Number(maxSessions) || 1),
         cwd: cwd.trim(),
         model: model ?? '',
+        agentId,
       });
       setLink(res.url);
       setExpiresAt(res.expiresAt);
@@ -126,7 +155,8 @@ export function ShareAskModal() {
     >
       <Stack gap="md">
         <Alert color="yellow" variant="light">
-          拿到链接的人可以在 <b>ask（只读）</b>模式下与你的 Devin 对话。Devin 不能改文件、不能跑命令
+          拿到链接的人可以在 <b>ask（只读）</b>模式下与你的 {agentName} 对话。{agentName}{' '}
+          不能改文件、不能跑命令
           （权限请求会自动拒绝），也看不到你其它的会话。链接到期或额度用尽后自动失效。
         </Alert>
 
@@ -160,9 +190,24 @@ export function ShareAskModal() {
           </Stack>
         ) : (
           <Stack gap="sm">
+            {availableAgents.length > 1 ? (
+              <Stack gap={4}>
+                <Text size="sm" fw={500}>
+                  Agent
+                </Text>
+                <SegmentedControl
+                  value={agentId}
+                  onChange={setAgentId}
+                  data={availableAgents.map((a) => ({ value: a.id, label: a.name }))}
+                />
+                <Text size="xs" c="dimmed">
+                  访客的会话固定使用这个 agent，无法更改。
+                </Text>
+              </Stack>
+            ) : null}
             <TextInput
               label="工作目录"
-              description="必填。访客的 Devin 会在这个目录里运行 —— 请选一个具体的项目目录（Devin 不会在 $HOME 这类宽泛根目录上工作）。访客无法更改它。"
+              description={`必填。访客的 ${agentName} 会在这个目录里运行 —— 请选一个具体的项目目录（不会在 $HOME 这类宽泛根目录上工作）。访客无法更改它。`}
               placeholder="选择下方的一个目录"
               value={cwd}
               onChange={(e) => setCwd(e.currentTarget.value)}
@@ -172,8 +217,8 @@ export function ShareAskModal() {
               label="模型"
               description={
                 modelChoices.length > 0
-                  ? '可选。锁定访客使用的模型；留空则用 Devin 默认模型。访客无法更改。'
-                  : '打开一个会话后这里才会出现可选模型；当前留空，访客将使用 Devin 默认模型。'
+                  ? `可选。锁定访客使用的模型；留空则用 ${agentName} 默认模型。访客无法更改。`
+                  : `打开一个 ${agentName} 会话后这里才会出现可选模型；当前留空，访客将使用 ${agentName} 默认模型。`
               }
               placeholder={modelChoices.length > 0 ? '默认模型' : '（无可选模型）'}
               data={modelChoices}
@@ -226,4 +271,17 @@ function formatShareError(err: unknown): string {
 // asString narrows an unknown config-option field to a non-empty string.
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+// agentDisplayName is the fallback rendering of an agent id before the
+// daemon's chat.agents response has arrived.
+function agentDisplayName(agentId: string): string {
+  switch (agentId) {
+    case 'devin':
+      return 'Devin';
+    case 'cursor-cli':
+      return 'Cursor';
+    default:
+      return agentId;
+  }
 }

@@ -28,6 +28,10 @@ type shareAskRequest struct {
 	// injects it into create_session and the daemon applies it via
 	// set_config_option. Empty uses the agent's default model.
 	Model string `json:"model,omitempty"`
+	// AgentID, when set, locks the guest session to this chat agent
+	// ("devin", "cursor-cli"). The relay injects it into create_session so
+	// the guest cannot pick its own agent. Empty uses the daemon default.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 type shareAskResponse struct {
@@ -98,6 +102,7 @@ func (s *Server) handleShareAsk(w http.ResponseWriter, r *http.Request) {
 		MaxSessions: maxSessions,
 		Cwd:         req.Cwd,
 		Model:       req.Model,
+		AgentID:     req.AgentID,
 	}); err != nil {
 		s.logger.Error("PutGuestShare", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "store")

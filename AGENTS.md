@@ -140,32 +140,36 @@ Run commands from the repo root unless there is a reason not to.
 
 ## Guest "ask"-mode share links
 
-A short-lived, read-only public link that lets someone chat with the account's
-Devin in **ask** mode without pairing. Security is enforced at the relay (who
-can do/see what) and the daemon (the agent stays read-only); the web UI hiding
-controls is cosmetic only.
+A short-lived, read-only public link that lets someone chat with one of the
+account's agents (Devin or cursor-agent) in **ask** mode without pairing.
+Security is enforced at the relay (who can do/see what) and the daemon (the
+agent stays read-only); the web UI hiding controls is cosmetic only.
 
 - **Token**: a new device kind `auth.DeviceGuest` (`internal/auth/jwt.go`). Guest
   JWTs have an `exp` and **no refresh token** — they just expire. The JWT
   `sub`/device id is the share id.
 - **Share record**: `guest_shares` table (`migrations/0004_guest_shares.sql` +
-  `0005_guest_share_cwd.sql` + `0006_guest_share_model.sql`, repo methods in
-  `store/repos.go`) holds account, expiry, `revoked`, the caller-chosen
-  `prompt_limit` / `max_sessions`, and the owner-chosen `cwd` / `model`.
+  `0005_guest_share_cwd.sql` + `0006_guest_share_model.sql` +
+  `0007_guest_share_agent.sql`, repo methods in `store/repos.go`) holds
+  account, expiry, `revoked`, the caller-chosen `prompt_limit` /
+  `max_sessions`, and the owner-chosen `cwd` / `model` / `agent_id`.
 - **Issue / revoke** (owner-authenticated): `POST /v1/share/ask` and
   `DELETE /v1/share/{id}` in `apps/relay/internal/server/share.go`. TTL, prompt
-  limit, session count, cwd, and model are all fixed at issuance. Config bounds
-  live in `config.go` (`CA_GUEST_MAX_TTL`, `GuestDefaultTTL`, optional
-  `CA_GUEST_WEB_BASE_URL`).
-- **Working directory + model**: guests have no directory/model picker, but the
-  daemon's chat agent (Devin) refuses to run without an explicit project cwd.
-  The owner picks the cwd (required) and optionally a model when minting the
-  share; the relay **injects** both into the guest's `create_session`
-  (`injectCreateFields` in `guest.go`), so the guest can neither omit nor tamper
-  with them. The daemon then applies the locked model via `set_config_option`
-  (config id `model`) right after creating a guest session
-  (`chatrouter.handleCreateSession`). An empty cwd (legacy shares) fails with
-  `cwd required` until re-issued; an empty model falls back to Devin's default.
+  limit, session count, cwd, model, and agent are all fixed at issuance.
+  Config bounds live in `config.go` (`CA_GUEST_MAX_TTL`, `GuestDefaultTTL`,
+  optional `CA_GUEST_WEB_BASE_URL`).
+- **Working directory + model + agent**: guests have no directory/model/agent
+  picker, but the daemon's chat agents refuse to run without an explicit
+  project cwd. The owner picks the cwd (required), optionally a model, and the
+  agent (devin / cursor-cli) when minting the share; the relay **injects** all
+  three into the guest's `create_session` (`injectCreateFields` in
+  `guest.go`), so the guest can neither omit nor tamper with them. The daemon
+  then applies the locked model right after creating a guest session via the
+  agent-appropriate mechanism (`chatrouter.applySessionModel`:
+  `set_config_option` for Devin, `session/set_model` for cursor-agent). An
+  empty cwd (legacy shares) fails with `cwd required` until re-issued; an
+  empty model falls back to the agent's default; an empty agent falls back to
+  the daemon default (devin).
 - **Relay enforcement** (`apps/relay/internal/server/guest.go`, wired in
   `ws.go` + `hub.go`):
   - chat-only allowlist (`create_session`/`prompt`/`cancel`/`get_history`);
@@ -189,10 +193,12 @@ controls is cosmetic only.
   `main.tsx`, reusing the `useChat` store with a stripped chat-only UI. The
   owner mints links from the device menu (`components/ShareAskMenu.tsx` →
   `connection.ts` `createAskShare` → `PairingClient.createAskShare`); the share
-  modal reuses `ChatPanel`'s exported `DirectoryPicker` for the cwd and a
-  `Select` for the model (choices pulled from any open session's `model` config
-  option). The guest page also reuses `ChatPanel`'s exported `MessageBubble` /
-  `ToolCallCard` so it renders markdown/tool cards like the main chat.
+  modal has an agent picker (from the daemon's `chat.agents`), reuses
+  `ChatPanel`'s exported `DirectoryPicker` for the cwd, and a `Select` for the
+  model (choices pulled from an open session of the **same agent** — model ids
+  differ per agent). The guest page also reuses `ChatPanel`'s exported
+  `MessageBubble` / `ToolCallCard` so it renders markdown/tool cards like the
+  main chat, and names the session's agent in its copy.
 - **Tests**: `apps/relay/internal/server/guest_internal_test.go` (gating logic),
   `guest_e2e_test.go` (force-ask + gating + isolation + permission auto-deny
   end to end), `store/store_test.go` (`TestGuestShareCRUD`).
@@ -263,12 +269,12 @@ Cursor-specific quirks, all handled inside the daemon:
   `apps/relay/internal/server/chat_e2e_test.go`; adapter-level tests in
   `internal/agent/acpagent/adapter_test.go`.
 - Live-fire smoke tests against the real binary (need `cursor-agent` on PATH
-  + a completed `cursor-agent login`; excluded from normal runs via the
-  `cursorlive` build tag):
-  `go test -tags cursorlive ./internal/chatrouter/ -run TestLiveCursor -v`
-  (adapter only) and
-  `go test -tags cursorlive ./apps/relay/internal/server/ -run TestLiveCursorFullStack -v`
-  (client → relay → daemon → real cursor-agent).
+  - a completed `cursor-agent login`; excluded from normal runs via the
+    `cursorlive` build tag):
+    `go test -tags cursorlive ./internal/chatrouter/ -run TestLiveCursor -v`
+    (adapter only) and
+    `go test -tags cursorlive ./apps/relay/internal/server/ -run TestLiveCursorFullStack -v`
+    (client → relay → daemon → real cursor-agent).
 
 ## Relay orientation
 

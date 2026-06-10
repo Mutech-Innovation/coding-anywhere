@@ -46,6 +46,9 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
 
   if (!session) return null;
 
+  // The relay stamps the share's owner-chosen agent onto the session; show
+  // its name so a cursor-agent share doesn't claim to be Devin.
+  const agentName = guestAgentName(session.session.agent_id);
   const canSend = !disabled && !thinking && text.trim().length > 0;
   const submit = () => {
     const value = text.trim();
@@ -61,7 +64,7 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
           {items.length === 0 ? (
             <Stack gap={4} align="center" py="xl">
               <Text c="dimmed" size="sm" ta="center">
-                问点什么吧 —— 这是一个只读（ask）会话，Devin 不会改动任何文件。
+                问点什么吧 —— 这是一个只读（ask）会话，{agentName} 不会改动任何文件。
               </Text>
               <Text c="dimmed" size="xs" ta="center">
                 提示：对话只保留在本页，刷新或关闭后会开始新的对话。
@@ -78,7 +81,7 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
           )}
           {thinking ? (
             <Text c="dimmed" size="sm" fs="italic">
-              Devin 正在思考…
+              {agentName} 正在思考…
             </Text>
           ) : null}
         </Stack>
@@ -92,7 +95,7 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
               autosize
               minRows={1}
               maxRows={6}
-              placeholder={disabled ? '会话已结束' : '给 Devin 发消息…'}
+              placeholder={disabled ? '会话已结束' : `给 ${agentName} 发消息…`}
               value={text}
               disabled={disabled}
               onChange={(e) => setText(e.currentTarget.value)}
@@ -129,4 +132,17 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
       </Box>
     </Stack>
   );
+}
+
+// guestAgentName renders the session's agent id for guest-facing copy.
+function guestAgentName(agentId: string): string {
+  switch (agentId) {
+    case 'cursor-cli':
+      return 'Cursor';
+    case 'devin':
+    case '':
+      return 'Devin';
+    default:
+      return agentId;
+  }
 }

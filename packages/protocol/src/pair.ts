@@ -228,6 +228,8 @@ export class PairingClient {
       max_sessions?: number;
       cwd?: string;
       model?: string;
+      /** Owner-chosen chat agent ("devin", "cursor-cli"); empty = daemon default. */
+      agent_id?: string;
     },
     opts: RequestOpts & { bearer: string },
   ) {
