@@ -57,7 +57,8 @@ func DefaultDevinBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
 func DefaultCursorBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
 	opts.LogName = "cursor-agent acp"
 	opts.AuthMethodID = "cursor_login"
-	opts.AuthHint = "run `cursor-agent login` on the daemon machine"
+	opts.AuthHint = "cursor's authenticate needs to reach api2.cursor.sh even when already " +
+		"logged in, so check the daemon machine's network, or re-run `cursor-agent login`"
 	args := []string{"acp"}
 	if opts.Model != "" {
 		args = []string{"--model", opts.Model, "acp"}
@@ -826,6 +827,10 @@ func (r *Router) buildAdapter(agentID, model string) (*acpagent.Adapter, error) 
 // MOST decorated ids happen to parse, but some don't — the process then
 // prints "Cannot use this model: ..." and exits, killing the handshake. Try
 // the exact id first, then a translated flag spelling, then the bare base.
+//
+// Authenticate failures short-circuit the loop: they mean bad credentials or
+// no route to the agent's auth backend, which no model-id spelling can fix —
+// retrying would just burn another ~20s timeout per candidate.
 func (r *Router) buildAdapterForSession(agentID, model string) (*acpagent.Adapter, error) {
 	candidates := modelSpawnCandidates(model)
 	var firstErr error
@@ -843,6 +848,10 @@ func (r *Router) buildAdapterForSession(agentID, model string) (*acpagent.Adapte
 		}
 		r.logger.Warn("agent spawn failed for model candidate",
 			"agent", agentID, "model", m, "err", err)
+		var authErr *acpagent.AuthFailedError
+		if errors.As(err, &authErr) {
+			break
+		}
 	}
 	return nil, firstErr
 }

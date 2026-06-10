@@ -2,11 +2,13 @@ package chatrouter
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 )
 
@@ -147,5 +149,60 @@ func TestModelSpawnCandidates(t *testing.T) {
 				t.Fatalf("%q: got %v want %v", tc.in, got, tc.want)
 			}
 		}
+	}
+}
+
+// TestBuildAdapterForSessionShortCircuitsAuthFailure pins that the model-id
+// fallback loop stops after the first authenticate failure. Auth failures
+// (bad credentials, or cursor's auth backend unreachable — it needs the
+// network even when already logged in) hit every candidate identically and
+// cost ~20s each, so retrying other --model spellings only delays the error.
+func TestBuildAdapterForSessionShortCircuitsAuthFailure(t *testing.T) {
+	attempts := 0
+	r := &Router{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		builders: Builders{
+			AgentCursor: func(acpagent.Options) (*acpagent.Adapter, error) {
+				attempts++
+				return nil, &acpagent.AuthFailedError{
+					Err: errors.New("authenticate (cursor_login): rpc error -32603: Internal error"),
+				}
+			},
+		},
+	}
+
+	_, err := r.buildAdapterForSession(AgentCursor, "composer-2.5[fast=true]")
+	var authErr *acpagent.AuthFailedError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected AuthFailedError, got %T %v", err, err)
+	}
+	if attempts != 1 {
+		t.Fatalf("auth failure should stop the fallback loop after 1 attempt, got %d", attempts)
+	}
+}
+
+// TestBuildAdapterForSessionRetriesNonAuthFailure pins the inverse: a spawn
+// failure that is NOT an auth failure (e.g. the process dying on an
+// unparseable --model id) still walks the full candidate list.
+func TestBuildAdapterForSessionRetriesNonAuthFailure(t *testing.T) {
+	attempts := 0
+	r := &Router{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		builders: Builders{
+			AgentCursor: func(acpagent.Options) (*acpagent.Adapter, error) {
+				attempts++
+				return nil, errors.New("initialize: EOF (stderr: Cannot use this model)")
+			},
+		},
+	}
+
+	_, err := r.buildAdapterForSession(AgentCursor, "composer-2.5[fast=true]")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// "composer-2.5[fast=true]" expands to itself + "composer-2.5-fast" +
+	// "composer-2.5" (see modelSpawnCandidates).
+	if attempts != 3 {
+		t.Fatalf("expected all 3 candidates tried, got %d", attempts)
 	}
 }

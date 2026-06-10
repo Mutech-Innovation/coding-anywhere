@@ -33,6 +33,17 @@ import (
 // the call forever, which would otherwise wedge the first create_session.
 const authenticateTimeout = 30 * time.Second
 
+// AuthFailedError marks a failure of the post-initialize authenticate call
+// (bad/stale credentials, or the agent's auth backend being unreachable —
+// cursor-agent's authenticate needs the network even when already logged
+// in). Callers use it to tell auth failures apart from model-spawn failures:
+// retrying with a different --model spelling can fix the latter but never
+// the former (see chatrouter's buildAdapterForSession).
+type AuthFailedError struct{ Err error }
+
+func (e *AuthFailedError) Error() string { return e.Err.Error() }
+func (e *AuthFailedError) Unwrap() error { return e.Err }
+
 // Options configure the adapter.
 type Options struct {
 	Logger *slog.Logger
@@ -258,10 +269,11 @@ func (a *Adapter) authenticate(ctx context.Context, initRes acp.InitializeRespon
 		MethodID: a.opts.AuthMethodID,
 	}, nil); err != nil {
 		if a.opts.AuthHint != "" {
-			return fmt.Errorf("authenticate (%s): %w%s — %s",
-				a.opts.AuthMethodID, err, a.stderrSuffix(), a.opts.AuthHint)
+			return &AuthFailedError{Err: fmt.Errorf("authenticate (%s): %w%s — %s",
+				a.opts.AuthMethodID, err, a.stderrSuffix(), a.opts.AuthHint)}
 		}
-		return fmt.Errorf("authenticate (%s): %w%s", a.opts.AuthMethodID, err, a.stderrSuffix())
+		return &AuthFailedError{Err: fmt.Errorf("authenticate (%s): %w%s",
+			a.opts.AuthMethodID, err, a.stderrSuffix())}
 	}
 	a.logger.Info("acp authenticated", "method", a.opts.AuthMethodID)
 	return nil

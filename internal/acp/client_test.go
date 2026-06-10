@@ -142,6 +142,26 @@ func TestACPCallReturnsRPCError(t *testing.T) {
 	}
 }
 
+// TestRPCErrorIncludesData pins that the error string surfaces the JSON-RPC
+// `data` payload. Agents hide the real cause there — cursor-agent answers
+// authenticate failures with message "Internal error" and the underlying
+// network error only in data (e.g. `{"details":"[unavailable] connect ..."}`),
+// which the daemon log would otherwise drop.
+func TestRPCErrorIncludesData(t *testing.T) {
+	withData := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    json.RawMessage(`{"details":"[unavailable] connect ECONNREFUSED 127.0.0.1:9"}`),
+	}
+	if got := withData.Error(); !strings.Contains(got, "[unavailable] connect ECONNREFUSED 127.0.0.1:9") {
+		t.Fatalf("data not surfaced: %s", got)
+	}
+	bare := &acp.RPCError{Code: -32602, Message: "bad params"}
+	if got := bare.Error(); got != "rpc error -32602: bad params" {
+		t.Fatalf("bare error format changed: %s", got)
+	}
+}
+
 func TestACPNotificationDelivery(t *testing.T) {
 	pp := newPipePair()
 	r, w := pp.asClient()

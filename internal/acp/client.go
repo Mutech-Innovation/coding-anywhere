@@ -55,6 +55,13 @@ func (e *RPCError) Error() string {
 	if e == nil {
 		return ""
 	}
+	// Surface `data` when present: agents often hide the actual cause
+	// there. cursor-agent's authenticate failure is the canonical case —
+	// `message` is just "Internal error" while data carries e.g.
+	// `{"details":"[unavailable] connect ECONNREFUSED ..."}`.
+	if len(e.Data) > 0 {
+		return fmt.Sprintf("rpc error %d: %s (data: %s)", e.Code, e.Message, e.Data)
+	}
 	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
 }
 

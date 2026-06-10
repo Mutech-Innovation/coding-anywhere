@@ -262,7 +262,16 @@ Cursor-specific quirks, all handled inside the daemon:
   Start when the agent advertises the method. Credentials come from
   `cursor-agent login` on the daemon machine (run it once, interactively).
   A stale login can make `authenticate` hang — the adapter bounds the call
-  (30s) and surfaces a "run `cursor-agent login`" hint.
+  (30s). `authenticate` also needs the **network** even when credentials are
+  fine: after the local login check it initializes "shared services"
+  (statsig/server-config fetches against `api2.cursor.sh`), and if those
+  fail it answers a generic `-32603 Internal error` ~21s in, with the real
+  cause (e.g. `[unavailable] connect …`) only in the error's `data` field —
+  which `acp.RPCError.Error()` therefore includes. Failures are wrapped in
+  `acpagent.AuthFailedError` so `buildAdapterForSession` can stop instead of
+  retrying model-id spellings that can't help. Note cursor-agent (Node) does
+  NOT use the Windows system proxy; it honors `HTTPS_PROXY`/`HTTP_PROXY` env
+  vars inherited from the daemon. Debug logs: `$TMPDIR/cursor-agent-logs/`.
 - **Models**: cursor advertises models via the ACP session-model extension
   (`models` on `session/new`), and the chatrouter synthesises a
   `config_option_update` (option id `model`) from it so the web model picker
