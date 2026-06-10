@@ -1,26 +1,11 @@
-import {
-  Alert,
-  Box,
-  Button,
-  CopyButton,
-  Group,
-  Menu,
-  Modal,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
-import {
-  IconAlertTriangle,
-  IconKey,
-  IconRefresh,
-  IconTrash,
-} from '@tabler/icons-react';
+import { Alert, Box, Button, Group, Menu, Modal, Stack, Text } from '@mantine/core';
+import { IconAlertTriangle, IconKey, IconRefresh, IconTrash } from '@tabler/icons-react';
 import { useState } from 'react';
 
 import { RelayError } from '@coding-anywhere/protocol';
 
 import { useConnection } from '../store/connection.js';
+import { CopyTextButton } from './CopyTextButton.js';
 
 /**
  * Menu items for the device dropdown ("show / rotate / revoke account key").
@@ -130,8 +115,7 @@ export function AccountKeyModals() {
             style={{
               background: 'var(--mantine-color-gray-light)',
               borderRadius: 8,
-              fontFamily:
-                '"JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace',
+              fontFamily: '"JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace',
               fontSize: 13,
               wordBreak: 'break-all',
               userSelect: 'all',
@@ -145,15 +129,11 @@ export function AccountKeyModals() {
             </Alert>
           ) : null}
           <Group justify="flex-end">
-            <CopyButton value={pendingKeyReveal ?? ''} timeout={1500}>
-              {({ copied, copy }) => (
-                <Tooltip label={copied ? '已复制' : '点击复制'} withArrow>
-                  <Button variant="default" onClick={copy} disabled={!pendingKeyReveal}>
-                    {copied ? '已复制' : '复制密钥'}
-                  </Button>
-                </Tooltip>
-              )}
-            </CopyButton>
+            <CopyTextButton
+              value={pendingKeyReveal ?? ''}
+              label="复制密钥"
+              disabled={!pendingKeyReveal}
+            />
             <Button color="ink.9" onClick={dismissKeyReveal}>
               我已保存
             </Button>
@@ -200,22 +180,13 @@ export function AccountKeyModals() {
         a rotateAccountKey failure). Without this the error would be silent.
       */}
       {keyActionError && pendingKeyReveal === null && !revokeKeyOpen ? (
-        <KeyActionErrorBanner
-          message={keyActionError}
-          onDismiss={() => setKeyActionError(null)}
-        />
+        <KeyActionErrorBanner message={keyActionError} onDismiss={() => setKeyActionError(null)} />
       ) : null}
     </>
   );
 }
 
-function KeyActionErrorBanner({
-  message,
-  onDismiss,
-}: {
-  message: string;
-  onDismiss: () => void;
-}) {
+function KeyActionErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   return (
     <Box
       style={{

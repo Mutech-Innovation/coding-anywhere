@@ -1,7 +1,6 @@
 import {
   Alert,
   Button,
-  CopyButton,
   Group,
   Menu,
   Modal,
@@ -11,7 +10,6 @@ import {
   Stack,
   Text,
   TextInput,
-  Tooltip,
 } from '@mantine/core';
 import { IconShare3 } from '@tabler/icons-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -21,6 +19,7 @@ import { RelayError } from '@coding-anywhere/protocol';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { DirectoryPicker } from './ChatPanel.js';
+import { CopyTextButton } from './CopyTextButton.js';
 
 /**
  * Menu item that opens the "share a read-only ask link" modal. Like
@@ -174,15 +173,7 @@ export function ShareAskModal() {
               </Text>
             ) : null}
             <Group justify="flex-end">
-              <CopyButton value={link} timeout={1500}>
-                {({ copied, copy }) => (
-                  <Tooltip label={copied ? '已复制' : '点击复制'} withArrow>
-                    <Button variant="default" onClick={copy}>
-                      {copied ? '已复制' : '复制链接'}
-                    </Button>
-                  </Tooltip>
-                )}
-              </CopyButton>
+              <CopyTextButton value={link} label="复制链接" />
               <Button variant="subtle" onClick={reset}>
                 再建一个
               </Button>
