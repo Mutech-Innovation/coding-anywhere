@@ -1037,19 +1037,51 @@ func TestChatSetConfigOptionFanOut(t *testing.T) {
 // cursorMockACP mimics `cursor-agent acp`: initialize advertises a
 // cursor_login auth method, session/new is rejected until authenticate has
 // been called, models arrive inline on the session/new response (no
-// config_option_update notifications), and model switching goes through
-// session/set_model.
+// config_option_update notifications), and a running process's model is
+// fixed at spawn — switching models means spawning a NEW process (recorded
+// via spawnModel) and resuming the conversation through session/load, which
+// replays history as session/update notifications first.
 type cursorMockACP struct {
-	t  *testing.T
-	in *io.PipeReader
-	wr *bufio.Writer
+	t          *testing.T
+	in         *io.PipeReader
+	wr         *bufio.Writer
+	spawnModel string // the --model the process was "spawned" with
 
 	mu               sync.Mutex
 	writeMu          sync.Mutex
 	authenticated    bool
 	lastAuthMethod   string
-	lastSetModelID   string
+	lastLoadedSID    string
 	sawSetConfigCall bool
+	sawSetModelCall  bool
+}
+
+func (m *cursorMockACP) currentModelID() string {
+	if m.spawnModel != "" {
+		return m.spawnModel
+	}
+	return "composer-2.5[fast=true]"
+}
+
+func (m *cursorMockACP) modelsPayload() map[string]any {
+	return map[string]any{
+		"currentModelId": m.currentModelID(),
+		"availableModels": []map[string]any{
+			{"modelId": "composer-2.5[fast=true]", "name": "composer-2.5"},
+			{"modelId": "gpt-5.5[reasoning=medium]", "name": "gpt-5.5"},
+		},
+	}
+}
+
+func (m *cursorMockACP) modesPayload() map[string]any {
+	return map[string]any{
+		"currentModeId": "agent",
+		"availableModes": []map[string]any{
+			{"id": "agent", "name": "Agent"},
+			{"id": "plan", "name": "Plan"},
+			{"id": "ask", "name": "Ask"},
+		},
+	}
 }
 
 func (m *cursorMockACP) run() {
@@ -1087,26 +1119,35 @@ func (m *cursorMockACP) run() {
 			}
 			m.respond(idVal, map[string]any{
 				"sessionId": "sess-cursor-1",
-				"modes": map[string]any{
-					"currentModeId": "agent",
-					"availableModes": []map[string]any{
-						{"id": "agent", "name": "Agent"},
-						{"id": "plan", "name": "Plan"},
-						{"id": "ask", "name": "Ask"},
-					},
-				},
-				"models": map[string]any{
-					"currentModelId": "composer-2.5[fast=true]",
-					"availableModels": []map[string]any{
-						{"modelId": "composer-2.5[fast=true]", "name": "composer-2.5"},
-						{"modelId": "gpt-5.5[reasoning=medium]", "name": "gpt-5.5"},
-					},
+				"modes":     m.modesPayload(),
+				"models":    m.modelsPayload(),
+			})
+		case "session/load":
+			params, _ := msg["params"].(map[string]any)
+			sid, _ := params["sessionId"].(string)
+			m.mu.Lock()
+			m.lastLoadedSID = sid
+			m.mu.Unlock()
+			// Real cursor replays the conversation as session/update
+			// notifications BEFORE answering load — the router must drop
+			// these (clients already have the transcript).
+			m.notify("session/update", map[string]any{
+				"sessionId": sid,
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "REPLAYED-HISTORY"},
 				},
 			})
+			m.respond(idVal, map[string]any{
+				"modes":  m.modesPayload(),
+				"models": m.modelsPayload(),
+			})
 		case "session/set_model":
-			params, _ := msg["params"].(map[string]any)
+			// The router must NOT use set_model — it only persists a
+			// preference for future processes and does not change the
+			// running process's generation model.
 			m.mu.Lock()
-			m.lastSetModelID, _ = params["modelId"].(string)
+			m.sawSetModelCall = true
 			m.mu.Unlock()
 			m.respond(idVal, map[string]any{})
 		case "session/set_config_option":
@@ -1126,6 +1167,10 @@ func (m *cursorMockACP) run() {
 
 func (m *cursorMockACP) respond(id any, result map[string]any) {
 	m.write(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+func (m *cursorMockACP) notify(method string, params map[string]any) {
+	m.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
 func (m *cursorMockACP) respondError(id any, code int, msg string) {
@@ -1159,12 +1204,24 @@ func TestChatCursorAgentModels(t *testing.T) {
 	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
 	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
 
-	mock := &cursorMockACP{t: t}
-	stdoutR, stdoutW := io.Pipe()
-	stdinR, stdinW := io.Pipe()
-	mock.in = stdinR
-	mock.wr = bufio.NewWriter(stdoutW)
-	go mock.run()
+	// The cursor agent runs one subprocess per session, and switching the
+	// model spawns a fresh one — so the builder is a factory producing a new
+	// mock "process" per call, recording the spawn-time Options.Model.
+	var mocksMu sync.Mutex
+	var mocks []*cursorMockACP
+	builder := func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		stdoutR, stdoutW := io.Pipe()
+		stdinR, stdinW := io.Pipe()
+		m := &cursorMockACP{t: t, in: stdinR, wr: bufio.NewWriter(stdoutW), spawnModel: opts.Model}
+		go m.run()
+		mocksMu.Lock()
+		mocks = append(mocks, m)
+		mocksMu.Unlock()
+		// Mirror DefaultCursorBuilder's auth wiring on the stream-injected
+		// adapter.
+		opts.AuthMethodID = "cursor_login"
+		return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+	}
 
 	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
 	dcli := relayclient.New(relayclient.Config{
@@ -1172,12 +1229,7 @@ func TestChatCursorAgentModels(t *testing.T) {
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
 	cr := chatrouter.New(dcli, logger, chatrouter.Builders{
-		chatrouter.AgentCursor: func(opts acpagent.Options) (*acpagent.Adapter, error) {
-			// Mirror DefaultCursorBuilder's auth wiring on the
-			// stream-injected adapter.
-			opts.AuthMethodID = "cursor_login"
-			return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
-		},
+		chatrouter.AgentCursor: builder,
 	})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
@@ -1235,13 +1287,24 @@ func TestChatCursorAgentModels(t *testing.T) {
 		t.Fatalf("modes not surfaced: %+v", createRes)
 	}
 
-	// The adapter must have authenticated before session/new succeeded.
-	mock.mu.Lock()
-	if mock.lastAuthMethod != "cursor_login" {
-		mock.mu.Unlock()
-		t.Fatalf("expected authenticate(cursor_login), got %q", mock.lastAuthMethod)
+	// The adapter must have authenticated before session/new succeeded, and
+	// the first "process" must have been spawned without a pinned model.
+	mocksMu.Lock()
+	if len(mocks) != 1 {
+		mocksMu.Unlock()
+		t.Fatalf("expected 1 spawned process, got %d", len(mocks))
 	}
-	mock.mu.Unlock()
+	first := mocks[0]
+	mocksMu.Unlock()
+	first.mu.Lock()
+	if first.lastAuthMethod != "cursor_login" {
+		first.mu.Unlock()
+		t.Fatalf("expected authenticate(cursor_login), got %q", first.lastAuthMethod)
+	}
+	first.mu.Unlock()
+	if first.spawnModel != "" {
+		t.Fatalf("first spawn should have no pinned model, got %q", first.spawnModel)
+	}
 
 	// 2. The models payload must surface as a synthetic config_option_update
 	// pending update keyed under "model" so the web picker just works.
@@ -1260,8 +1323,9 @@ func TestChatCursorAgentModels(t *testing.T) {
 			len(createRes.PendingUpdates))
 	}
 
-	// 3. Switching the model goes through session/set_model and
-	// re-broadcasts a refreshed snapshot.
+	// 3. Switching the model restarts the session on a NEW process spawned
+	// with --model, resumes it via session/load (whose history replay must
+	// NOT reach clients), and re-broadcasts a refreshed snapshot.
 	sessionID := createRes.Session.ID
 	req, _ = wire.MakeRequest("sc-1", wire.ChannelChat, wire.ChatMethodSetConfigOption,
 		wire.ChatSetConfigOptionRequest{
@@ -1274,19 +1338,33 @@ func TestChatCursorAgentModels(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("set_config_option error: %+v", res.Error)
 	}
-	mock.mu.Lock()
-	if mock.lastSetModelID != "gpt-5.5[reasoning=medium]" {
-		mock.mu.Unlock()
-		t.Fatalf("mock saw set_model %q", mock.lastSetModelID)
+
+	mocksMu.Lock()
+	if len(mocks) != 2 {
+		mocksMu.Unlock()
+		t.Fatalf("expected a second spawned process for the model switch, got %d", len(mocks))
 	}
-	if mock.sawSetConfigCall {
-		mock.mu.Unlock()
-		t.Fatal("router must not forward set_config_option to a models-style agent")
+	second := mocks[1]
+	mocksMu.Unlock()
+	if second.spawnModel != "gpt-5.5[reasoning=medium]" {
+		t.Fatalf("second spawn model: %q", second.spawnModel)
 	}
-	mock.mu.Unlock()
+	second.mu.Lock()
+	if second.lastLoadedSID != "sess-cursor-1" {
+		second.mu.Unlock()
+		t.Fatalf("expected session/load of sess-cursor-1, got %q", second.lastLoadedSID)
+	}
+	second.mu.Unlock()
+	first.mu.Lock()
+	if first.sawSetModelCall || first.sawSetConfigCall {
+		first.mu.Unlock()
+		t.Fatal("router must not use set_model/set_config_option on a cursor process")
+	}
+	first.mu.Unlock()
 
 	// 4. History must replay the refreshed snapshot (currentValue = new
-	// model) so a page reload keeps the user's pick.
+	// model) so a page reload keeps the user's pick — and must NOT contain
+	// the suppressed session/load history replay.
 	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
 		wire.ChatGetHistoryRequest{SessionID: sessionID})
 	_ = wsjson.Write(ctx, clientWS, req)
@@ -1298,10 +1376,12 @@ func TestChatCursorAgentModels(t *testing.T) {
 	found := false
 	for _, u := range hist.Updates {
 		s := string(u)
+		if strings.Contains(s, "REPLAYED-HISTORY") {
+			t.Fatal("session/load replay leaked into the session snapshot")
+		}
 		if strings.Contains(s, "config_option_update") &&
 			strings.Contains(s, `"currentValue":"gpt-5.5[reasoning=medium]"`) {
 			found = true
-			break
 		}
 	}
 	if !found {

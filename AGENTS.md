@@ -263,11 +263,23 @@ Cursor-specific quirks, all handled inside the daemon:
   `cursor-agent login` on the daemon machine (run it once, interactively).
   A stale login can make `authenticate` hang — the adapter bounds the call
   (30s) and surfaces a "run `cursor-agent login`" hint.
-- **Models**: cursor uses the ACP session-model extension (`models` on
-  `session/new`, `session/set_model`) instead of Devin's config options. The
-  chatrouter synthesises a `config_option_update` (option id `model`) from
-  the models payload and maps `chat.set_config_option` writes on that id
-  back to `session/set_model`, so the web model picker works unchanged.
+- **Models**: cursor advertises models via the ACP session-model extension
+  (`models` on `session/new`), and the chatrouter synthesises a
+  `config_option_update` (option id `model`) from it so the web model picker
+  works unchanged. BUT the generation model of a running cursor process is
+  **fixed at spawn** (`--model` flag): `session/set_model` only validates and
+  persists a preference for future processes, and `model` fields on
+  session/new are ignored (verified by live probing). The router therefore
+  runs **one cursor subprocess per chat session** (`perSessionProcess`),
+  pinning `Options.Model → --model` at spawn (used by the guest share's
+  locked model), and a `chat.set_config_option("model")` write restarts the
+  session's subprocess pinned to the new model and resumes the conversation
+  via `session/load` (`restartSessionWithModel`) — the old process must be
+  killed first (cursor refuses to load a chat another live process holds)
+  and the load's history replay is suppressed (`session.suppressUpdates`)
+  so clients don't see a duplicated transcript. `session/load`'s
+  `mcpServers` must be `[]`, never `null` (cursor answers -32603).
+  Per-session subprocesses are reaped on close_session / router Close.
 - **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
   force `ask` the same way as Devin (`askModeID`), and guest permission
   requests are auto-denied for every agent.
@@ -275,12 +287,17 @@ Cursor-specific quirks, all handled inside the daemon:
   `apps/relay/internal/server/chat_e2e_test.go`; adapter-level tests in
   `internal/agent/acpagent/adapter_test.go`.
 - Live-fire smoke tests against the real binary (need `cursor-agent` on PATH
-  - a completed `cursor-agent login`; excluded from normal runs via the
-    `cursorlive` build tag):
-    `go test -tags cursorlive ./internal/chatrouter/ -run TestLiveCursor -v`
-    (adapter only) and
-    `go test -tags cursorlive ./apps/relay/internal/server/ -run TestLiveCursorFullStack -v`
-    (client → relay → daemon → real cursor-agent).
+  and a completed `cursor-agent login`; excluded from normal runs via the
+  `cursorlive` build tag; run them one at a time — they share the real
+  cursor backend):
+  `go test -tags cursorlive ./internal/chatrouter/ -run TestLiveCursor -v`
+  (adapter only),
+  `go test -tags cursorlive ./apps/relay/internal/server/ -run TestLiveCursorFullStack -v`
+  (client → relay → daemon → real cursor-agent),
+  `... -run TestLiveCursorGuestModelLock -v` (guest share with a locked
+  model — generation verified via a "who created you" probe), and
+  `... -run TestLiveCursorModelSwitch -v` (mid-session model switch:
+  restart + session/load keeps the conversation, new model generates).
 
 ## Relay orientation
 

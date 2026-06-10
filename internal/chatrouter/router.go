@@ -49,11 +49,20 @@ func DefaultDevinBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
 // DefaultCursorBuilder wraps `cursor-agent acp` as a subprocess. Cursor's
 // ACP server requires an explicit authenticate(cursor_login) call after
 // initialize — credentials come from `cursor-agent login` on this machine.
+//
+// The generation model of a cursor-agent process is fixed at spawn time via
+// `--model`; its ACP `session/set_model` only persists a preference for
+// FUTURE processes. The router therefore runs one subprocess per cursor
+// session (see perSessionProcess) and passes Options.Model here.
 func DefaultCursorBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
 	opts.LogName = "cursor-agent acp"
 	opts.AuthMethodID = "cursor_login"
 	opts.AuthHint = "run `cursor-agent login` on the daemon machine"
-	return acpagent.NewSubprocess(exec.Command("cursor-agent", "acp"), opts)
+	args := []string{"acp"}
+	if opts.Model != "" {
+		args = []string{"--model", opts.Model, "acp"}
+	}
+	return acpagent.NewSubprocess(exec.Command("cursor-agent", args...), opts)
 }
 
 // DefaultBuilders returns the standard agent wiring (Devin + cursor-agent).
@@ -124,6 +133,11 @@ type session struct {
 	// synthesises a `config_option_update` from this state so the web
 	// model picker works the same for both styles.
 	models *acp.SessionModelState
+
+	// suppressUpdates drops incoming session/update notifications for this
+	// session while a model-switch restart replays history via session/load
+	// (the replay would otherwise duplicate the transcript on clients).
+	suppressUpdates atomic.Bool
 
 	// snapshot of every session/update we've forwarded, plus the user
 	// prompts we've sent into the session. Both share a per-session
@@ -218,18 +232,24 @@ func New(cli *relayclient.Client, logger *slog.Logger, builders Builders, defaul
 }
 
 // Close terminates any open agent sessions and shuts down the underlying
-// agent adapters.
+// agent adapters (both the shared per-agent ones and any per-session
+// subprocesses).
 func (r *Router) Close() error {
 	r.runCancel()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var firstErr error
 	for _, s := range r.sessions {
 		if s.cancelCtx != nil {
 			s.cancelCtx()
 		}
+		if r.perSessionProcess(s.AgentID) && s.adapter != nil {
+			if err := s.adapter.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
 	r.sessions = map[string]*session{}
-	var firstErr error
 	for id, a := range r.adapters {
 		if err := a.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -360,7 +380,17 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			return
 		}
 	}
-	a, err := r.ensureAgent(req.AgentID)
+	var (
+		a   *acpagent.Adapter
+		err error
+	)
+	if r.perSessionProcess(req.AgentID) {
+		// cursor-agent: one subprocess per session, model pinned at spawn
+		// (set_model can't change a running process's generation model).
+		a, err = r.buildAdapter(req.AgentID, req.Model)
+	} else {
+		a, err = r.ensureAgent(req.AgentID)
+	}
 	if err != nil {
 		r.respondErr(env, "agent_start_failed", err.Error())
 		return
@@ -372,6 +402,9 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	res, err := a.NewSession(callCtx, req.Cwd, nil)
 	if err != nil {
 		r.respondErr(env, "agent_new_session_failed", err.Error())
+		if r.perSessionProcess(req.AgentID) {
+			_ = a.Close() // don't leak the dedicated subprocess
+		}
 		return
 	}
 	nativeID := res.SessionID
@@ -388,6 +421,13 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		},
 		adapter: a,
 		models:  res.Models,
+	}
+	// When the process was spawned pinned to a model (cursor --model), trust
+	// the pin over the agent's reported current model — cursor's session/new
+	// can still report the stale persisted preference even though generation
+	// uses the pinned model.
+	if req.Model != "" && r.perSessionProcess(req.AgentID) && s.models != nil {
+		s.models.CurrentModelID = req.Model
 	}
 	if res.Modes != nil {
 		s.modes = make([]wire.SessionMode, len(res.Modes.AvailableModes))
@@ -414,11 +454,12 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		}
 		// Lock the owner-chosen model (the relay injects it into the guest's
 		// create_session). The guest can't change it — the relay blocks
-		// set_config_option. We only fire the side effect; the model is not
-		// surfaced in the guest UI, so we don't fold the snapshot.
-		if req.Model != "" {
+		// set_config_option. Per-session-process agents (cursor) were already
+		// spawned with `--model`, so only the shared-process path (Devin)
+		// needs a post-create call here.
+		if req.Model != "" && !r.perSessionProcess(req.AgentID) {
 			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
-			if err := r.applySessionModel(setCtx, s, req.Model); err != nil {
+			if _, err := s.adapter.SetConfigOption(setCtx, nativeID, modelConfigID, req.Model); err != nil {
 				r.logger.Warn("force model for guest session failed",
 					"native", nativeID, "model", req.Model, "err", err)
 			}
@@ -465,22 +506,72 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	r.broadcastEvent(wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
 }
 
-// applySessionModel switches a session's active model using whichever
-// mechanism the agent supports: ACP session/set_model when the agent
-// advertised a models state (cursor-agent), session/set_config_option
-// otherwise (Devin).
-func (r *Router) applySessionModel(ctx context.Context, s *session, model string) error {
-	if s.models != nil {
-		if err := s.adapter.SetModel(ctx, s.NativeID, model); err != nil {
-			return err
-		}
-		r.mu.Lock()
-		s.models.CurrentModelID = model
+// perSessionProcess reports whether the agent runs one subprocess per chat
+// session. cursor-agent does: the generation model of a running cursor
+// process is fixed at spawn (`--model`); its ACP session/set_model only
+// persists a preference for future processes. One process per session keeps
+// each session's model independent, and a model switch restarts the process
+// (resuming the conversation via session/load).
+func (r *Router) perSessionProcess(agentID string) bool {
+	return agentID == AgentCursor
+}
+
+// restartSessionWithModel switches a per-session-process agent (cursor) to a
+// new model: spawn a fresh subprocess pinned to the model, kill the old
+// process (cursor refuses to session/load a chat that another live process
+// still holds open), then resume the same native session in the new process
+// via session/load — suppressing the history replay so clients don't see a
+// duplicated transcript. If the resume fails, a best-effort restore brings
+// the session back on a process pinned to the previous model.
+func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model string) error {
+	r.mu.Lock()
+	if s.Status != "idle" {
 		r.mu.Unlock()
-		return nil
+		return errors.New("finish the current turn before switching model")
 	}
-	_, err := s.adapter.SetConfigOption(ctx, s.NativeID, modelConfigID, model)
-	return err
+	old := s.adapter
+	prevModel := ""
+	if s.models != nil {
+		prevModel = s.models.CurrentModelID
+	}
+	r.mu.Unlock()
+
+	a, err := r.buildAdapter(s.AgentID, model)
+	if err != nil {
+		return err
+	}
+	if old != nil {
+		_ = old.Close()
+	}
+
+	load := func(target *acpagent.Adapter) error {
+		s.suppressUpdates.Store(true)
+		defer s.suppressUpdates.Store(false)
+		return target.LoadSession(ctx, s.NativeID, s.Cwd, nil)
+	}
+
+	if err := load(a); err != nil {
+		_ = a.Close()
+		// The old process is already gone — try to restore the session on a
+		// process pinned to the previous model so it keeps working.
+		if restored, rerr := r.buildAdapter(s.AgentID, prevModel); rerr == nil {
+			if lerr := load(restored); lerr == nil {
+				r.mu.Lock()
+				s.adapter = restored
+				r.mu.Unlock()
+			} else {
+				_ = restored.Close()
+			}
+		}
+		return fmt.Errorf("resume session on new process: %w", err)
+	}
+	r.mu.Lock()
+	s.adapter = a
+	if s.models != nil {
+		s.models.CurrentModelID = model
+	}
+	r.mu.Unlock()
+	return nil
 }
 
 // modelConfigUpdate synthesises a `config_option_update` session/update from
@@ -651,6 +742,10 @@ func (r *Router) handleCloseSession(env wire.Envelope, req wire.ChatCloseSession
 	if s.cancelCtx != nil {
 		s.cancelCtx()
 	}
+	// Per-session-process agents (cursor) own their subprocess — reap it.
+	if r.perSessionProcess(s.AgentID) && s.adapter != nil {
+		_ = s.adapter.Close()
+	}
 	r.respondOK(env, map[string]bool{"ok": true})
 	r.broadcastEvent(wire.ChatEventSessionClosed, wire.ChatSessionClosedEvent{SessionID: s.ID})
 }
@@ -670,23 +765,41 @@ func (r *Router) handleResolvePermission(env wire.Envelope, req wire.ChatResolve
 	r.respondOK(env, map[string]bool{"ok": true})
 }
 
-// ensureAgent lazily creates and starts the adapter for one agent id on
-// first use. The adapter's run loop is pinned to r.runCtx so it survives
-// request-level timeouts.
+// ensureAgent lazily creates and starts the shared adapter for one agent id
+// on first use. The adapter's run loop is pinned to r.runCtx so it survives
+// request-level timeouts. Per-session-process agents (cursor) bypass this
+// cache and call buildAdapter directly.
 func (r *Router) ensureAgent(agentID string) (*acpagent.Adapter, error) {
 	r.mu.Lock()
 	if a, ok := r.adapters[agentID]; ok {
 		r.mu.Unlock()
 		return a, nil
 	}
+	r.mu.Unlock()
+
+	a, err := r.buildAdapter(agentID, "")
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	r.adapters[agentID] = a
+	r.mu.Unlock()
+	return a, nil
+}
+
+// buildAdapter constructs and starts a fresh adapter for the agent, wiring
+// the router's update/permission callbacks. model, when non-empty, is passed
+// to the builder so subprocess agents can pin it at spawn (cursor --model).
+func (r *Router) buildAdapter(agentID, model string) (*acpagent.Adapter, error) {
+	r.mu.Lock()
 	builder, ok := r.builders[agentID]
 	r.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("no builder for agent %q", agentID)
 	}
-
 	a, err := builder(acpagent.Options{
 		Logger: r.logger,
+		Model:  model,
 		OnSessionUpdate: func(sessionID string, update json.RawMessage) {
 			r.handleAgentUpdate(agentID, sessionID, update)
 		},
@@ -701,9 +814,6 @@ func (r *Router) ensureAgent(agentID string) (*acpagent.Adapter, error) {
 		_ = a.Close()
 		return nil, err
 	}
-	r.mu.Lock()
-	r.adapters[agentID] = a
-	r.mu.Unlock()
 	return a, nil
 }
 
@@ -757,6 +867,12 @@ func (r *Router) handleAgentUpdate(agentID, nativeSessionID string, update json.
 		return
 	}
 	r.mu.Unlock()
+
+	// Drop the history replay emitted by session/load during a model-switch
+	// restart — clients already have the transcript.
+	if s.suppressUpdates.Load() {
+		return
+	}
 
 	seq := s.appendUpdate(update)
 	r.applyUpdateStateMutations(s, update)
@@ -833,15 +949,18 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 		r.respondErr(env, "bad_request", "config_id required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
-	defer cancel()
 
 	// Agents on the ACP session-model extension (cursor-agent) have no
 	// config options; the daemon synthesised the "model" option from the
-	// session/new models payload. Map writes to that option back onto
-	// session/set_model and refresh the synthetic snapshot ourselves.
+	// session/new models payload. cursor can't change a running process's
+	// model, so a write to that option restarts the session's subprocess
+	// pinned to the new model and resumes the conversation via session/load.
+	// The restart (spawn + initialize + authenticate + load) takes seconds,
+	// hence the larger deadline.
 	if s.models != nil && req.ConfigID == modelConfigID {
-		if err := r.applySessionModel(ctx, s, req.Value); err != nil {
+		ctx, cancel := context.WithTimeout(r.runCtx, 60*time.Second)
+		defer cancel()
+		if err := r.restartSessionWithModel(ctx, s, req.Value); err != nil {
 			r.respondErr(env, "agent_set_config_option_failed", err.Error())
 			return
 		}
@@ -857,6 +976,8 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
+	defer cancel()
 	configOptions, err := s.adapter.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value)
 	if err != nil {
 		r.respondErr(env, "agent_set_config_option_failed", err.Error())

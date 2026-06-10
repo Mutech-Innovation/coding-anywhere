@@ -66,6 +66,15 @@ type Options struct {
 	// AuthHint is appended to authenticate errors to tell the operator how
 	// to fix credentials (e.g. "run `cursor-agent login` on this machine").
 	AuthHint string
+
+	// Model, when non-empty, asks the builder to pin the agent's generation
+	// model at spawn time (e.g. cursor-agent's `--model` flag). Builders for
+	// agents that select models per session over ACP (Devin) ignore it.
+	//
+	// cursor-agent needs this: its ACP `session/set_model` only persists a
+	// preference for future processes — the generation model of a running
+	// process is fixed when it starts.
+	Model string
 }
 
 // NewSessionResult carries everything the agent returned from session/new.
@@ -342,6 +351,11 @@ func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, valu
 func (a *Adapter) LoadSession(ctx context.Context, sessionID, cwd string, mcp []acp.MCPServer) error {
 	if !a.Capabilities().LoadSession {
 		return ErrUnsupported
+	}
+	if mcp == nil {
+		// Same as NewSession: `mcpServers` must be present and `null` is
+		// rejected by some agents (cursor-agent answers -32603).
+		mcp = []acp.MCPServer{}
 	}
 	return a.cli.Call(ctx, acp.MethodSessionLoad, map[string]any{
 		"sessionId":  sessionID,
