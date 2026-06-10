@@ -1,8 +1,8 @@
 // Package chatrouter wires the daemon's `chat` WebSocket channel onto
-// concrete agent adapters (Devin first; Claude Code, Codex, cursor-agent in
-// v2). It owns the per-session state, translates between wire envelopes and
-// the agent's ACP-style API, and bridges permission requests back to the
-// user.
+// concrete agent adapters (Devin for Terminal and cursor-agent today;
+// Claude Code, Codex later). It owns the per-session state, translates
+// between wire envelopes and the agent's ACP-style API, and bridges
+// permission requests back to the user.
 package chatrouter
 
 import (
@@ -11,26 +11,57 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/acp"
-	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/devin"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 	"github.com/oklog/ulid/v2"
 )
 
-// AgentBuilder lazily produces a configured Devin adapter. The router calls
-// Build the first time a session is opened against an agent. If the adapter
+// Agent ids on the chat channel. They match the `AgentId` union in
+// packages/agents on the TypeScript side.
+const (
+	AgentDevin  = "devin"
+	AgentCursor = "cursor-cli"
+)
+
+// AgentBuilder lazily produces a configured ACP adapter. The router calls
+// it the first time a session is opened against an agent. If the adapter
 // crashes, the router will rebuild on the next session.
-type AgentBuilder func(opts devin.Options) (*devin.Adapter, error)
+type AgentBuilder func(opts acpagent.Options) (*acpagent.Adapter, error)
+
+// Builders maps agent ids to their adapter builders. Agents without an
+// entry are reported as unavailable.
+type Builders map[string]AgentBuilder
 
 // DefaultDevinBuilder wraps `devin acp` as a subprocess.
-func DefaultDevinBuilder(opts devin.Options) (*devin.Adapter, error) {
-	return devin.NewSubprocess(devin.DefaultBinary(), opts)
+func DefaultDevinBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
+	opts.LogName = "devin acp"
+	return acpagent.NewSubprocess(exec.Command("devin", "acp"), opts)
+}
+
+// DefaultCursorBuilder wraps `cursor-agent acp` as a subprocess. Cursor's
+// ACP server requires an explicit authenticate(cursor_login) call after
+// initialize — credentials come from `cursor-agent login` on this machine.
+func DefaultCursorBuilder(opts acpagent.Options) (*acpagent.Adapter, error) {
+	opts.LogName = "cursor-agent acp"
+	opts.AuthMethodID = "cursor_login"
+	opts.AuthHint = "run `cursor-agent login` on the daemon machine"
+	return acpagent.NewSubprocess(exec.Command("cursor-agent", "acp"), opts)
+}
+
+// DefaultBuilders returns the standard agent wiring (Devin + cursor-agent).
+func DefaultBuilders() Builders {
+	return Builders{
+		AgentDevin:  DefaultDevinBuilder,
+		AgentCursor: DefaultCursorBuilder,
+	}
 }
 
 // Router owns chat state and fans daemon ↔ relay ↔ ACP traffic.
@@ -38,7 +69,12 @@ type Router struct {
 	logger *slog.Logger
 	cli    *relayclient.Client
 
-	devinBuilder AgentBuilder
+	builders Builders
+	// defaultWiring is true when New was called with nil builders (i.e. the
+	// stock subprocess builders). Only then does chat.agents gate
+	// availability on the CLI binary being present in PATH — injected
+	// builders (tests, embedders) are trusted as-is.
+	defaultWiring bool
 
 	// runCtx lives as long as the router. ACP read loops are pinned to it
 	// so that per-request timeouts (e.g. on session/new) don't kill the
@@ -47,7 +83,7 @@ type Router struct {
 	runCancel context.CancelFunc
 
 	mu         sync.Mutex
-	devin      *devin.Adapter // nil until first session
+	adapters   map[string]*acpagent.Adapter // agent id → adapter; nil until first session
 	sessions   map[string]*session
 	defaultCwd string
 	// earlyUpdates buffers session/update notifications that arrive while a
@@ -55,8 +91,9 @@ type Router struct {
 	// in flight — Devin sends configOptions / modes / availableCommands
 	// before answering session/new, so we'd otherwise drop them on the
 	// floor (no daemon-side session record yet) and the web UI would never
-	// see the initial model / mode metadata. Keyed by native session id.
-	// Drained by handleCreateSession once the session is registered.
+	// see the initial model / mode metadata. Keyed by agent id + native
+	// session id. Drained by handleCreateSession once the session is
+	// registered.
 	earlyUpdates map[string][]json.RawMessage
 
 	pendingMu sync.Mutex
@@ -69,6 +106,9 @@ type session struct {
 	wire.ChatSession
 	cancelCtx context.CancelFunc
 
+	// adapter is the ACP adapter this session runs on. Set at creation.
+	adapter *acpagent.Adapter
+
 	// guest marks a session created by a read-only "ask"-mode share link
 	// (relay-stamped Origin=guest). Such sessions are forced into ask mode at
 	// creation and auto-deny every agent permission request.
@@ -77,6 +117,13 @@ type session struct {
 	// modes captured from session/new, updated by current_mode_update.
 	modes         []wire.SessionMode
 	currentModeID string
+
+	// models captured from session/new for agents that use the ACP
+	// session-model extension (cursor-agent). nil for agents that model
+	// the active model as a config option instead (Devin). The router
+	// synthesises a `config_option_update` from this state so the web
+	// model picker works the same for both styles.
+	models *acp.SessionModelState
 
 	// snapshot of every session/update we've forwarded, plus the user
 	// prompts we've sent into the session. Both share a per-session
@@ -136,13 +183,17 @@ type resolution struct {
 // router owns its own context for long-lived agent processes — Close
 // cancels it.
 //
+// builders maps agent ids to adapter builders; nil means DefaultBuilders()
+// (Devin + cursor-agent subprocesses).
+//
 // defaultCwd, if non-empty, is used when a session is created without an
 // explicit Cwd. Pass an empty value (or omit the arg) to require clients to
 // always pick a cwd — useful when the daemon's files workspace points at a
 // broad root like $HOME that Devin would refuse to operate on.
-func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, defaultCwd ...string) *Router {
-	if builder == nil {
-		builder = DefaultDevinBuilder
+func New(cli *relayclient.Client, logger *slog.Logger, builders Builders, defaultCwd ...string) *Router {
+	defaultWiring := builders == nil
+	if builders == nil {
+		builders = DefaultBuilders()
 	}
 	cwd := ""
 	if len(defaultCwd) > 0 {
@@ -150,22 +201,24 @@ func New(cli *relayclient.Client, logger *slog.Logger, builder AgentBuilder, def
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Router{
-		logger:       logger,
-		cli:          cli,
-		devinBuilder: builder,
-		runCtx:       ctx,
-		runCancel:    cancel,
-		sessions:     make(map[string]*session),
-		defaultCwd:   cwd,
-		earlyUpdates: make(map[string][]json.RawMessage),
-		pending:      make(map[string]*pendingPermission),
+		logger:        logger,
+		cli:           cli,
+		builders:      builders,
+		defaultWiring: defaultWiring,
+		runCtx:        ctx,
+		runCancel:     cancel,
+		adapters:      make(map[string]*acpagent.Adapter),
+		sessions:      make(map[string]*session),
+		defaultCwd:    cwd,
+		earlyUpdates:  make(map[string][]json.RawMessage),
+		pending:       make(map[string]*pendingPermission),
 	}
 	cli.Handle(wire.ChannelChat, r.handle)
 	return r
 }
 
 // Close terminates any open agent sessions and shuts down the underlying
-// agent adapter.
+// agent adapters.
 func (r *Router) Close() error {
 	r.runCancel()
 	r.mu.Lock()
@@ -176,12 +229,14 @@ func (r *Router) Close() error {
 		}
 	}
 	r.sessions = map[string]*session{}
-	if r.devin != nil {
-		err := r.devin.Close()
-		r.devin = nil
-		return err
+	var firstErr error
+	for id, a := range r.adapters {
+		if err := a.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(r.adapters, id)
 	}
-	return nil
+	return firstErr
 }
 
 func (r *Router) handle(env wire.Envelope) error {
@@ -250,12 +305,31 @@ func (r *Router) handle(env wire.Envelope) error {
 func (r *Router) handleAgents(env wire.Envelope) {
 	r.respondOK(env, wire.ChatAgentsResponse{
 		Agents: []wire.AgentDescriptor{
-			{ID: "devin", Name: "Devin for Terminal", Available: true},
+			r.describeAgent(AgentDevin, "Devin for Terminal", "devin"),
 			{ID: "claude-code", Name: "Claude Code", Available: false, Reason: "adapter lands in v2"},
 			{ID: "codex", Name: "Codex", Available: false, Reason: "adapter lands in v2"},
-			{ID: "cursor-cli", Name: "cursor-agent", Available: false, Reason: "adapter lands in v2"},
+			r.describeAgent(AgentCursor, "cursor-agent", "cursor-agent"),
 		},
 	})
+}
+
+// describeAgent reports whether a wired agent is usable on this daemon: it
+// needs a registered builder and (for the default subprocess builders) the
+// CLI binary on PATH.
+func (r *Router) describeAgent(id, name, binary string) wire.AgentDescriptor {
+	d := wire.AgentDescriptor{ID: id, Name: name}
+	if _, ok := r.builders[id]; !ok {
+		d.Reason = "not configured on this daemon"
+		return d
+	}
+	if r.defaultWiring {
+		if _, err := exec.LookPath(binary); err != nil {
+			d.Reason = fmt.Sprintf("%s not found in PATH", binary)
+			return d
+		}
+	}
+	d.Available = true
+	return d
 }
 
 func (r *Router) handleListSessions(env wire.Envelope) {
@@ -270,11 +344,11 @@ func (r *Router) handleListSessions(env wire.Envelope) {
 
 func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessionRequest) {
 	if req.AgentID == "" {
-		req.AgentID = "devin"
+		req.AgentID = AgentDevin
 	}
-	if req.AgentID != "devin" {
+	if _, ok := r.builders[req.AgentID]; !ok {
 		r.respondErr(env, "agent_unavailable",
-			fmt.Sprintf("agent %q is not available yet (v2 roadmap)", req.AgentID))
+			fmt.Sprintf("agent %q is not available on this daemon", req.AgentID))
 		return
 	}
 	if req.Cwd == "" {
@@ -286,7 +360,7 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			return
 		}
 	}
-	a, err := r.ensureDevin()
+	a, err := r.ensureAgent(req.AgentID)
 	if err != nil {
 		r.respondErr(env, "agent_start_failed", err.Error())
 		return
@@ -295,16 +369,12 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	// long-lived router context.
 	callCtx, cancel := context.WithTimeout(r.runCtx, 30*time.Second)
 	defer cancel()
-	nativeID, modes, err := a.NewSession(callCtx, req.Cwd, nil)
+	res, err := a.NewSession(callCtx, req.Cwd, nil)
 	if err != nil {
 		r.respondErr(env, "agent_new_session_failed", err.Error())
-		// Drop any buffered updates for this native id — there's no
-		// session to attach them to.
-		r.mu.Lock()
-		delete(r.earlyUpdates, nativeID)
-		r.mu.Unlock()
 		return
 	}
+	nativeID := res.SessionID
 	id := ulid.Make().String()
 	s := &session{
 		ChatSession: wire.ChatSession{
@@ -316,13 +386,15 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 			Status:    "idle",
 			StartedAt: time.Now().UTC(),
 		},
+		adapter: a,
+		models:  res.Models,
 	}
-	if modes != nil {
-		s.modes = make([]wire.SessionMode, len(modes.AvailableModes))
-		for i, m := range modes.AvailableModes {
+	if res.Modes != nil {
+		s.modes = make([]wire.SessionMode, len(res.Modes.AvailableModes))
+		for i, m := range res.Modes.AvailableModes {
 			s.modes[i] = wire.SessionMode{ID: m.ID, Name: m.Name, Description: m.Description}
 		}
-		s.currentModeID = modes.CurrentModeID
+		s.currentModeID = res.Modes.CurrentModeID
 	}
 
 	// Read-only guest ("ask"-share) sessions are forced into ask mode at
@@ -346,7 +418,7 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		// surfaced in the guest UI, so we don't fold the snapshot.
 		if req.Model != "" {
 			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
-			if _, err := a.SetConfigOption(setCtx, nativeID, modelConfigID, req.Model); err != nil {
+			if err := r.applySessionModel(setCtx, s, req.Model); err != nil {
 				r.logger.Warn("force model for guest session failed",
 					"native", nativeID, "model", req.Model, "err", err)
 			}
@@ -360,10 +432,19 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	// handleAgentUpdate will find the registered session and process
 	// normally.
 	r.mu.Lock()
-	buffered := r.earlyUpdates[nativeID]
-	delete(r.earlyUpdates, nativeID)
+	bufKey := earlyKey(req.AgentID, nativeID)
+	buffered := r.earlyUpdates[bufKey]
+	delete(r.earlyUpdates, bufKey)
 	r.sessions[id] = s
 	r.mu.Unlock()
+
+	// Agents using the ACP session-model extension (cursor-agent) advertise
+	// models inline on session/new instead of via a config_option_update
+	// notification. Synthesise that update so the web model picker works
+	// identically for both styles.
+	if synthetic := r.modelConfigUpdate(s); synthetic != nil {
+		buffered = append(buffered, synthetic)
+	}
 
 	// Replay buffered updates onto the snapshot + state. We don't
 	// broadcast here because the client hasn't yet been told about the
@@ -384,16 +465,70 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	r.broadcastEvent(wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
 }
 
+// applySessionModel switches a session's active model using whichever
+// mechanism the agent supports: ACP session/set_model when the agent
+// advertised a models state (cursor-agent), session/set_config_option
+// otherwise (Devin).
+func (r *Router) applySessionModel(ctx context.Context, s *session, model string) error {
+	if s.models != nil {
+		if err := s.adapter.SetModel(ctx, s.NativeID, model); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		s.models.CurrentModelID = model
+		r.mu.Unlock()
+		return nil
+	}
+	_, err := s.adapter.SetConfigOption(ctx, s.NativeID, modelConfigID, model)
+	return err
+}
+
+// modelConfigUpdate synthesises a `config_option_update` session/update from
+// the session's ACP models state. Returns nil when the agent didn't
+// advertise models (Devin pushes real config_option_update events instead).
+func (r *Router) modelConfigUpdate(s *session) json.RawMessage {
+	r.mu.Lock()
+	models := s.models
+	r.mu.Unlock()
+	if models == nil || len(models.AvailableModels) == 0 {
+		return nil
+	}
+	type choice struct {
+		Value       string `json:"value"`
+		Label       string `json:"label"`
+		Description string `json:"description,omitempty"`
+	}
+	choices := make([]choice, len(models.AvailableModels))
+	for i, m := range models.AvailableModels {
+		label := m.Name
+		if label == "" {
+			label = m.ModelID
+		}
+		choices[i] = choice{Value: m.ModelID, Label: label, Description: m.Description}
+	}
+	synthetic, err := json.Marshal(map[string]any{
+		"sessionUpdate": "config_option_update",
+		"configOptions": []map[string]any{{
+			"id":           modelConfigID,
+			"name":         "Model",
+			"type":         "select",
+			"currentValue": models.CurrentModelID,
+			"options":      choices,
+		}},
+	})
+	if err != nil {
+		r.logger.Warn("synthesise model config_option_update", "err", err)
+		return nil
+	}
+	return synthetic
+}
+
 func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 	r.mu.Lock()
 	s, ok := r.sessions[req.SessionID]
 	r.mu.Unlock()
 	if !ok {
 		r.respondErr(env, "not_found", "unknown session")
-		return
-	}
-	if r.devin == nil {
-		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
 		return
 	}
 
@@ -415,7 +550,7 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 			s.cancelCtx = nil
 			r.mu.Unlock()
 		}()
-		stop, err := r.devin.Prompt(ctx, s.NativeID, contentBlocks)
+		stop, err := s.adapter.Prompt(ctx, s.NativeID, contentBlocks)
 		if err != nil {
 			r.respondErr(env, "prompt_failed", err.Error())
 			r.setStatus(s, "idle")
@@ -496,8 +631,8 @@ func (r *Router) handleCancel(env wire.Envelope, req wire.ChatCancelRequest) {
 		r.respondErr(env, "not_found", "unknown session")
 		return
 	}
-	if r.devin != nil {
-		_ = r.devin.Cancel(s.NativeID)
+	if s.adapter != nil {
+		_ = s.adapter.Cancel(s.NativeID)
 	}
 	r.respondOK(env, map[string]bool{"ok": true})
 }
@@ -535,25 +670,28 @@ func (r *Router) handleResolvePermission(env wire.Envelope, req wire.ChatResolve
 	r.respondOK(env, map[string]bool{"ok": true})
 }
 
-// ensureDevin lazily creates and starts the Devin adapter on first use. The
-// adapter's run loop is pinned to r.runCtx so it survives request-level
-// timeouts.
-func (r *Router) ensureDevin() (*devin.Adapter, error) {
+// ensureAgent lazily creates and starts the adapter for one agent id on
+// first use. The adapter's run loop is pinned to r.runCtx so it survives
+// request-level timeouts.
+func (r *Router) ensureAgent(agentID string) (*acpagent.Adapter, error) {
 	r.mu.Lock()
-	if r.devin != nil {
-		a := r.devin
+	if a, ok := r.adapters[agentID]; ok {
 		r.mu.Unlock()
 		return a, nil
 	}
+	builder, ok := r.builders[agentID]
 	r.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("no builder for agent %q", agentID)
+	}
 
-	a, err := r.devinBuilder(devin.Options{
+	a, err := builder(acpagent.Options{
 		Logger: r.logger,
 		OnSessionUpdate: func(sessionID string, update json.RawMessage) {
-			r.handleAgentUpdate(sessionID, update)
+			r.handleAgentUpdate(agentID, sessionID, update)
 		},
 		OnPermissionRequest: func(_ context.Context, sessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
-			return r.handleAgentPermissionRequest(sessionID, params)
+			return r.handleAgentPermissionRequest(agentID, sessionID, params)
 		},
 	})
 	if err != nil {
@@ -564,17 +702,21 @@ func (r *Router) ensureDevin() (*devin.Adapter, error) {
 		return nil, err
 	}
 	r.mu.Lock()
-	r.devin = a
+	r.adapters[agentID] = a
 	r.mu.Unlock()
 	return a, nil
 }
 
-// daemonSessionID maps an ACP-native session id back to our daemon-side id.
-func (r *Router) daemonSessionID(nativeID string) string {
+// earlyKey namespaces buffered pre-registration updates by agent so two
+// agents can never cross-pollinate sessions, even on native-id collision.
+func earlyKey(agentID, nativeID string) string { return agentID + "\x00" + nativeID }
+
+// daemonSessionID maps an agent's native session id back to our daemon-side id.
+func (r *Router) daemonSessionID(agentID, nativeID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, s := range r.sessions {
-		if s.NativeID == nativeID {
+		if s.AgentID == agentID && s.NativeID == nativeID {
 			return s.ID
 		}
 	}
@@ -589,16 +731,16 @@ func (r *Router) daemonSessionID(nativeID string) string {
 // Notifications can arrive while a `chat.create_session` is still in flight
 // (Devin emits configOptions / modes / availableCommands before answering
 // session/new). For those, we don't yet have a daemon session record to
-// route to, so the update is buffered keyed by native session id and
-// drained by handleCreateSession after registration.
-func (r *Router) handleAgentUpdate(nativeSessionID string, update json.RawMessage) {
+// route to, so the update is buffered keyed by agent + native session id
+// and drained by handleCreateSession after registration.
+func (r *Router) handleAgentUpdate(agentID, nativeSessionID string, update json.RawMessage) {
 	r.mu.Lock()
 	var (
 		s        *session
 		daemonID string
 	)
 	for _, sess := range r.sessions {
-		if sess.NativeID == nativeSessionID {
+		if sess.AgentID == agentID && sess.NativeID == nativeSessionID {
 			s = sess
 			daemonID = sess.ID
 			break
@@ -609,7 +751,8 @@ func (r *Router) handleAgentUpdate(nativeSessionID string, update json.RawMessag
 		// drain. We copy the bytes because json.RawMessage from the ACP
 		// decoder is reused across notifications.
 		buf := append([]byte(nil), update...)
-		r.earlyUpdates[nativeSessionID] = append(r.earlyUpdates[nativeSessionID], buf)
+		key := earlyKey(agentID, nativeSessionID)
+		r.earlyUpdates[key] = append(r.earlyUpdates[key], buf)
 		r.mu.Unlock()
 		return
 	}
@@ -660,17 +803,13 @@ func (r *Router) handleSetMode(env wire.Envelope, req wire.ChatSetModeRequest) {
 		r.respondErr(env, "not_found", "unknown session")
 		return
 	}
-	if r.devin == nil {
-		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
-		return
-	}
 	if req.ModeID == "" {
 		r.respondErr(env, "bad_request", "mode_id required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
 	defer cancel()
-	if err := r.devin.SetMode(ctx, s.NativeID, req.ModeID); err != nil {
+	if err := s.adapter.SetMode(ctx, s.NativeID, req.ModeID); err != nil {
 		r.respondErr(env, "agent_set_mode_failed", err.Error())
 		return
 	}
@@ -690,17 +829,35 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 		r.respondErr(env, "not_found", "unknown session")
 		return
 	}
-	if r.devin == nil {
-		r.respondErr(env, "agent_not_started", "devin adapter not initialized")
-		return
-	}
 	if req.ConfigID == "" {
 		r.respondErr(env, "bad_request", "config_id required")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.runCtx, 10*time.Second)
 	defer cancel()
-	configOptions, err := r.devin.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value)
+
+	// Agents on the ACP session-model extension (cursor-agent) have no
+	// config options; the daemon synthesised the "model" option from the
+	// session/new models payload. Map writes to that option back onto
+	// session/set_model and refresh the synthetic snapshot ourselves.
+	if s.models != nil && req.ConfigID == modelConfigID {
+		if err := r.applySessionModel(ctx, s, req.Value); err != nil {
+			r.respondErr(env, "agent_set_config_option_failed", err.Error())
+			return
+		}
+		if synthetic := r.modelConfigUpdate(s); synthetic != nil {
+			seq := s.appendUpdate(synthetic)
+			r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+				SessionID:  s.ID,
+				Update:     synthetic,
+				SequenceID: seq,
+			})
+		}
+		r.respondOK(env, map[string]string{"config_id": req.ConfigID, "value": req.Value})
+		return
+	}
+
+	configOptions, err := s.adapter.SetConfigOption(ctx, s.NativeID, req.ConfigID, req.Value)
 	if err != nil {
 		r.respondErr(env, "agent_set_config_option_failed", err.Error())
 		return
@@ -755,7 +912,24 @@ func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequ
 // modelConfigID is the session-scoped config option id Devin uses for the
 // active model. The web model picker keys off the same id (lower-cased), and
 // guest "ask"-share sessions force the owner-chosen model via this option.
+// For agents on the ACP session-model extension (cursor-agent), the daemon
+// synthesises a config option under the same id from the session/new models
+// payload so the picker works identically.
 const modelConfigID = "model"
+
+// agentDisplayName renders an agent id for human-facing notification text.
+func agentDisplayName(agentID string) string {
+	switch agentID {
+	case AgentDevin:
+		return "Devin"
+	case AgentCursor:
+		return "Cursor"
+	case "":
+		return "The agent"
+	default:
+		return agentID
+	}
+}
 
 // askModeID returns the agent mode id that corresponds to a read-only "ask"
 // mode, or "" if the agent advertises no such mode. Matches by id first
@@ -779,8 +953,8 @@ func askModeID(modes []wire.SessionMode) string {
 // did not grant", without surfacing the prompt to the (powerless) guest.
 var guestDenyDecision = json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`)
 
-func (r *Router) handleAgentPermissionRequest(nativeSessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
-	daemonID := r.daemonSessionID(nativeSessionID)
+func (r *Router) handleAgentPermissionRequest(agentID, nativeSessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
+	daemonID := r.daemonSessionID(agentID, nativeSessionID)
 
 	// Guest (read-only share) sessions never get to approve actions — the
 	// relay won't even forward a resolve_permission from a guest. Auto-deny
@@ -844,6 +1018,7 @@ func (r *Router) setStatus(s *session, status string) {
 	s.Status = status
 	id := s.ID
 	title := s.Title
+	agentID := s.AgentID
 	r.mu.Unlock()
 	r.broadcastEvent(wire.ChatEventSessionStatus, wire.ChatSessionStatusEvent{
 		SessionID: id, Status: status,
@@ -851,7 +1026,7 @@ func (r *Router) setStatus(s *session, status string) {
 	// Push a Web Push when the agent finishes a turn so backgrounded
 	// devices see the result without keeping the tab open.
 	if status == "idle" && (prev == "thinking" || prev == "awaiting_permission") {
-		body := "Devin has finished thinking."
+		body := agentDisplayName(agentID) + " has finished thinking."
 		if title != "" {
 			body = title + " · " + body
 		}

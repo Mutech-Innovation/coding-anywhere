@@ -179,13 +179,13 @@ func run(ctx context.Context, logger *slog.Logger, credPath, relayURLOverride, w
 		workspace = home
 	}
 
-	// chat: AI coding agent conversations (Devin first; Claude Code, Codex,
-	// cursor-agent in v2). The Devin adapter spins up `devin acp` lazily on
-	// first session create. We deliberately do NOT seed defaultCwd with the
-	// files workspace: the files API is happy to roam over $HOME, but Devin
-	// refuses to operate on non-project roots like $HOME, so chat sessions
-	// must be created with an explicit, user-picked cwd (the web modal has
-	// a directory picker for this).
+	// chat: AI coding agent conversations (Devin for Terminal + cursor-agent;
+	// Claude Code, Codex later). Each adapter spins up its CLI (`devin acp`,
+	// `cursor-agent acp`) lazily on first session create. We deliberately do
+	// NOT seed defaultCwd with the files workspace: the files API is happy
+	// to roam over $HOME, but Devin refuses to operate on non-project roots
+	// like $HOME, so chat sessions must be created with an explicit,
+	// user-picked cwd (the web modal has a directory picker for this).
 	cr := chatrouter.New(cli, logger, nil)
 	defer func() {
 		if err := cr.Close(); err != nil {

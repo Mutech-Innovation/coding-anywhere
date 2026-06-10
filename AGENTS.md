@@ -9,7 +9,7 @@ browser dial **outbound** to the relay over WSS.
 ┌───────────────┐      ┌──────────────────┐      ┌──────────────────┐
 │  Client (web) │<─wss─│  Relay (VPS)     │<─wss─│  Dev machine     │
 │  React + Vite │      │  Go: pair/JWT/   │      │  daemon (Go):    │
-│               │      │  route/proxy/push│      │  PTY, Devin ACP, │
+│               │      │  route/proxy/push│      │  PTY, agent ACP, │
 │               │      │  + SQLite state  │      │  files, diff,... │
 └───────────────┘      └──────────────────┘      └──────────────────┘
 ```
@@ -45,8 +45,8 @@ end-to-end setup walkthrough.
 │   ├── pairingclient/         #   REST pairing client used by the daemon
 │   ├── ptymux/                #   PTY multiplexer for terminals
 │   ├── terminalrouter/        #   terminal channel handler (daemon side)
-│   ├── chatrouter/            #   chat channel handler ↔ ACP
-│   ├── agent/devin/           #   Devin ACP subprocess adapter
+│   ├── chatrouter/            #   chat channel handler ↔ ACP (multi-agent routing)
+│   ├── agent/acpagent/        #   generic ACP subprocess adapter (Devin, cursor-agent)
 │   ├── acp/                   #   Agent Client Protocol (JSON-RPC) framing
 │   ├── fileapi/ filesrouter/  #   files API + files channel handler
 │   ├── diffapi/ diffrouter/   #   git diff API + diff channel handler
@@ -227,10 +227,48 @@ controls is cosmetic only.
   - `init` subcommand — interactive pairing (prints a 6-digit code)
 - Channel routers:
   - Terminals: `internal/terminalrouter`
-  - Chat/Devin ACP: `internal/chatrouter`, `internal/agent/devin`, `internal/acp`
+  - Chat/agents (ACP): `internal/chatrouter`, `internal/agent/acpagent`, `internal/acp`
   - Files: `internal/filesrouter`, `internal/fileapi`
   - Git diff: `internal/diffrouter`, `internal/diffapi`
   - Ports/proxy: `internal/portsrouter`, `internal/portsapi`
+
+## Chat agents (Devin + cursor-agent)
+
+The chat channel is multi-agent. `internal/agent/acpagent` is one generic ACP
+stdio adapter; `internal/chatrouter` keeps a `Builders` map (agent id →
+builder) and lazily spawns one adapter per agent on first `create_session`:
+
+- `devin` → `devin acp` (`DefaultDevinBuilder`)
+- `cursor-cli` → `cursor-agent acp` (`DefaultCursorBuilder`)
+
+`chat.agents` reports availability by checking the CLI binary on PATH (only
+under the default wiring; injected test builders are trusted as-is).
+Cursor-specific quirks, all handled inside the daemon:
+
+- **Auth**: cursor's ACP rejects `session/new` until an
+  `authenticate(cursor_login)` call succeeds; the adapter does this during
+  Start when the agent advertises the method. Credentials come from
+  `cursor-agent login` on the daemon machine (run it once, interactively).
+  A stale login can make `authenticate` hang — the adapter bounds the call
+  (30s) and surfaces a "run `cursor-agent login`" hint.
+- **Models**: cursor uses the ACP session-model extension (`models` on
+  `session/new`, `session/set_model`) instead of Devin's config options. The
+  chatrouter synthesises a `config_option_update` (option id `model`) from
+  the models payload and maps `chat.set_config_option` writes on that id
+  back to `session/set_model`, so the web model picker works unchanged.
+- **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
+  force `ask` the same way as Devin (`askModeID`), and guest permission
+  requests are auto-denied for every agent.
+- e2e coverage: `TestChatCursorAgentModels` in
+  `apps/relay/internal/server/chat_e2e_test.go`; adapter-level tests in
+  `internal/agent/acpagent/adapter_test.go`.
+- Live-fire smoke tests against the real binary (need `cursor-agent` on PATH
+  + a completed `cursor-agent login`; excluded from normal runs via the
+  `cursorlive` build tag):
+  `go test -tags cursorlive ./internal/chatrouter/ -run TestLiveCursor -v`
+  (adapter only) and
+  `go test -tags cursorlive ./apps/relay/internal/server/ -run TestLiveCursorFullStack -v`
+  (client → relay → daemon → real cursor-agent).
 
 ## Relay orientation
 

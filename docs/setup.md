@@ -177,8 +177,11 @@ screen. Enter the same relay URL you gave the daemon, the 6-digit code
 the daemon printed, and a label. Click **Pair**. After a successful
 pair you land on the main app with five tabs:
 
-- **Chat** — Devin sessions, with streaming responses, tool-call cards,
-  and inline permission prompts.
+- **Chat** — agent sessions (Devin for Terminal or cursor-agent), with
+  streaming responses, tool-call cards, a model picker, and inline
+  permission prompts. The agent CLI must be installed + authenticated on
+  the daemon machine: `devin` for Devin, `cursor-agent` (run
+  `cursor-agent login` once) for Cursor.
 - **Terminals** — open as many shells as you like, full xterm.js with
   resize, scrollback, multi-session sidebar.
 - **Files** — read-only file tree + CodeMirror viewer.

@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/devin"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/pairingclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
@@ -224,9 +224,9 @@ func TestChatEndToEnd(t *testing.T) {
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
 	mock, stdout, stdin := newChatMockACP(t)
-	cr := chatrouter.New(dc, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdin, stdout, opts), nil
-	}, "/Users/me/app")
+	cr := chatrouter.New(dc, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdin, stdout, opts), nil
+	}}, "/Users/me/app")
 	t.Cleanup(func() { _ = cr.Close() })
 
 	go func() { _ = dc.Run(ctx) }()
@@ -410,9 +410,9 @@ func TestChatHistoryAndSetMode(t *testing.T) {
 		RelayURL: relayURL, AccessToken: dc.AccessToken,
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
-	})
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+	}})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {
@@ -661,10 +661,10 @@ func TestChatAgentsLists(t *testing.T) {
 		RelayURL: relayURL, AccessToken: dc.AccessToken,
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
 		// Never used because chat.agents doesn't actually start the adapter.
 		return nil, nil
-	})
+	}})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {
@@ -770,9 +770,9 @@ func TestChatCreateSessionPendingUpdates(t *testing.T) {
 		RelayURL: relayURL, AccessToken: dc.AccessToken,
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
-	})
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+	}})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {
@@ -905,9 +905,9 @@ func TestChatSetConfigOptionFanOut(t *testing.T) {
 		RelayURL: relayURL, AccessToken: dc.AccessToken,
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
-	})
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+	}})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {
@@ -1031,5 +1031,280 @@ func TestChatSetConfigOptionFanOut(t *testing.T) {
 	if !found {
 		t.Fatalf("config_option_update with new model not in history snapshot; got %d updates",
 			len(hist.Updates))
+	}
+}
+
+// cursorMockACP mimics `cursor-agent acp`: initialize advertises a
+// cursor_login auth method, session/new is rejected until authenticate has
+// been called, models arrive inline on the session/new response (no
+// config_option_update notifications), and model switching goes through
+// session/set_model.
+type cursorMockACP struct {
+	t  *testing.T
+	in *io.PipeReader
+	wr *bufio.Writer
+
+	mu               sync.Mutex
+	writeMu          sync.Mutex
+	authenticated    bool
+	lastAuthMethod   string
+	lastSetModelID   string
+	sawSetConfigCall bool
+}
+
+func (m *cursorMockACP) run() {
+	dec := json.NewDecoder(m.in)
+	for {
+		var msg map[string]any
+		if err := dec.Decode(&msg); err != nil {
+			return
+		}
+		method, _ := msg["method"].(string)
+		idVal := msg["id"]
+		switch method {
+		case "initialize":
+			m.respond(idVal, map[string]any{
+				"protocolVersion":   1,
+				"agentCapabilities": map[string]any{"loadSession": true},
+				"authMethods": []map[string]any{
+					{"id": "cursor_login", "name": "Cursor Login"},
+				},
+			})
+		case "authenticate":
+			params, _ := msg["params"].(map[string]any)
+			m.mu.Lock()
+			m.lastAuthMethod, _ = params["methodId"].(string)
+			m.authenticated = true
+			m.mu.Unlock()
+			m.respond(idVal, map[string]any{})
+		case "session/new":
+			m.mu.Lock()
+			ok := m.authenticated
+			m.mu.Unlock()
+			if !ok {
+				m.respondError(idVal, -32000, "Authentication required")
+				continue
+			}
+			m.respond(idVal, map[string]any{
+				"sessionId": "sess-cursor-1",
+				"modes": map[string]any{
+					"currentModeId": "agent",
+					"availableModes": []map[string]any{
+						{"id": "agent", "name": "Agent"},
+						{"id": "plan", "name": "Plan"},
+						{"id": "ask", "name": "Ask"},
+					},
+				},
+				"models": map[string]any{
+					"currentModelId": "composer-2.5[fast=true]",
+					"availableModels": []map[string]any{
+						{"modelId": "composer-2.5[fast=true]", "name": "composer-2.5"},
+						{"modelId": "gpt-5.5[reasoning=medium]", "name": "gpt-5.5"},
+					},
+				},
+			})
+		case "session/set_model":
+			params, _ := msg["params"].(map[string]any)
+			m.mu.Lock()
+			m.lastSetModelID, _ = params["modelId"].(string)
+			m.mu.Unlock()
+			m.respond(idVal, map[string]any{})
+		case "session/set_config_option":
+			// cursor-agent has no Devin-style config options; the router
+			// must never forward the synthetic "model" option here.
+			m.mu.Lock()
+			m.sawSetConfigCall = true
+			m.mu.Unlock()
+			m.respondError(idVal, -32601, "unknown method")
+		case "session/prompt":
+			m.respond(idVal, map[string]any{"stopReason": "end_turn"})
+		case "session/cancel":
+			// notification, no reply
+		}
+	}
+}
+
+func (m *cursorMockACP) respond(id any, result map[string]any) {
+	m.write(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+func (m *cursorMockACP) respondError(id any, code int, msg string) {
+	m.write(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": msg}})
+}
+
+func (m *cursorMockACP) write(v any) {
+	buf, _ := json.Marshal(v)
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	_, _ = m.wr.Write(buf)
+	_, _ = m.wr.Write([]byte("\n"))
+	_ = m.wr.Flush()
+}
+
+// TestChatCursorAgentModels covers the cursor-agent integration end to end:
+//   - the adapter authenticates with cursor_login during Start,
+//   - the models payload from session/new is synthesised into a
+//     `config_option_update` pending update so the web model picker works,
+//   - chat.set_config_option on the synthetic "model" option maps onto ACP
+//     session/set_model (never session/set_config_option) and re-broadcasts
+//     an updated snapshot.
+func TestChatCursorAgentModels(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	mock := &cursorMockACP{t: t}
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	mock.in = stdinR
+	mock.wr = bufio.NewWriter(stdoutW)
+	go mock.run()
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{
+		chatrouter.AgentCursor: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+			// Mirror DefaultCursorBuilder's auth wiring on the
+			// stream-injected adapter.
+			opts.AuthMethodID = "cursor_login"
+			return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+		},
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clientWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+	awaitResp := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for response %s", id)
+			}
+		}
+	}
+
+	// 1. create_session against the cursor agent.
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "cursor-cli", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res := awaitResp("c-1")
+	if res.Error != nil {
+		t.Fatalf("create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	if createRes.Session.AgentID != "cursor-cli" {
+		t.Fatalf("agent id: %s", createRes.Session.AgentID)
+	}
+	if createRes.CurrentModeID != "agent" || len(createRes.AvailableModes) != 3 {
+		t.Fatalf("modes not surfaced: %+v", createRes)
+	}
+
+	// The adapter must have authenticated before session/new succeeded.
+	mock.mu.Lock()
+	if mock.lastAuthMethod != "cursor_login" {
+		mock.mu.Unlock()
+		t.Fatalf("expected authenticate(cursor_login), got %q", mock.lastAuthMethod)
+	}
+	mock.mu.Unlock()
+
+	// 2. The models payload must surface as a synthetic config_option_update
+	// pending update keyed under "model" so the web picker just works.
+	foundModels := false
+	for _, u := range createRes.PendingUpdates {
+		s := string(u)
+		if strings.Contains(s, "config_option_update") &&
+			strings.Contains(s, `"composer-2.5[fast=true]"`) &&
+			strings.Contains(s, `"gpt-5.5[reasoning=medium]"`) {
+			foundModels = true
+			break
+		}
+	}
+	if !foundModels {
+		t.Fatalf("synthetic model config option not in pending updates: %v",
+			len(createRes.PendingUpdates))
+	}
+
+	// 3. Switching the model goes through session/set_model and
+	// re-broadcasts a refreshed snapshot.
+	sessionID := createRes.Session.ID
+	req, _ = wire.MakeRequest("sc-1", wire.ChannelChat, wire.ChatMethodSetConfigOption,
+		wire.ChatSetConfigOptionRequest{
+			SessionID: sessionID,
+			ConfigID:  "model",
+			Value:     "gpt-5.5[reasoning=medium]",
+		})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("sc-1")
+	if res.Error != nil {
+		t.Fatalf("set_config_option error: %+v", res.Error)
+	}
+	mock.mu.Lock()
+	if mock.lastSetModelID != "gpt-5.5[reasoning=medium]" {
+		mock.mu.Unlock()
+		t.Fatalf("mock saw set_model %q", mock.lastSetModelID)
+	}
+	if mock.sawSetConfigCall {
+		mock.mu.Unlock()
+		t.Fatal("router must not forward set_config_option to a models-style agent")
+	}
+	mock.mu.Unlock()
+
+	// 4. History must replay the refreshed snapshot (currentValue = new
+	// model) so a page reload keeps the user's pick.
+	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: sessionID})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("h-1")
+	var hist wire.ChatGetHistoryResponse
+	if err := json.Unmarshal(res.Payload, &hist); err != nil {
+		t.Fatalf("history payload: %v", err)
+	}
+	found := false
+	for _, u := range hist.Updates {
+		s := string(u)
+		if strings.Contains(s, "config_option_update") &&
+			strings.Contains(s, `"currentValue":"gpt-5.5[reasoning=medium]"`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("refreshed model snapshot not in history; got %d updates", len(hist.Updates))
 	}
 }

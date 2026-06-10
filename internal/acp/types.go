@@ -26,14 +26,14 @@ import "encoding/json"
 const (
 	ProtocolVersion = 1
 
-	MethodInitialize         = "initialize"
-	MethodAuthenticate       = "authenticate"
-	MethodSessionNew         = "session/new"
-	MethodSessionLoad        = "session/load"
-	MethodSessionResume      = "session/resume"
-	MethodSessionPrompt      = "session/prompt"
-	MethodSessionClose       = "session/close"
-	MethodSessionSetMode     = "session/set_mode"
+	MethodInitialize     = "initialize"
+	MethodAuthenticate   = "authenticate"
+	MethodSessionNew     = "session/new"
+	MethodSessionLoad    = "session/load"
+	MethodSessionResume  = "session/resume"
+	MethodSessionPrompt  = "session/prompt"
+	MethodSessionClose   = "session/close"
+	MethodSessionSetMode = "session/set_mode"
 	// MethodSessionSetConfigOption switches a session-scoped config option
 	// (e.g. the active model, max-turn-requests). The agent's response
 	// returns the new full configOptions snapshot in the result body —
@@ -42,6 +42,11 @@ const (
 	// callers must fan the response out themselves to keep snapshots
 	// consistent.
 	MethodSessionSetConfigOption = "session/set_config_option"
+	// MethodSessionSetModel switches the session's active model. Newer ACP
+	// agents (cursor-agent) advertise models via the `models` field on the
+	// session/new response and accept this method; Devin instead models the
+	// active model as a config option (see MethodSessionSetConfigOption).
+	MethodSessionSetModel = "session/set_model"
 
 	NotificationSessionUpdate = "session/update"
 	NotificationSessionCancel = "session/cancel"
@@ -120,9 +125,9 @@ type MCPCapabilities struct {
 // agents (Devin) include extra fields like `list` and `additionalDirectories`
 // that we don't model strictly; json.RawMessage round-trips them.
 type SessionCapabilities struct {
-	Resume               *struct{}       `json:"resume,omitempty"`
-	Close                *struct{}       `json:"close,omitempty"`
-	List                 json.RawMessage `json:"list,omitempty"`
+	Resume                *struct{}       `json:"resume,omitempty"`
+	Close                 *struct{}       `json:"close,omitempty"`
+	List                  json.RawMessage `json:"list,omitempty"`
 	AdditionalDirectories json.RawMessage `json:"additionalDirectories,omitempty"`
 }
 
@@ -153,8 +158,9 @@ type KV struct {
 
 // SessionNewResponse returns the new session id.
 type SessionNewResponse struct {
-	SessionID string            `json:"sessionId"`
-	Modes     *SessionModeState `json:"modes,omitempty"`
+	SessionID string             `json:"sessionId"`
+	Modes     *SessionModeState  `json:"modes,omitempty"`
+	Models    *SessionModelState `json:"models,omitempty"`
 }
 
 // SessionMode is one mode the agent can operate in (e.g. "ask", "code").
@@ -170,10 +176,38 @@ type SessionModeState struct {
 	AvailableModes []SessionMode `json:"availableModes"`
 }
 
+// SessionModel is one model the agent can run a session on. Part of the ACP
+// session-model extension used by cursor-agent (Devin uses config options
+// instead).
+type SessionModel struct {
+	ModelID     string `json:"modelId"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// SessionModelState is the models payload on a session/new response.
+type SessionModelState struct {
+	CurrentModelID  string         `json:"currentModelId"`
+	AvailableModels []SessionModel `json:"availableModels"`
+}
+
 // SessionSetModeRequest switches the active mode for a session.
 type SessionSetModeRequest struct {
 	SessionID string `json:"sessionId"`
 	ModeID    string `json:"modeId"`
+}
+
+// SessionSetModelRequest switches the active model for a session (ACP
+// `session/set_model`).
+type SessionSetModelRequest struct {
+	SessionID string `json:"sessionId"`
+	ModelID   string `json:"modelId"`
+}
+
+// AuthenticateRequest asks the agent to authenticate with one of the methods
+// it advertised at initialize (e.g. cursor-agent's "cursor_login").
+type AuthenticateRequest struct {
+	MethodID string `json:"methodId"`
 }
 
 // SessionSetConfigOptionRequest changes one session-scoped config option

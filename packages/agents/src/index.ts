@@ -88,13 +88,13 @@ export const AGENTS: Record<AgentId, AgentDescriptor> = {
     accent: '#a855f7',
     priority: 3,
     capabilities: {
-      acp: false,
+      acp: true,
       headlessPrint: true,
       resumeBySessionId: true,
-      slashCommands: false,
-      mcp: false,
+      slashCommands: true,
+      mcp: true,
     },
-    available: false,
+    available: true,
   },
 };
 

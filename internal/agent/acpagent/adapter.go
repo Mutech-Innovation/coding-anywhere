@@ -1,13 +1,15 @@
-// Package devin is the daemon's adapter for Devin for Terminal.
+// Package acpagent is the daemon's generic adapter for ACP-speaking coding
+// agents (Devin for Terminal, cursor-agent, ...).
 //
-// It owns a `devin acp` subprocess (or an injected stdio pair, for tests),
-// runs the ACP client against it, performs the initialize handshake, and
-// exposes a small high-level surface (NewSession / Prompt / Cancel) plus a
-// notification stream for session/update events.
+// It owns an agent subprocess (e.g. `devin acp`, `cursor-agent acp`) or an
+// injected stdio pair (for tests), runs the ACP client against it, performs
+// the initialize (+ optional authenticate) handshake, and exposes a small
+// high-level surface (NewSession / Prompt / Cancel / SetMode / SetModel /
+// SetConfigOption) plus a notification stream for session/update events.
 //
-// Higher-level concerns (chat-channel routing, slash command emulation,
-// MCP plumbing) live in callers.
-package devin
+// Higher-level concerns (chat-channel routing, per-agent model plumbing,
+// MCP wiring) live in callers — see internal/chatrouter.
+package acpagent
 
 import (
 	"bufio"
@@ -20,10 +22,16 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/acp"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/version"
 )
+
+// authenticateTimeout bounds the post-initialize authenticate call. A
+// healthy logged-in agent answers near-instantly; a stale login can hang
+// the call forever, which would otherwise wedge the first create_session.
+const authenticateTimeout = 30 * time.Second
 
 // Options configure the adapter.
 type Options struct {
@@ -43,6 +51,31 @@ type Options struct {
 	// ClientName / ClientTitle are advertised in the initialize handshake.
 	ClientName  string
 	ClientTitle string
+
+	// LogName labels subprocess stderr lines in the daemon log (e.g.
+	// "devin acp", "cursor-agent acp"). Defaults to "acp agent".
+	LogName string
+
+	// AuthMethodID, when non-empty, makes Start call `authenticate` with
+	// this method id right after initialize — but only if the agent
+	// advertised the method in its initialize response. cursor-agent
+	// requires this (`cursor_login`) even when `cursor-agent login` has
+	// already stored credentials; Devin needs no authenticate call.
+	AuthMethodID string
+
+	// AuthHint is appended to authenticate errors to tell the operator how
+	// to fix credentials (e.g. "run `cursor-agent login` on this machine").
+	AuthHint string
+}
+
+// NewSessionResult carries everything the agent returned from session/new.
+type NewSessionResult struct {
+	SessionID string
+	// Modes the agent advertised (nil if the agent has no mode concept).
+	Modes *acp.SessionModeState
+	// Models the agent advertised (nil for agents that surface model
+	// selection via config options instead, like Devin).
+	Models *acp.SessionModelState
 }
 
 // Adapter wraps the ACP client + subprocess lifecycle.
@@ -94,6 +127,9 @@ func newAdapter(opts Options) *Adapter {
 	}
 	if opts.ClientTitle == "" {
 		opts.ClientTitle = "Coding Anywhere"
+	}
+	if opts.LogName == "" {
+		opts.LogName = "acp agent"
 	}
 	return &Adapter{logger: opts.Logger, opts: opts, runDone: make(chan error, 1)}
 }
@@ -171,6 +207,47 @@ func (a *Adapter) start(ctx context.Context) error {
 		"agent_version", initRes.AgentInfo.Version,
 		"protocol_version", initRes.ProtocolVersion,
 	)
+
+	if err := a.authenticate(ctx, initRes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// authenticate performs the optional post-initialize authenticate call when
+// the adapter is configured with an AuthMethodID the agent advertises.
+// cursor-agent rejects session/new with "Authentication required" until this
+// runs, even when CLI credentials are already on disk.
+func (a *Adapter) authenticate(ctx context.Context, initRes acp.InitializeResponse) error {
+	if a.opts.AuthMethodID == "" {
+		return nil
+	}
+	advertised := false
+	for _, m := range initRes.AuthMethods {
+		if m.ID == a.opts.AuthMethodID {
+			advertised = true
+			break
+		}
+	}
+	if !advertised {
+		a.logger.Debug("agent does not advertise auth method; skipping authenticate",
+			"method", a.opts.AuthMethodID)
+		return nil
+	}
+	// A stale CLI login can make authenticate hang forever instead of
+	// erroring; bound it so the first create_session fails with a useful
+	// message instead of wedging.
+	authCtx, cancel := context.WithTimeout(ctx, authenticateTimeout)
+	defer cancel()
+	if err := a.cli.Call(authCtx, acp.MethodAuthenticate, acp.AuthenticateRequest{
+		MethodID: a.opts.AuthMethodID,
+	}, nil); err != nil {
+		if a.opts.AuthHint != "" {
+			return fmt.Errorf("authenticate (%s): %w — %s", a.opts.AuthMethodID, err, a.opts.AuthHint)
+		}
+		return fmt.Errorf("authenticate (%s): %w", a.opts.AuthMethodID, err)
+	}
+	a.logger.Info("acp authenticated", "method", a.opts.AuthMethodID)
 	return nil
 }
 
@@ -195,11 +272,11 @@ func (a *Adapter) Capabilities() acp.AgentCapabilities {
 	return a.initRes.AgentCapabilities
 }
 
-// NewSession creates a new conversation in `cwd` and returns the session
-// id along with the modes the agent advertised (may be nil).
-func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServer) (string, *acp.SessionModeState, error) {
+// NewSession creates a new conversation in `cwd` and returns the session id
+// along with the modes and models the agent advertised (either may be nil).
+func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServer) (NewSessionResult, error) {
 	if err := a.Start(ctx); err != nil {
-		return "", nil, err
+		return NewSessionResult{}, err
 	}
 	if mcp == nil {
 		// ACP requires `mcpServers` to be present; an explicit empty slice
@@ -211,9 +288,9 @@ func (a *Adapter) NewSession(ctx context.Context, cwd string, mcp []acp.MCPServe
 		Cwd:        cwd,
 		MCPServers: mcp,
 	}, &res); err != nil {
-		return "", nil, err
+		return NewSessionResult{}, err
 	}
-	return res.SessionID, res.Modes, nil
+	return NewSessionResult{SessionID: res.SessionID, Modes: res.Modes, Models: res.Models}, nil
 }
 
 // SetMode forwards an ACP `session/set_mode` request to the agent.
@@ -221,6 +298,15 @@ func (a *Adapter) SetMode(ctx context.Context, sessionID, modeID string) error {
 	return a.cli.Call(ctx, acp.MethodSessionSetMode, acp.SessionSetModeRequest{
 		SessionID: sessionID,
 		ModeID:    modeID,
+	}, nil)
+}
+
+// SetModel forwards an ACP `session/set_model` request, switching the
+// session's active model (cursor-agent style; Devin uses SetConfigOption).
+func (a *Adapter) SetModel(ctx context.Context, sessionID, modelID string) error {
+	return a.cli.Call(ctx, acp.MethodSessionSetModel, acp.SessionSetModelRequest{
+		SessionID: sessionID,
+		ModelID:   modelID,
 	}, nil)
 }
 
@@ -357,16 +443,13 @@ func (a *Adapter) onRequest(ctx context.Context, method string, params json.RawM
 // capability the caller requires (e.g. loadSession).
 var ErrUnsupported = errors.New("agent does not support this capability")
 
-// DefaultBinary returns the default `devin acp` invocation.
-func DefaultBinary() *exec.Cmd { return exec.Command("devin", "acp") }
-
-// pumpStderr reads the devin acp subprocess stderr line by line and forwards
+// pumpStderr reads the agent subprocess stderr line by line and forwards
 // each line to the daemon logger at a severity inferred from the log prefix.
-// We deliberately keep this simple — devin's logs are already structured but
+// We deliberately keep this simple — agent logs are already structured but
 // not in slog format, so we just preserve them as-is under a "line" key.
 func (a *Adapter) pumpStderr(r io.Reader) {
 	scanner := bufio.NewScanner(r)
-	// devin acp can emit fairly long single-line tracebacks; bump the
+	// Agents can emit fairly long single-line tracebacks; bump the
 	// buffer so we don't truncate them.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -376,14 +459,14 @@ func (a *Adapter) pumpStderr(r io.Reader) {
 		}
 		switch {
 		case strings.Contains(line, " ERROR "):
-			a.logger.Error("devin acp", "line", line)
+			a.logger.Error(a.opts.LogName, "line", line)
 		case strings.Contains(line, " WARN "):
-			a.logger.Warn("devin acp", "line", line)
+			a.logger.Warn(a.opts.LogName, "line", line)
 		default:
-			a.logger.Debug("devin acp", "line", line)
+			a.logger.Debug(a.opts.LogName, "line", line)
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		a.logger.Debug("devin acp stderr ended", "err", err)
+		a.logger.Debug(a.opts.LogName+" stderr ended", "err", err)
 	}
 }

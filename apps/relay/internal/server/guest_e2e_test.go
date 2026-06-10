@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/devin"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/pairingclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
@@ -65,9 +65,9 @@ func TestGuestAskShareEndToEnd(t *testing.T) {
 		RelayURL: relayURL, AccessToken: dc.AccessToken,
 		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
 	}, logger)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdinW, stdoutR, opts), nil
-	})
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdinW, stdoutR, opts), nil
+	}})
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {
@@ -189,9 +189,9 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 	// blocks until it sees a decision — so if the daemon did NOT auto-deny,
 	// the prompt would hang and the test would time out.
 	_, stdout, stdin := newChatMockACP(t)
-	cr := chatrouter.New(dcli, logger, func(opts devin.Options) (*devin.Adapter, error) {
-		return devin.NewWithStreams(stdin, stdout, opts), nil
-	}, "/tmp")
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdin, stdout, opts), nil
+	}}, "/tmp")
 	t.Cleanup(func() { _ = cr.Close() })
 	go func() { _ = dcli.Run(ctx) }()
 	if err := dcli.WaitConnected(ctx); err != nil {

@@ -126,7 +126,7 @@ export function ChatPanel() {
       >
         <Group justify="space-between">
           <Text fw={600}>Sessions</Text>
-          <Tooltip label="Start a new session with Devin">
+          <Tooltip label="Start a new agent session">
             <ActionIcon
               variant="filled"
               color="brand"
@@ -219,7 +219,7 @@ export function ChatPanel() {
         ) : (
           <Stack gap="xs" align="center" justify="center" style={{ flex: 1 }}>
             <IconMessageCircle size={32} stroke={1.4} color="var(--mantine-color-dimmed)" />
-            <Text c="dimmed">Pick a session or start a new one to chat with Devin.</Text>
+            <Text c="dimmed">Pick a session or start a new one to chat with your agent.</Text>
           </Stack>
         )}
       </Box>
@@ -232,13 +232,21 @@ export function ChatPanel() {
 function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const create = useChat((s) => s.createSession);
   const agents = useChat((s) => s.agents);
+  const [agentId, setAgentId] = useState('devin');
   const [cwd, setCwd] = useState('');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const devin = agents.find((a) => a.id === 'devin');
-  const devinAvailable = devin?.available ?? true;
+  // The daemon's chat.agents response is authoritative for what is actually
+  // wired up + installed over there. Until it arrives, fall back to Devin.
+  const availableAgents = useMemo(() => agents.filter((a) => a.available), [agents]);
+  useEffect(() => {
+    if (availableAgents.length === 0) return;
+    if (!availableAgents.some((a) => a.id === agentId)) {
+      setAgentId(availableAgents[0]!.id);
+    }
+  }, [availableAgents, agentId]);
 
   async function onSubmit() {
     setError(null);
@@ -246,7 +254,7 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
     try {
       await create({
         cwd: cwd.trim() || undefined,
-        agentId: 'devin',
+        agentId,
         title: title.trim() || undefined,
       });
       onClose();
@@ -258,11 +266,18 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Start a Devin session" centered size="lg">
+    <Modal opened={opened} onClose={onClose} title="Start a session" centered size="lg">
       <Stack gap="md">
+        {availableAgents.length > 1 ? (
+          <SegmentedControl
+            value={agentId}
+            onChange={setAgentId}
+            data={availableAgents.map((a) => ({ value: a.id, label: a.name }))}
+          />
+        ) : null}
         <TextInput
           label="Working directory"
-          description="Required. Pick a project directory below — Devin refuses to operate on broad roots like $HOME."
+          description="Required. Pick a project directory below — agents refuse to operate on broad roots like $HOME."
           placeholder="Select a directory"
           value={cwd}
           onChange={(e) => setCwd(e.currentTarget.value)}
@@ -274,10 +289,10 @@ function CreateSessionModal({ opened, onClose }: { opened: boolean; onClose: () 
           value={title}
           onChange={(e) => setTitle(e.currentTarget.value)}
         />
-        {!devinAvailable ? (
+        {agents.length > 0 && availableAgents.length === 0 ? (
           <Alert color="yellow" variant="light" radius="md">
-            Devin reports as unavailable on this daemon. The CLI may not be installed or
-            authenticated.
+            No agents are available on this daemon. Install and authenticate a CLI (devin or
+            cursor-agent) on that machine.
           </Alert>
         ) : null}
         {error ? (
@@ -591,9 +606,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
             />
           ) : null}
           {status === 'awaiting_permission' ? (
-            <Tooltip
-              label={'智能体在等待授权 — 请在下方"需要授权"卡片里点允许或拒绝'}
-            >
+            <Tooltip label={'智能体在等待授权 — 请在下方"需要授权"卡片里点允许或拒绝'}>
               <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
                 {status}
               </Badge>
@@ -647,9 +660,7 @@ function ChatView({ sessionId }: { sessionId: string }) {
               <PermissionCard
                 key={p.requestId}
                 params={p.params}
-                onResolve={(decision) =>
-                  void resolvePermission(sessionId, p.requestId, decision)
-                }
+                onResolve={(decision) => void resolvePermission(sessionId, p.requestId, decision)}
               />
             ))}
           </Stack>
@@ -879,8 +890,7 @@ function ModelPicker({
       (option.options ?? []).flatMap((raw) => {
         const value = stringValue(raw.value);
         if (!value) return [];
-        const label =
-          stringValue(raw.label) ?? stringValue(raw.name) ?? value;
+        const label = stringValue(raw.label) ?? stringValue(raw.name) ?? value;
         return [
           {
             value,
@@ -911,8 +921,7 @@ function ModelPicker({
     const lower = filter.trim().toLowerCase();
     if (!lower) return [];
     return choices.filter(
-      (c) =>
-        c.label.toLowerCase().includes(lower) || c.value.toLowerCase().includes(lower),
+      (c) => c.label.toLowerCase().includes(lower) || c.value.toLowerCase().includes(lower),
     );
   }, [choices, filter]);
 
@@ -922,7 +931,7 @@ function ModelPicker({
   const isSearching = filter.trim().length > 0;
   const drilled =
     !isSearching && selectedFamily
-      ? families.find((g) => g.family === selectedFamily) ?? null
+      ? (families.find((g) => g.family === selectedFamily) ?? null)
       : null;
 
   // Reset the drill-in + filter whenever the popover closes so reopening
@@ -949,10 +958,7 @@ function ModelPicker({
       offset={6}
     >
       <Popover.Target>
-        <UnstyledButton
-          onClick={() => setOpened((o) => !o)}
-          aria-label="Switch model"
-        >
+        <UnstyledButton onClick={() => setOpened((o) => !o)} aria-label="Switch model">
           <Tooltip label="Click to switch model" disabled={opened}>
             <Badge
               color="violet"
@@ -1095,9 +1101,7 @@ function ModelRow({
       w="100%"
       style={{
         borderRadius: 4,
-        background: active
-          ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
-          : 'transparent',
+        background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
       }}
     >
       <Group gap="xs" justify="space-between" wrap="nowrap">
@@ -1242,11 +1246,7 @@ function CommandInput({
       {attachments.length > 0 ? (
         <Group gap="xs" wrap="wrap">
           {attachments.map((att, idx) => (
-            <AttachmentPreview
-              key={idx}
-              attachment={att}
-              onRemove={() => removeAttachment(idx)}
-            />
+            <AttachmentPreview key={idx} attachment={att} onRemove={() => removeAttachment(idx)} />
           ))}
         </Group>
       ) : null}
@@ -1311,11 +1311,7 @@ function CommandInput({
           onKeyDown={(e) => {
             // Skip Enter handling while an IME is composing — that Enter
             // belongs to the candidate picker, not us.
-            if (
-              composingRef.current ||
-              e.nativeEvent.isComposing ||
-              e.keyCode === 229
-            ) {
+            if (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229) {
               return;
             }
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -1326,12 +1322,7 @@ function CommandInput({
         />
         <Group gap="xs" mt={6} wrap="nowrap" align="center">
           {/* Left: upload + model + context */}
-          <ActionIcon
-            component="label"
-            variant="subtle"
-            size="md"
-            aria-label="Attach files"
-          >
+          <ActionIcon component="label" variant="subtle" size="md" aria-label="Attach files">
             <IconUpload size={16} />
             <input
               type="file"
@@ -1341,9 +1332,7 @@ function CommandInput({
               onChange={(e) => void handleFileSelect(e.target.files)}
             />
           </ActionIcon>
-          {modelOption ? (
-            <ModelPicker option={modelOption} onChange={onModelChange} />
-          ) : null}
+          {modelOption ? <ModelPicker option={modelOption} onChange={onModelChange} /> : null}
           {usage ? <UsagePill usage={usage} /> : null}
           <Box style={{ flex: 1 }} />
           {/* Right: send / stop morph. Idle → send; thinking or
@@ -1412,7 +1401,9 @@ function AttachmentPreview({
 }) {
   const isImage = attachment.type === 'image';
   const dataUrl =
-    isImage && attachment.data ? `data:${attachment.mime_type ?? 'image/png'};base64,${attachment.data}` : null;
+    isImage && attachment.data
+      ? `data:${attachment.mime_type ?? 'image/png'};base64,${attachment.data}`
+      : null;
   return (
     <Paper withBorder radius="md" p={4} pr="xs">
       <Group gap="xs" wrap="nowrap">
@@ -1568,7 +1559,10 @@ function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 's
                   {block.language}
                 </Text>
               ) : null}
-              <Code block style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}>
+              <Code
+                block
+                style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}
+              >
                 {block.text}
               </Code>
             </Box>
@@ -2040,12 +2034,7 @@ function ToolContentBlockView({ block }: { block: ToolCallContentBlock }) {
  * back to a neutral grey button so future agents (or non-Devin agents) keep
  * working without UI changes.
  */
-type AcpOptionKind =
-  | 'allow_once'
-  | 'allow_always'
-  | 'reject_once'
-  | 'reject_always'
-  | string;
+type AcpOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | string;
 
 interface AcpOption {
   optionId: string;

@@ -12,9 +12,9 @@
 Priority order for agent integrations:
 
 1. **Devin for Terminal** — first-class, ACP-native, available today.
-2. Claude Code — adapter in v2.
-3. Codex — adapter in v2.
-4. cursor-agent — adapter in v2.
+2. **cursor-agent** — ACP-native (`cursor-agent acp`), available today.
+3. Claude Code — adapter in v2.
+4. Codex — adapter in v2.
 
 ## What you get
 
@@ -23,9 +23,9 @@ Priority order for agent integrations:
   you're paired forever (with refresh-token rotation in the background).
 - **A live shell in your browser.** xterm.js bound to a real PTY, full
   resize, scrollback replay, multi-session sidebar.
-- **A real Devin in your browser.** `devin acp` driven through the
-  Agent Client Protocol, with streaming responses, tool-call cards, and
-  inline permission prompts.
+- **A real agent in your browser.** `devin acp` or `cursor-agent acp`
+  driven through the Agent Client Protocol, with streaming responses,
+  tool-call cards, model picker, and inline permission prompts.
 - **Files + diff.** Navigate the workspace, read files (CodeMirror 6),
   inspect HEAD-vs-working-tree changes side-by-side.
 - **Localhost preview.** Detect listening ports, click "Open" to view
@@ -57,7 +57,7 @@ For a deeper dive see [docs/architecture.md](docs/architecture.md).
 ```
 coding-anywhere/
 ├── apps/
-│   ├── daemon/      Go: runs on the dev machine (subprocess of `devin acp`)
+│   ├── daemon/      Go: runs on the dev machine (spawns `devin acp` / `cursor-agent acp`)
 │   ├── relay/       Go: deploy via docker-compose to a small VPS
 │   ├── web/         React + Vite + Mantine + CodeMirror 6 + xterm.js
 │   └── mobile/      [v3] React Native (Expo), reuses packages/*
@@ -67,7 +67,7 @@ coding-anywhere/
 │   ├── tokens/      design tokens (Mantine + NativeWind)
 │   ├── agents/      per-agent metadata (Devin, Claude Code, ...)
 │   └── utils/       shared utilities (ulid, errors)
-├── internal/        Go packages: wire / acp / agent/devin / chatrouter /
+├── internal/        Go packages: wire / acp / agent/acpagent / chatrouter /
 │                    terminalrouter / ptymux / fileapi / filesrouter /
 │                    diffapi / diffrouter / portsapi / portsrouter /
 │                    relayclient / pairingclient / auth / version
@@ -122,7 +122,8 @@ Linux, web client paired in your browser — see
 | P7    | VAPID Web Push when agent turns finish                                | ✅     |
 | P8    | docs / launchd / systemd / docker-compose smoke                       | ✅     |
 | P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot | ✅     |
-| v2    | Claude Code / Codex / cursor-agent adapters                           | future |
+| v2    | cursor-agent adapter (`cursor-agent acp`, auth + model mapping)       | ✅     |
+| v2    | Claude Code / Codex adapters                                          | future |
 | v3    | React Native iOS + Android sharing `packages/*`                       | future |
 
 ## License

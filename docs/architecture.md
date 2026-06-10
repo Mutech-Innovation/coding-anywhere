@@ -2,7 +2,7 @@
 
 Coding Anywhere is a remote-control plane for a developer's local machine.
 It exposes the dev machine's terminals, AI coding agents (Devin for
-Terminal first; Claude Code / Codex / cursor-agent in v2), files, git
+Terminal and cursor-agent today; Claude Code / Codex later), files, git
 diff, and listening localhost ports to a paired browser (and, in v3, a
 React Native mobile app) — without opening any inbound port on the dev
 machine.
@@ -21,8 +21,9 @@ machine.
 ```
 
 - **Daemon** runs on the dev machine, dials the relay outbound over WSS.
-  It owns: PTY multiplexer, ACP subprocess (`devin acp`), files API,
-  diff API, ports detection, push emission.
+  It owns: PTY multiplexer, ACP agent subprocesses (`devin acp`,
+  `cursor-agent acp`), files API, diff API, ports detection, push
+  emission.
 - **Relay** is a small Go service deployed via docker-compose to a VPS.
   It pairs devices, signs JWTs, persists per-account state in sqlite,
   routes envelopes between daemon ↔ clients, proxies HTTP traffic to
@@ -52,15 +53,15 @@ for a specific response synchronously.
 All envelopes carry a `channel` string. Each channel has its own typed
 payload definitions, mirrored on both sides of the wire.
 
-| Channel         | Methods (req)                                                                                          | Events                                                                                                       | Sources                                      |
-| --------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
-| `meta`          | `ping`                                                                                                 | `pong` (as `res`)                                                                                            | relay self-handles                           |
-| `terminal`      | `open`, `list`, `attach`, `detach`, `input`, `resize`, `close`                                         | `opened`, `closed`, `data`, `exit`                                                                           | daemon `terminalrouter` ↔ `ptymux`           |
-| `chat`          | `agents`, `list_sessions`, `create_session`, `prompt`, `cancel`, `close_session`, `resolve_permission` | `session_created`, `session_closed`, `session_status`, `update`, `permission_request`, `permission_resolved` | daemon `chatrouter` ↔ ACP (`devin acp`)      |
-| `files`         | `list_workspace`, `list`, `read`, `stat`                                                               | —                                                                                                            | daemon `filesrouter` ↔ `fileapi`             |
-| `git`           | `list_changes`, `versions`                                                                             | —                                                                                                            | daemon `diffrouter` ↔ `diffapi` (git CLI)    |
-| `ports`         | `list`, `fetch`                                                                                        | —                                                                                                            | daemon `portsrouter` ↔ `portsapi` (gopsutil) |
-| `notifications` | —                                                                                                      | `send`                                                                                                       | daemon emits → relay dispatches via Web Push |
+| Channel         | Methods (req)                                                                                          | Events                                                                                                       | Sources                                                     |
+| --------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| `meta`          | `ping`                                                                                                 | `pong` (as `res`)                                                                                            | relay self-handles                                          |
+| `terminal`      | `open`, `list`, `attach`, `detach`, `input`, `resize`, `close`                                         | `opened`, `closed`, `data`, `exit`                                                                           | daemon `terminalrouter` ↔ `ptymux`                          |
+| `chat`          | `agents`, `list_sessions`, `create_session`, `prompt`, `cancel`, `close_session`, `resolve_permission` | `session_created`, `session_closed`, `session_status`, `update`, `permission_request`, `permission_resolved` | daemon `chatrouter` ↔ ACP (`devin acp`, `cursor-agent acp`) |
+| `files`         | `list_workspace`, `list`, `read`, `stat`                                                               | —                                                                                                            | daemon `filesrouter` ↔ `fileapi`                            |
+| `git`           | `list_changes`, `versions`                                                                             | —                                                                                                            | daemon `diffrouter` ↔ `diffapi` (git CLI)                   |
+| `ports`         | `list`, `fetch`                                                                                        | —                                                                                                            | daemon `portsrouter` ↔ `portsapi` (gopsutil)                |
+| `notifications` | —                                                                                                      | `send`                                                                                                       | daemon emits → relay dispatches via Web Push                |
 
 ## Authentication
 
@@ -91,18 +92,32 @@ The daemon stores credentials at
 keeps the credential bundle in `localStorage` under
 `coding-anywhere/credentials`.
 
-## Devin / ACP
+## Agents / ACP
 
-We integrate Devin via the [Agent Client Protocol]
-(https://agentclientprotocol.com): JSON-RPC 2.0 over the stdio of a
-`devin acp` subprocess. The daemon's adapter
-(`internal/agent/devin.Adapter`) handles the initialize handshake,
-`session/new`, `session/prompt`, `session/cancel`, plus the agent-driven
-`session/update` notifications and `session/request_permission`
-requests. We deliberately do **not** advertise `fs.readTextFile` /
-`fs.writeTextFile` capabilities yet — Devin would call back via `fs/*`
-and we'd need to forward those to the user. P5's file browser sets the
-stage; flipping the capability flag is a small follow-up.
+We integrate coding agents via the [Agent Client Protocol]
+(https://agentclientprotocol.com): JSON-RPC 2.0 over the stdio of an
+agent subprocess (`devin acp`, `cursor-agent acp`). The daemon's generic
+adapter (`internal/agent/acpagent.Adapter`) handles the initialize
+handshake (plus an optional `authenticate` call — cursor-agent requires
+`authenticate(cursor_login)` before `session/new`, with credentials from
+`cursor-agent login`), `session/new`, `session/prompt`,
+`session/cancel`, plus the agent-driven `session/update` notifications
+and `session/request_permission` requests. Per-agent wiring (command,
+auth method) lives in the chatrouter's builders
+(`DefaultDevinBuilder`, `DefaultCursorBuilder`). We deliberately do
+**not** advertise `fs.readTextFile` / `fs.writeTextFile` capabilities
+yet — agents would call back via `fs/*` and we'd need to forward those
+to the user. P5's file browser sets the stage; flipping the capability
+flag is a small follow-up.
+
+Model selection differs per agent: Devin exposes the active model as a
+session config option (`config_option_update` notifications +
+`session/set_config_option`), while cursor-agent uses the ACP
+session-model extension (a `models` payload on `session/new` +
+`session/set_model`). The chatrouter normalises the latter into a
+synthetic `config_option_update` under the same `model` id — and maps
+`chat.set_config_option` writes on it back onto `session/set_model` —
+so the web model picker works identically for both.
 
 The `chatrouter` translates between channel envelopes and the adapter:
 ACP `session/update` payloads are forwarded verbatim as `chat.update`
@@ -153,8 +168,9 @@ out to every active subscription on the account.
 - `internal/relayclient`: mock-WS round trip + reconnect.
 - `internal/ptymux`: real shell tests (echo command, stty resize,
   scrollback replay).
-- `internal/acp`, `internal/agent/devin`: ACP framing + adapter against
-  an in-process mock ACP server.
+- `internal/acp`, `internal/agent/acpagent`: ACP framing + adapter
+  against an in-process mock ACP server (incl. the cursor-style
+  authenticate handshake and session-model extension).
 - `apps/relay/internal/server`: every channel has at least one
   end-to-end test that drives a paired daemon + a raw client through
   the relay (`TestTerminalEndToEnd`, `TestChatEndToEnd`,

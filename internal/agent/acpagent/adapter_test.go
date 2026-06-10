@@ -1,4 +1,4 @@
-package devin_test
+package acpagent_test
 
 import (
 	"bufio"
@@ -11,51 +11,62 @@ import (
 	"time"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/acp"
-	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/devin"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
 )
 
-// mockACPServer is a minimal in-process ACP peer used as a Devin stand-in.
+// mockACPServer is a minimal in-process ACP peer used as an agent stand-in.
 // It reads JSON-RPC frames from its stdin, replies to initialize and
 // session/* methods, and exposes hooks for tests to push notifications.
 type mockACPServer struct {
 	t      *testing.T
-	in     *io.PipeReader  // server reads from here
-	out    *io.PipeWriter  // server writes here
+	in     *io.PipeReader // server reads from here
+	out    *io.PipeWriter // server writes here
 	writer *bufio.Writer
 	wMu    sync.Mutex
 
 	mu sync.Mutex
 	// Last params seen for assertions.
-	lastInit   *acp.InitializeRequest
-	lastNewCwd string
-	lastPrompt []acp.ContentBlock
-	lastCancel string
+	lastInit    *acp.InitializeRequest
+	lastNewCwd  string
+	lastPrompt  []acp.ContentBlock
+	lastCancel  string
 	lastSetMode struct {
 		sessionID string
 		modeID    string
+	}
+	lastSetModel struct {
+		sessionID string
+		modelID   string
 	}
 	lastSetConfigOption struct {
 		sessionID string
 		configID  string
 		value     string
 	}
-	cancelCh   chan struct{}
-	promptResp string
-	// modesOnNew is returned in the session/new response when set.
-	modesOnNew *acp.SessionModeState
+	lastAuthMethod string
+	cancelCh       chan struct{}
+	promptResp     string
+	// modesOnNew / modelsOnNew are returned in the session/new response when set.
+	modesOnNew  *acp.SessionModeState
+	modelsOnNew *acp.SessionModelState
+	// authMethods advertised at initialize; requireAuth rejects session/new
+	// until authenticate has been called (mimics cursor-agent).
+	authMethods   []map[string]any
+	requireAuth   bool
+	authenticated bool
 }
 
 func newMockACPServer(t *testing.T) (*mockACPServer, *io.PipeReader, *io.PipeWriter) {
 	t.Helper()
 	// adapter side: stdin = adapter writes to server, stdout = adapter reads from server
-	adapterStdinR, adapterStdinW := io.Pipe()  // adapter→server
+	adapterStdinR, adapterStdinW := io.Pipe()   // adapter→server
 	adapterStdoutR, adapterStdoutW := io.Pipe() // server→adapter
 	srv := &mockACPServer{
-		t:        t,
-		in:       adapterStdinR,
-		out:      adapterStdoutW,
-		writer:   bufio.NewWriter(adapterStdoutW),
-		cancelCh: make(chan struct{}, 4),
+		t:          t,
+		in:         adapterStdinR,
+		out:        adapterStdoutW,
+		writer:     bufio.NewWriter(adapterStdoutW),
+		cancelCh:   make(chan struct{}, 4),
 		promptResp: "end_turn",
 	}
 	go srv.run()
@@ -78,8 +89,9 @@ func (s *mockACPServer) run() {
 			var req acp.InitializeRequest
 			_ = json.Unmarshal(b, &req)
 			s.lastInit = &req
+			authMethods := s.authMethods
 			s.mu.Unlock()
-			s.respond(idVal, map[string]any{
+			result := map[string]any{
 				"protocolVersion": 1,
 				"agentCapabilities": map[string]any{
 					"loadSession":         true,
@@ -87,11 +99,24 @@ func (s *mockACPServer) run() {
 					"sessionCapabilities": map[string]any{"resume": map[string]any{}},
 				},
 				"agentInfo": map[string]any{
-					"name":    "mock-devin",
-					"title":   "Mock Devin",
+					"name":    "mock-agent",
+					"title":   "Mock Agent",
 					"version": "0.0.1",
 				},
-			})
+			}
+			if len(authMethods) > 0 {
+				result["authMethods"] = authMethods
+			}
+			s.respond(idVal, result)
+		case "authenticate":
+			b, _ := json.Marshal(msg["params"])
+			var req acp.AuthenticateRequest
+			_ = json.Unmarshal(b, &req)
+			s.mu.Lock()
+			s.lastAuthMethod = req.MethodID
+			s.authenticated = true
+			s.mu.Unlock()
+			s.respond(idVal, map[string]any{})
 		case "session/new":
 			b, _ := json.Marshal(msg["params"])
 			var req acp.SessionNewRequest
@@ -99,10 +124,19 @@ func (s *mockACPServer) run() {
 			s.mu.Lock()
 			s.lastNewCwd = req.Cwd
 			modes := s.modesOnNew
+			models := s.modelsOnNew
+			authOK := !s.requireAuth || s.authenticated
 			s.mu.Unlock()
+			if !authOK {
+				s.respondError(idVal, -32000, "Authentication required")
+				continue
+			}
 			result := map[string]any{"sessionId": "sess-mock-1"}
 			if modes != nil {
 				result["modes"] = modes
+			}
+			if models != nil {
+				result["models"] = models
 			}
 			s.respond(idVal, result)
 		case "session/set_mode":
@@ -112,6 +146,15 @@ func (s *mockACPServer) run() {
 			s.mu.Lock()
 			s.lastSetMode.sessionID = req.SessionID
 			s.lastSetMode.modeID = req.ModeID
+			s.mu.Unlock()
+			s.respond(idVal, map[string]any{})
+		case "session/set_model":
+			b, _ := json.Marshal(msg["params"])
+			var req acp.SessionSetModelRequest
+			_ = json.Unmarshal(b, &req)
+			s.mu.Lock()
+			s.lastSetModel.sessionID = req.SessionID
+			s.lastSetModel.modelID = req.ModelID
 			s.mu.Unlock()
 			s.respond(idVal, map[string]any{})
 		case "session/set_config_option":
@@ -193,11 +236,11 @@ func (s *mockACPServer) write(v any) {
 	_ = s.writer.Flush()
 }
 
-func TestDevinAdapterStartAndInitialize(t *testing.T) {
+func TestAdapterStartAndInitialize(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
 	_ = srv
 
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
 	t.Cleanup(func() { _ = a.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -208,7 +251,7 @@ func TestDevinAdapterStartAndInitialize(t *testing.T) {
 	if !a.Initialized() {
 		t.Fatal("expected initialized")
 	}
-	if got := a.AgentInfo().Name; got != "mock-devin" {
+	if got := a.AgentInfo().Name; got != "mock-agent" {
 		t.Fatalf("agent name: %q", got)
 	}
 	if !a.Capabilities().LoadSession {
@@ -216,13 +259,13 @@ func TestDevinAdapterStartAndInitialize(t *testing.T) {
 	}
 }
 
-func TestDevinAdapterNewSessionAndPrompt(t *testing.T) {
+func TestAdapterNewSessionAndPrompt(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
 	var (
 		gotMu     sync.Mutex
 		gotEvents []string
 	)
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{
 		OnSessionUpdate: func(sessionID string, update json.RawMessage) {
 			gotMu.Lock()
 			defer gotMu.Unlock()
@@ -236,15 +279,14 @@ func TestDevinAdapterNewSessionAndPrompt(t *testing.T) {
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	sessID, modes, err := a.NewSession(ctx, "/Users/me/app", nil)
+	res, err := a.NewSession(ctx, "/Users/me/app", nil)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if sessID != "sess-mock-1" {
-		t.Fatalf("sessionID: %q", sessID)
+	if res.SessionID != "sess-mock-1" {
+		t.Fatalf("sessionID: %q", res.SessionID)
 	}
-	_ = modes // covered separately
-	stop, err := a.PromptText(ctx, sessID, "hello")
+	stop, err := a.PromptText(ctx, res.SessionID, "hello")
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -269,9 +311,9 @@ func TestDevinAdapterNewSessionAndPrompt(t *testing.T) {
 	}
 }
 
-func TestDevinAdapterCancel(t *testing.T) {
+func TestAdapterCancel(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
 	t.Cleanup(func() { _ = a.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -293,7 +335,7 @@ func TestDevinAdapterCancel(t *testing.T) {
 	}
 }
 
-func TestDevinAdapterNewSessionReturnsModes(t *testing.T) {
+func TestAdapterNewSessionReturnsModes(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
 	srv.modesOnNew = &acp.SessionModeState{
 		CurrentModeID: "ask",
@@ -302,25 +344,55 @@ func TestDevinAdapterNewSessionReturnsModes(t *testing.T) {
 			{ID: "code", Name: "Code"},
 		},
 	}
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
 	t.Cleanup(func() { _ = a.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := a.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_, modes, err := a.NewSession(ctx, "/tmp", nil)
+	res, err := a.NewSession(ctx, "/tmp", nil)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if modes == nil || modes.CurrentModeID != "ask" || len(modes.AvailableModes) != 2 {
-		t.Fatalf("modes not parsed: %+v", modes)
+	if res.Modes == nil || res.Modes.CurrentModeID != "ask" || len(res.Modes.AvailableModes) != 2 {
+		t.Fatalf("modes not parsed: %+v", res.Modes)
 	}
 }
 
-func TestDevinAdapterSetMode(t *testing.T) {
+// TestAdapterNewSessionReturnsModels covers cursor-agent's session-model
+// extension: session/new carries a `models` payload that the adapter must
+// surface to callers (the chatrouter synthesises a model config option
+// from it).
+func TestAdapterNewSessionReturnsModels(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	srv.modelsOnNew = &acp.SessionModelState{
+		CurrentModelID: "composer-2.5[fast=true]",
+		AvailableModels: []acp.SessionModel{
+			{ModelID: "default[]", Name: "Auto"},
+			{ModelID: "composer-2.5[fast=true]", Name: "composer-2.5"},
+		},
+	}
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.NewSession(ctx, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if res.Models == nil || res.Models.CurrentModelID != "composer-2.5[fast=true]" ||
+		len(res.Models.AvailableModels) != 2 {
+		t.Fatalf("models not parsed: %+v", res.Models)
+	}
+}
+
+func TestAdapterSetMode(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
 	t.Cleanup(func() { _ = a.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -337,9 +409,28 @@ func TestDevinAdapterSetMode(t *testing.T) {
 	}
 }
 
-func TestDevinAdapterSetConfigOption(t *testing.T) {
+func TestAdapterSetModel(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{})
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetModel(ctx, "sess-x", "gpt-5.5[reasoning=medium]"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.lastSetModel.sessionID != "sess-x" || srv.lastSetModel.modelID != "gpt-5.5[reasoning=medium]" {
+		t.Fatalf("set_model not seen: %+v", srv.lastSetModel)
+	}
+}
+
+func TestAdapterSetConfigOption(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{})
 	t.Cleanup(func() { _ = a.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -361,10 +452,63 @@ func TestDevinAdapterSetConfigOption(t *testing.T) {
 	}
 }
 
-func TestDevinAdapterPermissionCallback(t *testing.T) {
+// TestAdapterAuthenticate covers the cursor-agent style handshake: the agent
+// advertises an auth method, rejects session/new until authenticate has been
+// called, and the adapter authenticates transparently during Start.
+func TestAdapterAuthenticate(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+	srv.authMethods = []map[string]any{
+		{"id": "cursor_login", "name": "Cursor Login"},
+	}
+	srv.requireAuth = true
+
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{
+		AuthMethodID: "cursor_login",
+	})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	srv.mu.Lock()
+	authMethod := srv.lastAuthMethod
+	srv.mu.Unlock()
+	if authMethod != "cursor_login" {
+		t.Fatalf("expected authenticate(cursor_login), got %q", authMethod)
+	}
+	// session/new must now pass the mock's auth gate.
+	if _, err := a.NewSession(ctx, "/tmp", nil); err != nil {
+		t.Fatalf("NewSession after authenticate: %v", err)
+	}
+}
+
+// TestAdapterAuthenticateSkippedWhenNotAdvertised pins that the adapter does
+// NOT call authenticate when the agent doesn't advertise the configured
+// method (e.g. pointing the cursor builder at a Devin binary).
+func TestAdapterAuthenticateSkippedWhenNotAdvertised(t *testing.T) {
+	srv, stdout, stdin := newMockACPServer(t)
+
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{
+		AuthMethodID: "cursor_login",
+	})
+	t.Cleanup(func() { _ = a.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.lastAuthMethod != "" {
+		t.Fatalf("authenticate should not be called, saw method %q", srv.lastAuthMethod)
+	}
+}
+
+func TestAdapterPermissionCallback(t *testing.T) {
 	srv, stdout, stdin := newMockACPServer(t)
 	called := make(chan struct{}, 1)
-	a := devin.NewWithStreams(stdin, stdout, devin.Options{
+	a := acpagent.NewWithStreams(stdin, stdout, acpagent.Options{
 		OnPermissionRequest: func(_ context.Context, sessionID string, params json.RawMessage) (json.RawMessage, *acp.RPCError) {
 			if sessionID != "sess-1" {
 				t.Errorf("session id: %s", sessionID)
