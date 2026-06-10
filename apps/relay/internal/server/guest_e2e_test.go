@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/auth"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/chatrouter"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/pairingclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
@@ -264,6 +266,12 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 
 func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer, cwd, model string) string {
 	t.Helper()
+	token, _ := createGuestShare(t, ctx, baseURL, bearer, cwd, model)
+	return token
+}
+
+func createGuestShare(t *testing.T, ctx context.Context, baseURL, bearer, cwd, model string) (token, shareID string) {
+	t.Helper()
 	body, _ := json.Marshal(map[string]any{
 		"ttl_seconds": 600, "prompt_limit": 5, "max_sessions": 1, "cwd": cwd, "model": model,
 	})
@@ -283,7 +291,8 @@ func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer, c
 		t.Fatalf("share status %d: %s", resp.StatusCode, b)
 	}
 	var out struct {
-		Token string `json:"token"`
+		Token   string `json:"token"`
+		ShareID string `json:"share_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode share: %v", err)
@@ -291,5 +300,79 @@ func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer, c
 	if out.Token == "" {
 		t.Fatal("empty guest token from share endpoint")
 	}
-	return out.Token
+	return out.Token, out.ShareID
+}
+
+// TestGuestRejectedWithCloseReason pins the guest rejection UX contract:
+// browsers can't see the HTTP status of a failed WS handshake, so the relay
+// must accept rejected guests and immediately close with application code
+// 4401 plus a short reason ("share revoked", "token expired or invalid", …)
+// that the share page surfaces instead of reconnect-looping forever.
+func TestGuestRejectedWithCloseReason(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	if _, err := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+
+	expectClose := func(token, wantReason string) {
+		t.Helper()
+		ws, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+token, nil)
+		if err != nil {
+			t.Fatalf("dial should upgrade before rejecting, got: %v", err)
+		}
+		defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
+		_, _, rerr := ws.Read(ctx)
+		if rerr == nil {
+			t.Fatal("expected the relay to close the rejected guest socket")
+		}
+		if got := websocket.CloseStatus(rerr); got != websocket.StatusCode(4401) {
+			t.Fatalf("close status: got %d want 4401 (err %v)", got, rerr)
+		}
+		var ce websocket.CloseError
+		if !errors.As(rerr, &ce) || ce.Reason != wantReason {
+			t.Fatalf("close reason: got %q want %q", ce.Reason, wantReason)
+		}
+	}
+
+	// Case 1: a revoked share → "share revoked".
+	token, shareID := createGuestShare(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "")
+	revokeReq, _ := http.NewRequestWithContext(ctx, http.MethodDelete, hs.URL+"/v1/share/"+shareID, nil)
+	revokeReq.Header.Set("authorization", "Bearer "+claim.Credentials.AccessToken)
+	revokeResp, err := http.DefaultClient.Do(revokeReq)
+	if err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	_ = revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke status %d", revokeResp.StatusCode)
+	}
+	expectClose(token, "share revoked")
+
+	// Case 2: an expired guest token (signed with the test server's secret) →
+	// the auth layer rejects it before claims are trusted, but the unverified
+	// kind peek routes it onto the same close-frame path.
+	signer, err := auth.NewSigner([]byte("0123456789abcdef0123456789abcdef"), "coding-anywhere/relay", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := signer.Issue("acc-x", "share-x", auth.DeviceGuest, -time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectClose(expired, "token expired or invalid")
+
+	// Case 3: a syntactically valid guest token whose share never existed →
+	// "unknown share" (e.g. the relay database was reset).
+	ghost, err := signer.Issue("acc-x", "share-ghost", auth.DeviceGuest, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectClose(ghost, "unknown share")
 }

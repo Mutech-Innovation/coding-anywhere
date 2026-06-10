@@ -11,6 +11,12 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
 export type Handler = (env: Envelope) => void;
 
+/** Close code + reason of the most recent WebSocket close, if any. */
+export interface CloseInfo {
+  code: number;
+  reason: string;
+}
+
 export interface RelayWSClientOptions {
   relayURL: string;
   accessToken: string;
@@ -44,6 +50,7 @@ export class RelayWSClient {
     pingTimer: null,
   };
   private outbound: Envelope[] = [];
+  private lastClose: CloseInfo | null = null;
 
   constructor(opts: RelayWSClientOptions) {
     this.opts = {
@@ -73,6 +80,16 @@ export class RelayWSClient {
 
   getState(): ConnectionState {
     return this.state;
+  }
+
+  /**
+   * Close code + reason of the most recent socket close, if any. The relay
+   * rejects guest connections post-upgrade with an application close code
+   * (4401) and a short reason ("share expired", "share revoked", ...) —
+   * inspect this from an onState('disconnected') callback to surface it.
+   */
+  getLastClose(): CloseInfo | null {
+    return this.lastClose;
   }
 
   send(env: Envelope): void {
@@ -152,7 +169,8 @@ export class RelayWSClient {
       }
     };
 
-    const onClose = () => {
+    const onClose = (ev?: CloseEvent) => {
+      if (ev) this.lastClose = { code: ev.code, reason: ev.reason ?? '' };
       this.stopPings();
       this.internal.ws = null;
       if (!this.internal.shouldRun) {

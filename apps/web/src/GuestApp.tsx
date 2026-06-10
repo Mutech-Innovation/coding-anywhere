@@ -9,6 +9,43 @@ import { useConnection } from './store/connection.js';
 
 type Phase = 'connecting' | 'ready' | 'error' | 'ended';
 
+/** Application close code the relay uses when it rejects a guest connection
+ * (mirrors `guestCloseStatus` in apps/relay/internal/server/ws.go). */
+const GUEST_REJECTED_CLOSE_CODE = 4401;
+
+/** Give up on the spinner after this many failed connection attempts. */
+const MAX_CONNECT_ATTEMPTS = 5;
+
+/** Map the relay's short close reasons onto guest-facing copy. */
+function guestRejectMessage(reason: string): string {
+  switch (reason) {
+    case 'share expired':
+      return '链接已过期，请让分享者重新生成。';
+    case 'share revoked':
+      return '链接已被分享者撤销。';
+    case 'unknown share':
+      return '链接无效（分享不存在，可能 relay 已重置）。';
+    case 'token expired or invalid':
+      return '链接已过期或无效，请让分享者重新生成。';
+    default:
+      return `连接被拒绝（${reason || 'unauthorized'}）。`;
+  }
+}
+
+/** Decode the `exp` claim (unix seconds) of a JWT without verifying it. */
+function tokenExpiryMs(token: string): number | null {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as {
+      exp?: number;
+    };
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * GuestApp is the standalone, read-only "ask"-mode share page served at
  * `/guest?token=...&relay=...`. It runs entirely on a guest token: no pairing,
@@ -31,9 +68,29 @@ export function GuestApp() {
       setPhase('error');
       return;
     }
+    // Guest tokens can't be refreshed; if this one is already past its exp we
+    // know the outcome without dialing — fail fast with a clear message.
+    const exp = tokenExpiryMs(token);
+    if (exp !== null && exp <= Date.now()) {
+      setError(`链接已于 ${new Date(exp).toLocaleString()} 过期，请让分享者重新生成。`);
+      setPhase('error');
+      return;
+    }
     const client = new RelayWSClient({ relayURL: relay, accessToken: token });
     useConnection.setState({ client, status: 'connecting' });
     useChat.getState().attach(client);
+
+    // Before the first successful session, every disconnect is a failed
+    // attempt: the relay refuses rejected guests post-upgrade with close code
+    // 4401 + a reason ("share expired", ...), and network/old-relay failures
+    // show up as generic closes. Give up after a few of those instead of
+    // spinning "正在连接" forever.
+    let failedAttempts = 0;
+    const fail = (message: string) => {
+      setError(message);
+      setPhase('error');
+      client.stop();
+    };
 
     let creating = false;
     const off = client.onState((s) => {
@@ -54,6 +111,19 @@ export function GuestApp() {
           .finally(() => {
             creating = false;
           });
+      }
+      if (s === 'disconnected' && !startedRef.current) {
+        const close = client.getLastClose();
+        if (close?.code === GUEST_REJECTED_CLOSE_CODE) {
+          fail(guestRejectMessage(close.reason));
+          return;
+        }
+        failedAttempts += 1;
+        if (failedAttempts >= MAX_CONNECT_ATTEMPTS) {
+          fail(
+            '无法连接到 relay。链接可能已过期或被撤销，也可能 relay 暂时不可用 —— 请让分享者重新生成链接。',
+          );
+        }
       }
       // A drop after the session was established means the link expired or the
       // network died. The guest session can't be resumed (ownership resets on

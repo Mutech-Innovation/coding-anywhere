@@ -182,6 +182,12 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
     connection whose device id matches the share.
   - per-link prompt + session caps; auto-disconnect at token expiry; live
     disconnect on revoke (`Hub.CloseGuest`).
+  - rejected guest connects (expired/revoked/unknown share, expired token) are
+    **accepted then closed** with application close code `4401` + a short
+    reason — browsers can't read the HTTP status of a failed WS handshake, so
+    this is how the guest page learns why (it gives up and shows the reason
+    instead of reconnect-looping; it also pre-checks the token's `exp`
+    client-side). Pinned by `TestGuestRejectedWithCloseReason`.
   - stamps `wire.Envelope.Origin = "guest"` on forwarded traffic and strips any
     client-set Origin on ingress (trust marker for the daemon).
 - **Daemon enforcement** (`internal/chatrouter/router.go`): a session whose
