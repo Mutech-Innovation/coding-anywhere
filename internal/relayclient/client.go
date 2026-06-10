@@ -43,6 +43,12 @@ type Config struct {
 	HandshakeTimeout time.Duration
 	// MaxBackoff caps the reconnect delay. Zero = 30s.
 	MaxBackoff time.Duration
+	// BackoffResetAfter resets the reconnect backoff once a session has
+	// stayed up at least this long, so a drop after hours of healthy uptime
+	// reconnects quickly instead of waiting out an accumulated delay.
+	// Short-lived sessions (dial failures, instant evictions) keep growing
+	// the backoff as before. Zero = 1m.
+	BackoffResetAfter time.Duration
 }
 
 func (c *Config) defaults() {
@@ -54,6 +60,9 @@ func (c *Config) defaults() {
 	}
 	if c.MaxBackoff == 0 {
 		c.MaxBackoff = 30 * time.Second
+	}
+	if c.BackoffResetAfter == 0 {
+		c.BackoffResetAfter = time.Minute
 	}
 }
 
@@ -144,18 +153,23 @@ func (c *Client) WaitConnected(ctx context.Context) error {
 }
 
 // Run keeps a session attached until ctx is cancelled, reconnecting with
-// capped exponential backoff between attempts.
+// capped exponential backoff between attempts. A session that stayed up for
+// at least BackoffResetAfter resets the backoff before the next attempt.
 func (c *Client) Run(ctx context.Context) error {
 	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		start := time.Now()
 		err := c.session(ctx)
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
 		c.markDisconnected()
+		if time.Since(start) >= c.cfg.BackoffResetAfter {
+			attempt = 0
+		}
 		if err != nil {
 			c.logger.Warn("relay session ended", "err", err, "attempt", attempt)
 		}

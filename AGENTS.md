@@ -237,7 +237,12 @@ controls is cosmetic only.
 - CLI entry: `apps/relay/cmd/main.go` (flags: `-addr`, `-log-level`, `-version`)
 - Config defaults/env parsing: `apps/relay/internal/server/config.go`
 - HTTP middleware/CORS: `apps/relay/internal/server/middleware.go`
-- Hub/routing: `apps/relay/internal/server/hub.go`
+- Hub/routing: `apps/relay/internal/server/hub.go`. Clients and guests are
+  keyed by **connection id**, so several tabs of one paired browser (same
+  device_id) coexist instead of evicting each other into a reconnect storm.
+  Daemons are keyed by device_id: a newer daemon connection replaces the old
+  one (close reason `"replaced"` — if a daemon log shows this, a second
+  daemon process is running with the same credentials file).
 - HTTP proxy for localhost preview: `apps/relay/internal/server/proxy.go`
 - Push notifications: `apps/relay/internal/server/push.go`
 - The relay serves **plain HTTP** on `CA_LISTEN_ADDR` (default `:8443`); it does

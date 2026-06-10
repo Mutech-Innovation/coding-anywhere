@@ -76,7 +76,11 @@ type guestState struct {
 // Account aggregates all connections for one account.
 type Account struct {
 	daemons map[string]*Conn // device_id → conn
-	clients map[string]*Conn // device_id → conn
+	// clients is keyed by the unique connection id, NOT the device id: every
+	// tab of one paired browser shares a single device id (localStorage), so
+	// keying by device id would force a single tab and make concurrent tabs
+	// evict each other in a reconnect storm. Multiple tabs must coexist.
+	clients map[string]*Conn // conn id → conn
 	// guests is keyed by the unique connection id, NOT the device id: all
 	// viewers of one share link share a single device id (the share id), so
 	// keying by device id would force a single guest and make concurrent
@@ -124,10 +128,10 @@ func (h *Hub) Register(c *Conn) {
 		}
 		acc.daemons[c.deviceID] = c
 	case auth.DeviceClient:
-		if old := acc.clients[c.deviceID]; old != nil && old != c {
-			go func() { _ = old.ws.Close(websocket.StatusNormalClosure, "replaced") }()
-		}
-		acc.clients[c.deviceID] = c
+		// No eviction: keyed by connection id so multiple tabs of the same
+		// paired browser coexist instead of evicting each other. Stale
+		// sockets reap themselves via their own read/write loops.
+		acc.clients[c.id] = c
 	case auth.DeviceGuest:
 		// No eviction: keyed by connection id so multiple viewers of the
 		// same share link coexist instead of evicting each other.
@@ -152,8 +156,8 @@ func (h *Hub) Unregister(c *Conn) {
 			delete(acc.daemons, c.deviceID)
 		}
 	case auth.DeviceClient:
-		if acc.clients[c.deviceID] == c {
-			delete(acc.clients, c.deviceID)
+		if acc.clients[c.id] == c {
+			delete(acc.clients, c.id)
 		}
 	case auth.DeviceGuest:
 		if acc.guests[c.id] == c {
@@ -187,6 +191,8 @@ func (h *Hub) CloseGuest(accountID, shareID string) {
 }
 
 // CountDevices returns (daemons, clients) currently registered for an account.
+// Clients are counted as distinct devices, not connections, so several tabs
+// of one paired browser still count once.
 func (h *Hub) CountDevices(accountID string) (int, int) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -194,7 +200,11 @@ func (h *Hub) CountDevices(accountID string) (int, int) {
 	if !ok {
 		return 0, 0
 	}
-	return len(acc.daemons), len(acc.clients)
+	clientDevs := make(map[string]struct{}, len(acc.clients))
+	for _, c := range acc.clients {
+		clientDevs[c.deviceID] = struct{}{}
+	}
+	return len(acc.daemons), len(clientDevs)
 }
 
 // pickDaemon returns any one connected daemon for the given account.

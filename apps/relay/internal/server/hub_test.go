@@ -151,7 +151,7 @@ func TestHubClientRequestNoDaemonGetsError(t *testing.T) {
 	}
 }
 
-func TestHubClientReconnectReplacesStaleConn(t *testing.T) {
+func TestHubClientStaleCloseKeepsLiveConn(t *testing.T) {
 	hs, srv := newTestServer(t)
 	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "daemon", auth.DeviceDaemon)
 	// Same device_id as a browser tab reconnecting after a drop.
@@ -215,6 +215,59 @@ func mustToken(t *testing.T, signer interface {
 		t.Fatalf("Issue: %v", err)
 	}
 	return tok
+}
+
+// TestHubSameDeviceClientTabsCoexist covers the multi-tab case: two live
+// client connections sharing one device_id (same browser localStorage) must
+// both stay registered — neither evicts the other — and both receive daemon
+// fan-out and can reach the daemon.
+func TestHubSameDeviceClientTabsCoexist(t *testing.T) {
+	hs, srv := newTestServer(t)
+	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "daemon", auth.DeviceDaemon)
+	tab1 := dialWS(t, hs.URL, srv.Signer(), "acc-1", "browser", auth.DeviceClient)
+	tab2 := dialWS(t, hs.URL, srv.Signer(), "acc-1", "browser", auth.DeviceClient)
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Daemon event must reach BOTH tabs. Under the old device_id keying,
+	// tab2's Register would have closed tab1 with reason "replaced".
+	ev, err := wire.MakeEvent("evt-tabs", wire.ChannelChat, "agent_message", map[string]string{"text": "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, daemon, ev); err != nil {
+		t.Fatal(err)
+	}
+	for i, tab := range []*websocket.Conn{tab1, tab2} {
+		var got wire.Envelope
+		if err := wsjson.Read(ctx, tab, &got); err != nil {
+			t.Fatalf("tab%d Read: %v", i+1, err)
+		}
+		if got.ID != "evt-tabs" {
+			t.Fatalf("tab%d unexpected envelope: %+v", i+1, got)
+		}
+	}
+
+	// And both tabs can still reach the daemon.
+	for i, tab := range []*websocket.Conn{tab1, tab2} {
+		id := []string{"req-tab1", "req-tab2"}[i]
+		req, err := wire.MakeRequest(id, wire.ChannelSessions, "list", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := wsjson.Write(ctx, tab, req); err != nil {
+			t.Fatalf("tab%d Write: %v", i+1, err)
+		}
+		var got wire.Envelope
+		if err := wsjson.Read(ctx, daemon, &got); err != nil {
+			t.Fatalf("daemon Read for tab%d: %v", i+1, err)
+		}
+		if got.ID != id {
+			t.Fatalf("daemon got %+v, want id %s", got, id)
+		}
+	}
 }
 
 func TestHubMultipleClientsFanOut(t *testing.T) {

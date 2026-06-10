@@ -177,6 +177,41 @@ func TestRelayClientSendsCustomEnvelopes(t *testing.T) {
 	<-clientErr
 }
 
+// TestRelayClientBackoffResetsAfterHealthySession proves that sessions that
+// outlive BackoffResetAfter reset the reconnect delay: the mock kills every
+// session right after the first ping (~50ms in), and with BackoffResetAfter
+// below that the client must keep re-dialing at the base ~250ms delay. Under
+// the old always-growing backoff, reaching 8 connects would take >30s
+// (0.25+0.5+1+2+4+8+16+...), far past this test's 4s deadline.
+func TestRelayClientBackoffResetsAfterHealthySession(t *testing.T) {
+	mock := &mockRelay{t: t}
+	mock.closeOnPing.Store(true)
+	hs := httptest.NewServer(mock.handler())
+	t.Cleanup(hs.Close)
+
+	cli := relayclient.New(relayclient.Config{
+		RelayURL:          strings.Replace(hs.URL, "http", "ws", 1),
+		AccessToken:       "tok",
+		PingInterval:      50 * time.Millisecond,
+		HandshakeTimeout:  1 * time.Second,
+		BackoffResetAfter: time.Millisecond,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cli.Handle(wire.ChannelMeta, func(wire.Envelope) error { return nil })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = cli.Run(ctx) }()
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if mock.connects.Load() >= 8 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected >= 8 connects within 4s (backoff should have reset), got %d", mock.connects.Load())
+}
+
 func TestRelayClientReconnects(t *testing.T) {
 	mock := &mockRelay{t: t}
 	mock.closeOnPing.Store(true)
