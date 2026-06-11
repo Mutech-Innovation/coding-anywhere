@@ -702,10 +702,35 @@ function ChatView({ sessionId }: { sessionId: string }) {
             modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
           }
           usage={session.usage}
+          agentName={agentShortName(session.session.agent_id)}
         />
       </ReadingColumn>
     </Stack>
   );
+}
+
+// agentShortName renders an agent id as the short display name used in the
+// composer placeholder ("问问 Cursor…"). Mirrors guestAgentName in GuestChat.
+function agentShortName(agentId: string): string {
+  switch (agentId) {
+    case 'cursor-cli':
+      return 'Cursor';
+    case 'devin':
+    case '':
+      return 'Devin';
+    default:
+      return agentId;
+  }
+}
+
+// composerPlaceholder names the session's agent (not always Devin!) and
+// hints the first few slash commands the agent actually advertises.
+function composerPlaceholder(agentName: string, commands: AvailableCommand[]): string {
+  const hint = commands
+    .slice(0, 3)
+    .map((c) => `/${c.name}`)
+    .join('、');
+  return hint ? `问问 ${agentName}…（试试 ${hint}）` : `问问 ${agentName}…`;
 }
 
 // Centers its child within a max-width column. Used to give the chat
@@ -1173,6 +1198,7 @@ function CommandInput({
   modelOption,
   onModelChange,
   usage,
+  agentName,
 }: {
   commands: AvailableCommand[];
   value: string;
@@ -1186,6 +1212,7 @@ function CommandInput({
   modelOption: ChatConfigOption | null;
   onModelChange: (value: string) => void;
   usage: ChatUsage | null;
+  agentName: string;
 }) {
   // Show the typeahead only when the user has typed `/` as the very first
   // non-whitespace character and the cursor sits in the command word.
@@ -1304,7 +1331,7 @@ function CommandInput({
       >
         <Textarea
           ref={ref}
-          placeholder="问问 Devin…(试试 /plan、/clear、/fork)"
+          placeholder={composerPlaceholder(agentName, commands)}
           autosize
           minRows={1}
           maxRows={6}
