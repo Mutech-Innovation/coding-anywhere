@@ -1528,6 +1528,8 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
           <Text size="xs" c="dimmed">
             {text}
           </Text>
+        ) : message.streaming ? (
+          <StreamingMarkdownBody text={text} c={isUser ? 'white' : undefined} />
         ) : (
           <MarkdownBody text={text} c={isUser ? 'white' : undefined} />
         )}
@@ -1575,7 +1577,11 @@ const ThoughtBubble = memo(function ThoughtBubble({ message }: { message: ChatMe
         <LazyCollapse opened={expanded}>
           {() => (
             <Box mt="xs" style={{ fontStyle: 'italic' }}>
-              <MarkdownBody text={text} size="xs" c="dimmed" />
+              {message.streaming ? (
+                <StreamingMarkdownBody text={text} size="xs" c="dimmed" />
+              ) : (
+                <MarkdownBody text={text} size="xs" c="dimmed" />
+              )}
             </Box>
           )}
         </LazyCollapse>
@@ -1593,7 +1599,19 @@ type MarkdownBlock =
   | { type: 'code'; language?: string; text: string }
   | { type: 'table'; header: string[]; align: (TableAlign | null)[]; rows: string[][] };
 
-function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 'sm'; c?: string }) {
+// memo matters: StreamingMarkdownBody renders the stable prefix through this
+// component with a string prop that only changes value when a new paragraph
+// boundary settles, so the (potentially huge) prefix bails out of re-parsing
+// and re-rendering on every chunk.
+const MarkdownBody = memo(function MarkdownBody({
+  text,
+  size = 'sm',
+  c,
+}: {
+  text: string;
+  size?: 'xs' | 'sm';
+  c?: string;
+}) {
   // Parsing is linear in the text, but bubbles re-render on every streaming
   // chunk of their own text — memoize so toggles/theme re-renders are free.
   const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
@@ -1694,11 +1712,117 @@ function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 's
       })}
     </Stack>
   );
+});
+
+/**
+ * Markdown body for a still-streaming message. Re-parsing and re-rendering
+ * the WHOLE text on every chunk is O(answer²) per turn — long answers from
+ * fast-streaming agents (cursor's composer models emit hundreds of chunks a
+ * second) saturated the main thread and OOM'd the tab even after the
+ * transcript itself was memoized. Instead, split the text into segments at
+ * block boundaries reported by the parser: every segment string except the
+ * last is value-stable while the answer streams, so the memo'd MarkdownBody
+ * bails out for them and each chunk re-renders only the live last block
+ * (plus, on new-block chunks, one bounded segment).
+ */
+function StreamingMarkdownBody({
+  text,
+  size,
+  c,
+}: {
+  text: string;
+  size?: 'xs' | 'sm';
+  c?: string;
+}) {
+  // Cache the previous split so an appended chunk re-segments only the live
+  // tail instead of re-parsing the whole text. Stale/discarded renders are
+  // harmless: nextStreamingSegments revalidates with startsWith and falls
+  // back to a full split.
+  const cache = useRef<{ text: string; segments: string[] }>({ text: '', segments: [] });
+  const segments = useMemo(() => {
+    const prev = cache.current;
+    cache.current = nextStreamingSegments(prev.text, prev.segments, text);
+    return cache.current.segments;
+  }, [text]);
+  if (segments.length <= 1) return <MarkdownBody text={segments[0] ?? ''} size={size} c={c} />;
+  return (
+    <Stack gap={6} style={{ minWidth: 0, maxWidth: '100%' }}>
+      {segments.map((segment, i) => (
+        <MarkdownBody key={i} text={segment} size={size} c={c} />
+      ))}
+    </Stack>
+  );
+}
+
+/**
+ * Incremental wrapper around streamingMarkdownSegments: when `text` merely
+ * extends the previously segmented text (the streaming-append case), keep the
+ * settled segments as-is and re-split only the previous live segment plus the
+ * appended chunk. Returns the normalized text alongside the segments (which
+ * partition it) so callers can cache both without re-joining. Exported for
+ * tests.
+ */
+export function nextStreamingSegments(
+  prevText: string,
+  prevSegments: string[],
+  text: string,
+): { text: string; segments: string[] } {
+  const norm = text.replace(/\r\n/g, '\n');
+  if (prevSegments.length > 0 && norm.startsWith(prevText)) {
+    if (norm.length === prevText.length) return { text: norm, segments: prevSegments };
+    const live = prevSegments[prevSegments.length - 1]!;
+    const tail = streamingMarkdownSegments(norm.slice(prevText.length - live.length));
+    return { text: norm, segments: [...prevSegments.slice(0, -1), ...tail] };
+  }
+  return { text: norm, segments: streamingMarkdownSegments(norm) };
+}
+
+/** Cap re-render cost of the segment a new block lands in. */
+const STREAMING_SEGMENT_BLOCKS = 32;
+
+/**
+ * Split markdown into segments that each parse to exactly the blocks the
+ * whole text would: cuts happen only at block start lines, every
+ * STREAMING_SEGMENT_BLOCKS blocks and before the final (still-streaming)
+ * block. Returns [text] when there's nothing to split. Exported for tests.
+ */
+export function streamingMarkdownSegments(text: string): string[] {
+  const norm = text.replace(/\r\n/g, '\n');
+  const lines = norm.split('\n');
+  const { starts } = parseMarkdownLines(lines);
+  if (starts.length <= 1) return [norm];
+  const cutLines: number[] = [];
+  for (let b = STREAMING_SEGMENT_BLOCKS; b < starts.length; b += STREAMING_SEGMENT_BLOCKS) {
+    cutLines.push(starts[b]!);
+  }
+  const lastStart = starts[starts.length - 1]!;
+  if ((cutLines[cutLines.length - 1] ?? -1) < lastStart) cutLines.push(lastStart);
+  // Map line indices to char offsets in `norm` ('\n' joins the lines back).
+  const offsets: number[] = new Array<number>(lines.length);
+  let acc = 0;
+  for (let k = 0; k < lines.length; k++) {
+    offsets[k] = acc;
+    acc += (lines[k]?.length ?? 0) + 1;
+  }
+  const segments: string[] = [];
+  let prev = 0;
+  for (const cutLine of cutLines) {
+    segments.push(norm.slice(prev, offsets[cutLine]!));
+    prev = offsets[cutLine]!;
+  }
+  segments.push(norm.slice(prev));
+  return segments;
 }
 
 function parseMarkdownBlocks(text: string): MarkdownBlock[] {
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  return parseMarkdownLines(text.replace(/\r\n/g, '\n').split('\n')).blocks;
+}
+
+// Parses pre-split lines into blocks, also reporting each block's start line
+// index (streamingMarkdownSegments cuts at those lines).
+function parseMarkdownLines(lines: string[]): { blocks: MarkdownBlock[]; starts: number[] } {
   const blocks: MarkdownBlock[] = [];
+  const starts: number[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] ?? '';
@@ -1706,6 +1830,8 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
       i++;
       continue;
     }
+    // Every branch below consumes at least one line and emits one block.
+    starts.push(i);
     const fence = line.match(/^```([\w-]*)\s*$/);
     if (fence) {
       const language = fence[1] || undefined;
@@ -1775,7 +1901,7 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
     }
     blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
   }
-  return blocks;
+  return { blocks, starts };
 }
 
 // A GFM delimiter row looks like `|---|:--:|---:|`: only pipes, dashes,

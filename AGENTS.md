@@ -233,6 +233,17 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
 - Zustand stores live under `apps/web/src/store/`.
 - WebSocket client implementation is `packages/protocol/src/relay-ws-client.ts`.
 - REST pairing client implementation is `packages/protocol/src/pair.ts`.
+- **Streaming render perf invariant** (two OOM'd-tab incidents, guest page
+  first): a streaming chunk must do O(live tail) work, never O(transcript) or
+  O(answer). Two layers enforce it, both in `ChatPanel.tsx`: transcript
+  components (`MessageBubble`/`ToolCallCard`/...) are memo'd against the
+  store's structural sharing, and the live bubble renders through
+  `StreamingMarkdownBody`, which splits the text at parser block boundaries
+  (`streamingMarkdownSegments`) so settled segments are value-stable strings
+  whose memo'd `MarkdownBody` bails out — only the last block re-parses and
+  re-renders per chunk. Pinned by
+  `apps/web/src/components/markdown-stream.test.tsx`. Don't render a
+  streaming message's full text through a non-memo'd path.
 
 ## Daemon orientation
 

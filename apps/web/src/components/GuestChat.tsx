@@ -22,15 +22,16 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
   const status = session?.session.status;
   const thinking = status === 'thinking' || status === 'awaiting_permission';
 
+  const messages = session?.messages;
+  const toolCalls = session?.toolCalls;
   const entries = useMemo<TranscriptEntry[]>(() => {
-    if (!session) return [];
     const out: TranscriptEntry[] = [
-      ...session.messages.map((message) => ({
+      ...(messages ?? []).map((message) => ({
         type: 'message' as const,
         order: message.order,
         message,
       })),
-      ...Object.values(session.toolCalls).map((call) => ({
+      ...Object.values(toolCalls ?? {}).map((call) => ({
         type: 'tool' as const,
         order: call.order,
         call,
@@ -38,7 +39,7 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
     ];
     out.sort((a, b) => a.order - b.order);
     return out;
-  }, [session]);
+  }, [messages, toolCalls]);
   const items = useMemo(() => groupTranscript(entries), [entries]);
 
   useEffect(() => {
