@@ -112,7 +112,15 @@ export interface FlightRecorderOptions {
   /** Extra gauges sampled every tick. Defaults to sampleChatStats. */
   sample?: () => Record<string, number>;
   intervalMs?: number;
+  /** Max console silence while idle; snapshots still persist every tick. */
+  heartbeatMs?: number;
 }
+
+// Console-noise thresholds: a tick prints only when something moved —
+// any custom gauge changed, a long task fired, an error landed, or
+// heap/DOM drifted past these deltas since the LAST PRINTED line.
+const LOG_HEAP_DELTA_MB = 16;
+const LOG_DOM_DELTA = 200;
 
 /**
  * Start the recorder; returns a stop function (usable as a useEffect
@@ -122,6 +130,7 @@ export function startFlightRecorder({
   page,
   sample = sampleChatStats,
   intervalMs = 2000,
+  heartbeatMs = 30_000,
 }: FlightRecorderOptions): () => void {
   const crashed = takeCrashRecord(page);
   if (crashed) {
@@ -173,7 +182,9 @@ export function startFlightRecorder({
     }
   }
 
+  let errorsTotal = 0;
   const pushError = (msg: string) => {
+    errorsTotal += 1;
     record.errors.push({ t: Date.now(), msg: msg.slice(0, 300) });
     if (record.errors.length > ERROR_CAP) record.errors.shift();
     writeRecord(record);
@@ -184,8 +195,20 @@ export function startFlightRecorder({
   window.addEventListener('error', onError);
   window.addEventListener('unhandledrejection', onRejection);
 
-  let prevCustom: Record<string, number> = {};
-  let prevT = Date.now();
+  // Snapshots persist EVERY tick (the black box wants fine resolution right
+  // before a crash), but the console only speaks when something moved since
+  // the last printed line, or every heartbeatMs while idle. Long-task stats
+  // accumulate separately for printing so quiet ticks aren't lost.
+  let logged: {
+    t: number;
+    heap: number | null;
+    dom: number;
+    custom: Record<string, number>;
+    errorsTotal: number;
+  } | null = null;
+  let printLongMs = 0;
+  let printLongMax = 0;
+  let printLongCount = 0;
   const tick = () => {
     const m = chromeMemory();
     const custom = sample();
@@ -199,24 +222,42 @@ export function startFlightRecorder({
       longCount,
       custom,
     };
+    printLongMs += longMs;
+    printLongCount += longCount;
+    if (longMax > printLongMax) printLongMax = longMax;
     longMs = longMax = longCount = 0;
     record.snapshots.push(snap);
     if (record.snapshots.length > SNAPSHOT_CAP) record.snapshots.shift();
     writeRecord(record);
 
-    const dt = Math.max((snap.t - prevT) / 1000, 0.001);
+    const heap = snap.heapUsedMB ?? null;
+    const interesting =
+      logged === null ||
+      printLongCount > 0 ||
+      errorsTotal > logged.errorsTotal ||
+      Object.entries(custom).some(([k, v]) => v !== (logged!.custom[k] ?? 0)) ||
+      (heap !== null &&
+        logged.heap !== null &&
+        Math.abs(heap - logged.heap) >= LOG_HEAP_DELTA_MB) ||
+      Math.abs(snap.dom - logged.dom) >= LOG_DOM_DELTA;
+    if (!interesting && snap.t - logged!.t < heartbeatMs) return;
+
+    const dt = Math.max((snap.t - (logged?.t ?? record.startedAt)) / 1000, 0.001);
     const parts: string[] = [];
-    if (snap.heapUsedMB != null) parts.push(`heap=${snap.heapUsedMB}/${snap.heapTotalMB}MB`);
+    if (heap !== null) parts.push(`heap=${heap}/${snap.heapTotalMB}MB`);
     parts.push(`dom=${snap.dom}`);
-    if (snap.longCount > 0)
-      parts.push(`long=${snap.longMs}ms(max${snap.longMax},n${snap.longCount})`);
+    if (printLongCount > 0)
+      parts.push(
+        `long=${Math.round(printLongMs)}ms(max${Math.round(printLongMax)},n${printLongCount})`,
+      );
     for (const [k, v] of Object.entries(custom)) {
-      const d = v - (prevCustom[k] ?? 0);
+      const d = v - (logged?.custom[k] ?? 0);
       parts.push(d !== 0 ? `${k}=${v}(+${Math.round(d / dt)}/s)` : `${k}=${v}`);
     }
+    if (errorsTotal > (logged?.errorsTotal ?? 0)) parts.push(`errors=${errorsTotal}`);
     console.log(`[ca-fr] ${parts.join(' ')}`);
-    prevCustom = custom;
-    prevT = snap.t;
+    logged = { t: snap.t, heap, dom: snap.dom, custom, errorsTotal };
+    printLongMs = printLongMax = printLongCount = 0;
   };
   // NOTE: Chrome throttles background-tab timers to ~1/min; sparse snapshots
   // while hidden are fine — the last one before a crash is what matters.

@@ -67,6 +67,34 @@ describe('flight recorder', () => {
     stop2();
   });
 
+  it('stays quiet while idle, heartbeats, and speaks up on activity', () => {
+    let chars = 0;
+    const stop = startFlightRecorder({
+      page: 'test',
+      sample: () => ({ chars }),
+      intervalMs: 100,
+      heartbeatMs: 1000,
+    });
+    const log = vi.mocked(console.log);
+    log.mockClear(); // drop the "flight recorder started" line
+
+    vi.advanceTimersByTime(100); // first tick → one baseline line
+    expect(log).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(500); // idle ticks → silent (snapshots still persist)
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(storedRecord()?.snapshots).toHaveLength(6);
+
+    vi.advanceTimersByTime(500); // crosses heartbeatMs → exactly one heartbeat
+    expect(log).toHaveBeenCalledTimes(2);
+
+    chars = 123; // gauge moved → immediate line on the next tick
+    vi.advanceTimersByTime(100);
+    expect(log).toHaveBeenCalledTimes(3);
+    expect(String(log.mock.calls[2]?.[0])).toContain('chars=123');
+    stop();
+  });
+
   it('records window errors into the persisted record', () => {
     const stop = startFlightRecorder({ page: 'test', sample: () => ({}), intervalMs: 100 });
     window.dispatchEvent(new ErrorEvent('error', { message: 'boom' }));
