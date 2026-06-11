@@ -1045,7 +1045,8 @@ type cursorMockACP struct {
 	t          *testing.T
 	in         *io.PipeReader
 	wr         *bufio.Writer
-	spawnModel string // the --model the process was "spawned" with
+	out        *io.PipeWriter // write side handed to the adapter (for kill)
+	spawnModel string         // the --model the process was "spawned" with
 
 	mu               sync.Mutex
 	writeMu          sync.Mutex
@@ -1054,6 +1055,15 @@ type cursorMockACP struct {
 	lastLoadedSID    string
 	sawSetConfigCall bool
 	sawSetModelCall  bool
+}
+
+// kill simulates the subprocess dying: both pipe ends close, so the
+// adapter's read loop sees EOF and subsequent calls fail with
+// acp.ErrClientClosed — exactly what a daemon restart or an agent crash
+// looks like from the router's side.
+func (m *cursorMockACP) kill() {
+	_ = m.in.Close()
+	_ = m.out.Close()
 }
 
 func (m *cursorMockACP) currentModelID() string {
@@ -1212,7 +1222,7 @@ func TestChatCursorAgentModels(t *testing.T) {
 	builder := func(opts acpagent.Options) (*acpagent.Adapter, error) {
 		stdoutR, stdoutW := io.Pipe()
 		stdinR, stdinW := io.Pipe()
-		m := &cursorMockACP{t: t, in: stdinR, wr: bufio.NewWriter(stdoutW), spawnModel: opts.Model}
+		m := &cursorMockACP{t: t, in: stdinR, wr: bufio.NewWriter(stdoutW), out: stdoutW, spawnModel: opts.Model}
 		go m.run()
 		mocksMu.Lock()
 		mocks = append(mocks, m)
@@ -1386,5 +1396,166 @@ func TestChatCursorAgentModels(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("refreshed model snapshot not in history; got %d updates", len(hist.Updates))
+	}
+}
+
+// TestChatCursorSessionRevive pins the zombie-session fix: when a cursor
+// session's dedicated subprocess dies while idle (daemon restart killing
+// children, agent crash), the next prompt must transparently spawn a fresh
+// process pinned to the session's current model, resume the conversation via
+// session/load (with the history replay suppressed), and answer the prompt —
+// instead of failing with "prompt_failed: acp client closed" forever.
+func TestChatCursorSessionRevive(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	var mocksMu sync.Mutex
+	var mocks []*cursorMockACP
+	var adapters []*acpagent.Adapter
+	builder := func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		stdoutR, stdoutW := io.Pipe()
+		stdinR, stdinW := io.Pipe()
+		m := &cursorMockACP{t: t, in: stdinR, wr: bufio.NewWriter(stdoutW), out: stdoutW, spawnModel: opts.Model}
+		go m.run()
+		opts.AuthMethodID = "cursor_login"
+		a := acpagent.NewWithStreams(stdinW, stdoutR, opts)
+		mocksMu.Lock()
+		mocks = append(mocks, m)
+		adapters = append(adapters, a)
+		mocksMu.Unlock()
+		return a, nil
+	}
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{
+		chatrouter.AgentCursor: builder,
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	clientWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientWS.Close(websocket.StatusNormalClosure, "") })
+
+	envCh := make(chan wire.Envelope, 64)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, clientWS, &env); err != nil {
+				return
+			}
+			envCh <- env
+		}
+	}()
+	awaitResp := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-envCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for response %s", id)
+			}
+		}
+	}
+
+	// 1. Create a cursor session; the agent reports composer-2.5[fast=true]
+	// as the current model.
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "cursor-cli", Cwd: "/tmp"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res := awaitResp("c-1")
+	if res.Error != nil {
+		t.Fatalf("create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	sessionID := createRes.Session.ID
+
+	// 2. Kill the session's subprocess and wait until the adapter has
+	// noticed (read loop EOF) so the next prompt deterministically hits
+	// acp.ErrClientClosed instead of a pipe-write race.
+	mocksMu.Lock()
+	if len(mocks) != 1 {
+		mocksMu.Unlock()
+		t.Fatalf("expected 1 spawned process, got %d", len(mocks))
+	}
+	firstAdapter := adapters[0]
+	mocksMu.Unlock()
+	mocks[0].kill()
+	select {
+	case <-firstAdapter.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("adapter did not notice the dead process")
+	}
+
+	// 3. Prompting must revive the session: fresh process pinned to the
+	// session's current model, session/load resume, then the prompt answers.
+	req, _ = wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: sessionID, Text: "still there?"})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("p-1")
+	if res.Error != nil {
+		t.Fatalf("prompt after process death should revive, got error: %+v", res.Error)
+	}
+	var promptRes wire.ChatPromptResponse
+	if err := json.Unmarshal(res.Payload, &promptRes); err != nil {
+		t.Fatalf("prompt payload: %v", err)
+	}
+	if promptRes.StopReason != "end_turn" {
+		t.Fatalf("stopReason: %q", promptRes.StopReason)
+	}
+
+	mocksMu.Lock()
+	if len(mocks) != 2 {
+		mocksMu.Unlock()
+		t.Fatalf("expected a revived second process, got %d", len(mocks))
+	}
+	second := mocks[1]
+	mocksMu.Unlock()
+	if second.spawnModel != "composer-2.5[fast=true]" {
+		t.Fatalf("revived process must pin the session's current model, got %q", second.spawnModel)
+	}
+	second.mu.Lock()
+	if second.lastLoadedSID != "sess-cursor-1" {
+		second.mu.Unlock()
+		t.Fatalf("expected session/load of sess-cursor-1, got %q", second.lastLoadedSID)
+	}
+	second.mu.Unlock()
+
+	// 4. The suppressed session/load replay must not leak into history.
+	req, _ = wire.MakeRequest("h-1", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: sessionID})
+	_ = wsjson.Write(ctx, clientWS, req)
+	res = awaitResp("h-1")
+	var hist wire.ChatGetHistoryResponse
+	if err := json.Unmarshal(res.Payload, &hist); err != nil {
+		t.Fatalf("history payload: %v", err)
+	}
+	for _, u := range hist.Updates {
+		if strings.Contains(string(u), "REPLAYED-HISTORY") {
+			t.Fatal("revive's session/load replay leaked into the session snapshot")
+		}
 	}
 }

@@ -297,6 +297,13 @@ Cursor-specific quirks, all handled inside the daemon:
   translated spelling then the bare base (`modelSpawnCandidates`), and
   handshake errors now embed the subprocess's stderr tail so the cause is
   visible.
+- **Dead-process revive**: a per-session subprocess can die while the session
+  sits idle (dev-stack restarts kill the daemon's children; the agent can
+  crash). A prompt then fails with `acp.ErrClientClosed`
+  ("prompt_failed: acp client closed"); `handlePrompt` revives the session —
+  fresh process pinned to the session's current model + `session/load`
+  resume with replay suppression (`reviveSessionProcess`) — and retries the
+  prompt once. Pinned by `TestChatCursorSessionRevive`.
 - **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
   force `ask` the same way as Devin (`askModeID`), and guest permission
   requests are auto-denied for every agent.

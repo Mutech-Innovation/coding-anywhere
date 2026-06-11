@@ -575,6 +575,46 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 	return nil
 }
 
+// reviveSessionProcess replaces a per-session subprocess that died while the
+// session sat idle (dev-stack restarts kill the daemon's children; the agent
+// binary can also crash on its own) with a fresh process pinned to the
+// session's current model, resuming the conversation via session/load with
+// the history replay suppressed — the same machinery as a model switch,
+// minus the model change. Returns the new adapter so the caller can retry
+// the call that found the corpse. Without this, a dead process left the
+// session a zombie: every subsequent prompt failed with "acp client closed"
+// until the user closed and recreated the session.
+func (r *Router) reviveSessionProcess(ctx context.Context, s *session) (*acpagent.Adapter, error) {
+	r.mu.Lock()
+	old := s.adapter
+	model := ""
+	if s.models != nil {
+		model = s.models.CurrentModelID
+	}
+	r.mu.Unlock()
+
+	a, err := r.buildAdapterForSession(s.AgentID, model)
+	if err != nil {
+		return nil, err
+	}
+	if old != nil {
+		_ = old.Close() // reap the dead process; no-op if it's already gone
+	}
+	s.suppressUpdates.Store(true)
+	err = a.LoadSession(ctx, s.NativeID, s.Cwd, nil)
+	s.suppressUpdates.Store(false)
+	if err != nil {
+		_ = a.Close()
+		return nil, fmt.Errorf("resume session on new process: %w", err)
+	}
+	r.mu.Lock()
+	s.adapter = a
+	r.mu.Unlock()
+	r.logger.Info("revived dead agent process",
+		"session", s.ID, "agent", s.AgentID, "model", model)
+	return a, nil
+}
+
 // modelConfigUpdate synthesises a `config_option_update` session/update from
 // the session's ACP models state. Returns nil when the agent didn't
 // advertise models (Devin pushes real config_option_update events instead).
@@ -643,6 +683,16 @@ func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 			r.mu.Unlock()
 		}()
 		stop, err := s.adapter.Prompt(ctx, s.NativeID, contentBlocks)
+		if err != nil && errors.Is(err, acp.ErrClientClosed) && r.perSessionProcess(s.AgentID) {
+			// The session's dedicated subprocess died while the session sat
+			// idle. Revive it and retry this prompt once instead of leaving
+			// a zombie session that errors forever.
+			if revived, rerr := r.reviveSessionProcess(ctx, s); rerr != nil {
+				err = fmt.Errorf("%w (process revive failed: %v)", err, rerr)
+			} else {
+				stop, err = revived.Prompt(ctx, s.NativeID, contentBlocks)
+			}
+		}
 		if err != nil {
 			r.respondErr(env, "prompt_failed", err.Error())
 			r.setStatus(s, "idle")
