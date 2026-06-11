@@ -2,10 +2,9 @@
 // boundaries so every segment except the live last one keeps its exact string
 // value from chunk to chunk — a memoized renderer then re-renders only the
 // live tail per chunk instead of the whole answer (O(answer²) per turn was
-// enough to OOM the tab twice). Moved verbatim from
-// apps/web/src/components/ChatPanel.tsx.
+// enough to OOM the tab twice).
 
-import { parseMarkdownLines } from './blocks.js';
+import { parseMarkdown } from './parse.js';
 
 /**
  * Incremental wrapper around streamingMarkdownSegments: when `text` merely
@@ -34,33 +33,33 @@ const STREAMING_SEGMENT_BLOCKS = 32;
 
 /**
  * Split markdown into segments that each parse to exactly the blocks the
- * whole text would: cuts happen only at block start lines, every
- * STREAMING_SEGMENT_BLOCKS blocks and before the final (still-streaming)
- * block. Returns [text] when there's nothing to split.
+ * whole text would: cuts happen only at top-level mdast node start offsets,
+ * every STREAMING_SEGMENT_BLOCKS blocks and before the final (still
+ * streaming) block. Top-level starts are safe cut points by construction —
+ * a fence/list/blockquote is a single node, so a cut can never land inside
+ * one. Returns [text] when there's nothing to split.
  */
 export function streamingMarkdownSegments(text: string): string[] {
   const norm = text.replace(/\r\n/g, '\n');
-  const lines = norm.split('\n');
-  const { starts } = parseMarkdownLines(lines);
+  const starts: number[] = [];
+  for (const node of parseMarkdown(norm).children) {
+    const offset = node.position?.start.offset;
+    // fromMarkdown always provides positions; skip (never cut at) any node
+    // where that somehow stopped holding rather than corrupt a slice.
+    if (typeof offset === 'number') starts.push(offset);
+  }
   if (starts.length <= 1) return [norm];
-  const cutLines: number[] = [];
+  const cuts: number[] = [];
   for (let b = STREAMING_SEGMENT_BLOCKS; b < starts.length; b += STREAMING_SEGMENT_BLOCKS) {
-    cutLines.push(starts[b]!);
+    cuts.push(starts[b]!);
   }
   const lastStart = starts[starts.length - 1]!;
-  if ((cutLines[cutLines.length - 1] ?? -1) < lastStart) cutLines.push(lastStart);
-  // Map line indices to char offsets in `norm` ('\n' joins the lines back).
-  const offsets: number[] = new Array<number>(lines.length);
-  let acc = 0;
-  for (let k = 0; k < lines.length; k++) {
-    offsets[k] = acc;
-    acc += (lines[k]?.length ?? 0) + 1;
-  }
+  if ((cuts[cuts.length - 1] ?? -1) < lastStart) cuts.push(lastStart);
   const segments: string[] = [];
   let prev = 0;
-  for (const cutLine of cutLines) {
-    segments.push(norm.slice(prev, offsets[cutLine]!));
-    prev = offsets[cutLine]!;
+  for (const cut of cuts) {
+    segments.push(norm.slice(prev, cut));
+    prev = cut;
   }
   segments.push(norm.slice(prev));
   return segments;

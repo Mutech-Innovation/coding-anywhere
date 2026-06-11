@@ -1,12 +1,10 @@
 import {
   ActionIcon,
   Alert,
-  Anchor,
   Badge,
   Box,
   Button,
   Card,
-  Code,
   Collapse,
   Group,
   List,
@@ -19,7 +17,6 @@ import {
   ScrollArea,
   SegmentedControl,
   Stack,
-  Table,
   Text,
   Textarea,
   TextInput,
@@ -27,7 +24,6 @@ import {
   Tooltip,
   UnstyledButton,
 } from '@mantine/core';
-import { nextStreamingSegments, parseMarkdownBlocks } from '@coding-anywhere/markdown';
 import type {
   AvailableCommand,
   ChatAttachment,
@@ -73,6 +69,7 @@ import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { useFiles } from '../store/files.js';
+import { MarkdownBody, StreamingMarkdownBody } from './Markdown.js';
 import {
   groupTranscript,
   hasMeaningfulPayload,
@@ -1590,206 +1587,6 @@ const ThoughtBubble = memo(function ThoughtBubble({ message }: { message: ChatMe
     </Group>
   );
 });
-
-// memo matters: StreamingMarkdownBody renders the stable prefix through this
-// component with a string prop that only changes value when a new paragraph
-// boundary settles, so the (potentially huge) prefix bails out of re-parsing
-// and re-rendering on every chunk.
-const MarkdownBody = memo(function MarkdownBody({
-  text,
-  size = 'sm',
-  c,
-}: {
-  text: string;
-  size?: 'xs' | 'sm';
-  c?: string;
-}) {
-  // Parsing is linear in the text, but bubbles re-render on every streaming
-  // chunk of their own text — memoize so toggles/theme re-renders are free.
-  const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
-  if (blocks.length === 0) return null;
-  return (
-    <Stack gap={6} style={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>
-      {blocks.map((block, i) => {
-        if (block.type === 'code') {
-          return (
-            <Box key={i}>
-              {block.language ? (
-                <Text size="xs" c="dimmed" mb={2}>
-                  {block.language}
-                </Text>
-              ) : null}
-              <Code
-                block
-                style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 }}
-              >
-                {block.text}
-              </Code>
-            </Box>
-          );
-        }
-        if (block.type === 'table') {
-          return (
-            <Table.ScrollContainer key={i} minWidth={0} type="native">
-              <Table
-                striped
-                withTableBorder
-                withColumnBorders
-                verticalSpacing={4}
-                horizontalSpacing="xs"
-                fz={size}
-                style={c ? { color: c } : undefined}
-              >
-                <Table.Thead>
-                  <Table.Tr>
-                    {block.header.map((cell, j) => (
-                      <Table.Th key={j} style={{ textAlign: block.align[j] ?? undefined }}>
-                        {renderInlineMarkdown(cell)}
-                      </Table.Th>
-                    ))}
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {block.rows.map((row, r) => (
-                    <Table.Tr key={r}>
-                      {block.header.map((_, j) => (
-                        <Table.Td key={j} style={{ textAlign: block.align[j] ?? undefined }}>
-                          {renderInlineMarkdown(row[j] ?? '')}
-                        </Table.Td>
-                      ))}
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
-          );
-        }
-        if (block.type === 'heading') {
-          return (
-            <Text key={i} size={block.level <= 2 ? 'md' : 'sm'} fw={700} c={c}>
-              {renderInlineMarkdown(block.text)}
-            </Text>
-          );
-        }
-        if (block.type === 'list') {
-          return (
-            <List
-              key={i}
-              type={block.ordered ? 'ordered' : 'unordered'}
-              size={size}
-              spacing={3}
-              c={c}
-            >
-              {block.items.map((item, j) => (
-                // Mantine's List.Item is `white-space: nowrap` by default,
-                // which lets long inline content overflow the bubble; force
-                // wrapping so list items behave like paragraphs.
-                <List.Item key={j} style={{ whiteSpace: 'normal' }}>
-                  {renderInlineMarkdown(item)}
-                </List.Item>
-              ))}
-            </List>
-          );
-        }
-        return (
-          <Text
-            key={i}
-            size={size}
-            c={c}
-            style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
-          >
-            {renderInlineMarkdown(block.text)}
-          </Text>
-        );
-      })}
-    </Stack>
-  );
-});
-
-/**
- * Markdown body for a still-streaming message. Re-parsing and re-rendering
- * the WHOLE text on every chunk is O(answer²) per turn — long answers from
- * fast-streaming agents (cursor's composer models emit hundreds of chunks a
- * second) saturated the main thread and OOM'd the tab even after the
- * transcript itself was memoized. Instead, split the text into segments at
- * block boundaries reported by the parser: every segment string except the
- * last is value-stable while the answer streams, so the memo'd MarkdownBody
- * bails out for them and each chunk re-renders only the live last block
- * (plus, on new-block chunks, one bounded segment).
- */
-function StreamingMarkdownBody({
-  text,
-  size,
-  c,
-}: {
-  text: string;
-  size?: 'xs' | 'sm';
-  c?: string;
-}) {
-  // Cache the previous split so an appended chunk re-segments only the live
-  // tail instead of re-parsing the whole text. Stale/discarded renders are
-  // harmless: nextStreamingSegments revalidates with startsWith and falls
-  // back to a full split.
-  const cache = useRef<{ text: string; segments: string[] }>({ text: '', segments: [] });
-  const segments = useMemo(() => {
-    const prev = cache.current;
-    cache.current = nextStreamingSegments(prev.text, prev.segments, text);
-    return cache.current.segments;
-  }, [text]);
-  if (segments.length <= 1) return <MarkdownBody text={segments[0] ?? ''} size={size} c={c} />;
-  return (
-    <Stack gap={6} style={{ minWidth: 0, maxWidth: '100%' }}>
-      {segments.map((segment, i) => (
-        <MarkdownBody key={i} text={segment} size={size} c={c} />
-      ))}
-    </Stack>
-  );
-}
-
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\))/g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
-    const token = match[0];
-    const key = `${match.index}-${token}`;
-    if (token.startsWith('`')) {
-      nodes.push(
-        <Code key={key} fz="0.85em" style={{ overflowWrap: 'anywhere' }}>
-          {token.slice(1, -1)}
-        </Code>,
-      );
-    } else if (token.startsWith('**')) {
-      nodes.push(
-        <Text key={key} span fw={700} inherit>
-          {token.slice(2, -2)}
-        </Text>,
-      );
-    } else if (token.startsWith('*')) {
-      nodes.push(
-        <Text key={key} span fs="italic" inherit>
-          {token.slice(1, -1)}
-        </Text>,
-      );
-    } else {
-      const link = token.match(/^\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)$/);
-      if (link) {
-        nodes.push(
-          <Anchor key={key} href={link[2]} target="_blank" rel="noreferrer">
-            {link[1]}
-          </Anchor>,
-        );
-      } else {
-        nodes.push(token);
-      }
-    }
-    last = match.index + token.length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
-}
 
 const TOOL_STATUS_COLOR: Record<string, string> = {
   pending: 'gray',

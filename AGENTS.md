@@ -34,6 +34,7 @@ end-to-end setup walkthrough.
 ├── packages/                  # Shared TypeScript packages (pnpm workspace)
 │   ├── protocol/              #   REST pair client, WS client, zod schemas
 │   ├── agents/                #   agent metadata/types
+│   ├── markdown/              #   chat markdown core: mdast parse + streaming segmentation
 │   ├── state/                 #   shared state helpers (web + future mobile)
 │   ├── tokens/                #   design tokens
 │   └── utils/                 #   misc shared utils
@@ -233,21 +234,32 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
 - Zustand stores live under `apps/web/src/store/`.
 - WebSocket client implementation is `packages/protocol/src/relay-ws-client.ts`.
 - REST pairing client implementation is `packages/protocol/src/pair.ts`.
+- **Chat markdown** is split in two on purpose (mobile is coming and the
+  pipeline must not fork per platform): `packages/markdown` is the shared
+  pure-TS core — `parseMarkdown` (CommonMark + GFM → mdast via
+  micromark/mdast-util-from-markdown, replacing the hand-rolled line parser
+  whose strict ```c++ fence regex once spun an infinite loop and OOM'd the
+renderer; the regression stays pinned in `segment.test.ts`) plus the
+streaming segmentation. `apps/web/src/components/Markdown.tsx`is the
+web-only renderer walking mdast → Mantine; a future RN renderer walks the
+same tree. Renderer security posture (guest page renders untrusted input):
+never emit raw HTML (mdast`html` nodes render as literal text), never
+fetch images (`image`renders as a link), only http(s)/mailto hrefs.
+Pinned by`apps/web/src/components/markdown-render.test.tsx`.
 - **Streaming render perf invariant** (two OOM'd-tab incidents, guest page
   first): a streaming chunk must do O(live tail) work, never O(transcript) or
-  O(answer). Two layers enforce it, both in `ChatPanel.tsx`: transcript
-  components (`MessageBubble`/`ToolCallCard`/...) are memo'd against the
-  store's structural sharing, and the live bubble renders through
-  `StreamingMarkdownBody`, which splits the text at parser block boundaries
-  (`streamingMarkdownSegments`) so settled segments are value-stable strings
-  whose memo'd `MarkdownBody` bails out — only the last block re-parses and
-  re-renders per chunk. Pinned by
-  `apps/web/src/components/markdown-stream.test.tsx`. Don't render a
-  streaming message's full text through a non-memo'd path. The markdown
-  mini-parser (`parseMarkdownLines`) must consume ≥1 line per block — a
-  ```-prefixed line its strict fence regex rejected (```c++) once looped it
-  forever, OOM-killing the renderer with a tiny JS heap; the fence opener now
-  accepts any info string and a progress guard backstops the loop.
+  O(answer). Two layers enforce it: transcript components in `ChatPanel.tsx`
+  (`MessageBubble`/`ToolCallCard`/...) are memo'd against the store's
+  structural sharing, and the live bubble renders through
+  `StreamingMarkdownBody` (`Markdown.tsx`), which splits the text at
+  top-level mdast node offsets (`streamingMarkdownSegments` in
+  `packages/markdown`) so settled segments are value-stable strings whose
+  memo'd `MarkdownBody` bails out — only the live tail re-parses and
+  re-renders per chunk, and a cut can never land inside a fence/list because
+  those are single nodes. Pinned by `packages/markdown/src/segment.test.ts`
+  (segment invariants) and `apps/web/src/components/markdown-stream.test.tsx`
+  (DOM streamed-vs-one-shot). Don't render a streaming message's full text
+  through a non-memo'd path.
 - **Flight recorder** (`apps/web/src/diagnostics.ts`): in-page crash/OOM
   forensics. Persists a snapshot (Chrome JS heap, DOM count, long tasks,
   chat gauges) to localStorage every 2s, but prints a `[ca-fr]` console line
