@@ -238,14 +238,17 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   pipeline must not fork per platform): `packages/markdown` is the shared
   pure-TS core — `parseMarkdown` (CommonMark + GFM → mdast via
   micromark/mdast-util-from-markdown, replacing the hand-rolled line parser
-  whose strict ```c++ fence regex once spun an infinite loop and OOM'd the
-renderer; the regression stays pinned in `segment.test.ts`) plus the
-streaming segmentation. `apps/web/src/components/Markdown.tsx`is the
-web-only renderer walking mdast → Mantine; a future RN renderer walks the
-same tree. Renderer security posture (guest page renders untrusted input):
-never emit raw HTML (mdast`html` nodes render as literal text), never
-fetch images (`image`renders as a link), only http(s)/mailto hrefs.
-Pinned by`apps/web/src/components/markdown-render.test.tsx`.
+  whose strict fence-opener regex choked on info strings like `c++` and spun
+  an infinite loop that OOM'd the renderer; the regression stays pinned in
+  `segment.test.ts`) plus the streaming segmentation.
+  `apps/web/src/components/Markdown.tsx` is the web-only renderer walking
+  mdast → Mantine; the v3 RN renderer walks the same tree. Renderer security
+  posture (guest page renders untrusted input): never emit raw HTML (mdast
+  `html` nodes render as literal text), never fetch images (`image` renders
+  as a link), only http(s)/mailto hrefs. Pinned by
+  `apps/web/src/components/markdown-render.test.tsx`. The full API contract
+  and the step-by-step RN renderer blueprint for v3 mobile live in
+  `packages/markdown/README.md` — start there before touching either half.
 - **Streaming render perf invariant** (two OOM'd-tab incidents, guest page
   first): a streaming chunk must do O(live tail) work, never O(transcript) or
   O(answer). Two layers enforce it: transcript components in `ChatPanel.tsx`

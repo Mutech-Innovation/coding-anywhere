@@ -29,7 +29,9 @@ machine.
   routes envelopes between daemon ↔ clients, proxies HTTP traffic to
   the daemon's localhost ports, and dispatches Web Push.
 - **Client** is the web app today; React Native shares the same
-  `packages/protocol` types and `packages/state` stores in v3.
+  `packages/protocol` types, `packages/state` stores and
+  `packages/markdown` chat-markdown core (parse + streaming segmentation;
+  see `packages/markdown/README.md` for the RN renderer blueprint) in v3.
 
 ## Networking
 
