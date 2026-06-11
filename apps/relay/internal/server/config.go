@@ -51,7 +51,7 @@ func Defaults() Config {
 		PairingTTL:        5 * time.Minute,
 		ClientTokenTTL:    1 * time.Hour,
 		DaemonTokenTTL:    30 * 24 * time.Hour,
-		GuestMaxTTL:       24 * time.Hour,
+		GuestMaxTTL:       7 * 24 * time.Hour,
 		GuestDefaultTTL:   30 * time.Minute,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
