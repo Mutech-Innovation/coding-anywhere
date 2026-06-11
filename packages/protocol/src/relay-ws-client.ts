@@ -169,7 +169,10 @@ export class RelayWSClient {
       }
     };
 
-    const onClose = (ev?: CloseEvent) => {
+    // Structural stand-in for the DOM CloseEvent: this package compiles
+    // without the "dom" lib (it also targets React Native / Node), where
+    // the global CloseEvent type doesn't exist.
+    const onClose = (ev?: { code: number; reason?: string }) => {
       if (ev) this.lastClose = { code: ev.code, reason: ev.reason ?? '' };
       this.stopPings();
       this.internal.ws = null;
