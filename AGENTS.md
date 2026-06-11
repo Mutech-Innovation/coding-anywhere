@@ -189,7 +189,15 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
     instead of reconnect-looping; it also pre-checks the token's `exp`
     client-side). Pinned by `TestGuestRejectedWithCloseReason`.
   - stamps `wire.Envelope.Origin = "guest"` on forwarded traffic and strips any
-    client-set Origin on ingress (trust marker for the daemon).
+    client/guest-set Origin on ingress (trust marker for the daemon). Daemon-set
+    Origin is preserved: the daemon stamps `Origin=guest` on events about guest
+    sessions and on responses to guest requests, and `Hub.Broadcast` skips
+    regular clients for such envelopes.
+- **Guest sessions are invisible to the owner's UI**: the daemon marks them
+  (`session.guest`, `ChatSession.Origin = "guest"`), excludes them from
+  `chat.list_sessions`, stamps their event broadcasts with `Origin=guest`
+  (relay fans those out to guests only), and skips the finished-turn Web Push.
+  Pinned by `TestGuestSessionHiddenFromClients`.
 - **Daemon enforcement** (`internal/chatrouter/router.go`): a session whose
   create request carries `Origin=guest` is forced into ask mode at creation
   (`askModeID` + `SetMode`) and **auto-denies every permission request**

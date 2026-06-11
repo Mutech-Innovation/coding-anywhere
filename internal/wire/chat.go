@@ -59,6 +59,11 @@ type ChatSession struct {
 	Title     string    `json:"title,omitempty"`
 	Status    string    `json:"status"` // "idle" | "thinking" | "awaiting_permission" | "closed"
 	StartedAt time.Time `json:"started_at"`
+	// Origin is "guest" for sessions created through a read-only share link.
+	// Guest sessions are hidden from the account's regular clients: the
+	// daemon excludes them from list_sessions and stamps Origin=guest on
+	// their event envelopes so the relay only fans them out to guests.
+	Origin string `json:"origin,omitempty"`
 }
 
 // SessionMode mirrors the ACP `SessionMode` value type. We surface modes
@@ -108,10 +113,10 @@ type ChatPromptRequest struct {
 }
 
 type Attachment struct {
-	Type     string `json:"type"`     // "image" | "file"
+	Type     string `json:"type"` // "image" | "file"
 	Name     string `json:"name"`
-	Data     string `json:"data,omitempty"`     // base64
-	URI      string `json:"uri,omitempty"`      // file://...
+	Data     string `json:"data,omitempty"` // base64
+	URI      string `json:"uri,omitempty"`  // file://...
 	MimeType string `json:"mime_type,omitempty"`
 }
 

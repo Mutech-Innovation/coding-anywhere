@@ -49,6 +49,9 @@ export const ChatSession = z.object({
   title: z.string().optional(),
   status: ChatSessionStatus,
   started_at: z.string(),
+  /** "guest" for sessions created via a read-only share link. The daemon
+   * hides those from regular clients; guests see it on their own session. */
+  origin: z.string().optional(),
 });
 export type ChatSession = z.infer<typeof ChatSession>;
 

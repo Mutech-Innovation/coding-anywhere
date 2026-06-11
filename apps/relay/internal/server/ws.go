@@ -225,9 +225,14 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 		if err := wsjson.Read(ctx, conn.ws, &env); err != nil {
 			return err
 		}
-		// Origin is a relay-set trust marker; never honour one a peer set.
-		// guestGate re-stamps it for allowed guest traffic below.
-		env.Origin = ""
+		// Origin is a trust marker; never honour one a client/guest set —
+		// guestGate re-stamps it for allowed guest traffic below. Daemons
+		// are trusted: they stamp Origin=guest on envelopes about guest
+		// sessions (events + responses) so the hub keeps that traffic away
+		// from the account's regular clients.
+		if conn.kind != auth.DeviceDaemon {
+			env.Origin = ""
+		}
 		if env.ID == "" {
 			conn.deliver(ctx, mustEnvelope(wire.MakeResponse("0", env.Channel, nil, &wire.EnvelopeError{
 				Code:    "invalid_envelope",

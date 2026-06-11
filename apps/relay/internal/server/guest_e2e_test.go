@@ -264,6 +264,157 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 	}
 }
 
+// TestGuestSessionHiddenFromClients pins the "guest chatter stays out of the
+// owner's UI" contract: sessions created through a share link must not appear
+// in chat.list_sessions, and none of their traffic (session_created / status /
+// update events, responses to guest requests, finished-turn notifications)
+// may reach the account's regular clients — while the guest itself still
+// receives everything for its own session.
+func TestGuestSessionHiddenFromClients(t *testing.T) {
+	hs, _ := newPairingTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	// The mock emits an agent_message_chunk update during every prompt, so
+	// there is real guest-session traffic to (not) observe.
+	_, stdout, stdin := newChatMockACP(t)
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{chatrouter.AgentDevin: func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		return acpagent.NewWithStreams(stdin, stdout, opts), nil
+	}}, "/tmp")
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner client connection — it must stay completely silent throughout.
+	ownerWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatalf("owner dial: %v", err)
+	}
+	t.Cleanup(func() { _ = ownerWS.Close(websocket.StatusNormalClosure, "") })
+	ownerCh := make(chan wire.Envelope, 256)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, ownerWS, &env); err != nil {
+				return
+			}
+			ownerCh <- env
+		}
+	}()
+
+	// Guest: create a session and run a full prompt turn.
+	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "")
+	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
+	if err != nil {
+		t.Fatalf("guest dial: %v", err)
+	}
+	t.Cleanup(func() { _ = guestWS.Close(websocket.StatusNormalClosure, "") })
+	guestCh := make(chan wire.Envelope, 256)
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, guestWS, &env); err != nil {
+				return
+			}
+			guestCh <- env
+		}
+	}()
+	var guestEvents []wire.Envelope
+	awaitGuest := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-guestCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+				if env.Type == wire.TypeEvent {
+					guestEvents = append(guestEvents, env)
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for guest response %s", id)
+				return wire.Envelope{}
+			}
+		}
+	}
+
+	req, _ := wire.MakeRequest("c-1", wire.ChannelChat, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "devin"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	res := awaitGuest("c-1")
+	if res.Error != nil {
+		t.Fatalf("guest create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		t.Fatalf("create payload: %v", err)
+	}
+	guestSession := createRes.Session.ID
+	if createRes.Session.Origin != "guest" {
+		t.Fatalf("guest session should carry origin=guest, got %q", createRes.Session.Origin)
+	}
+
+	req, _ = wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: guestSession, Text: "hello"})
+	_ = wsjson.Write(ctx, guestWS, req)
+	if res = awaitGuest("p-1"); res.Error != nil {
+		t.Fatalf("guest prompt error: %+v", res.Error)
+	}
+
+	// The guest must still receive its own session's update events (the
+	// Origin stamp routes traffic, it must not break guest delivery).
+	sawUpdate := false
+	for _, env := range guestEvents {
+		if env.Method == wire.ChatEventUpdate && strings.Contains(string(env.Payload), guestSession) {
+			sawUpdate = true
+		}
+	}
+	if !sawUpdate {
+		t.Fatal("guest did not receive its own chat.update events")
+	}
+
+	// Owner barrier + assertions: list_sessions answers AFTER the daemon
+	// already emitted all guest traffic (single ordered socket), so by the
+	// time the response arrives, any leaked guest envelope would already be
+	// in ownerCh ahead of it.
+	req, _ = wire.MakeRequest("l-1", wire.ChannelChat, wire.ChatMethodListSessions, map[string]any{})
+	_ = wsjson.Write(ctx, ownerWS, req)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case env := <-ownerCh:
+			if env.ID == "l-1" && env.Type == wire.TypeResponse {
+				var list wire.ChatListSessionsResponse
+				if err := json.Unmarshal(env.Payload, &list); err != nil {
+					t.Fatalf("list payload: %v", err)
+				}
+				if len(list.Sessions) != 0 {
+					t.Fatalf("guest session leaked into owner list_sessions: %+v", list.Sessions)
+				}
+				return // success: nothing leaked before the barrier either
+			}
+			t.Fatalf("owner received guest-session traffic: type=%s channel=%s method=%s payload=%s",
+				env.Type, env.Channel, env.Method, string(env.Payload))
+		case <-deadline:
+			t.Fatal("timeout waiting for owner list_sessions response")
+		}
+	}
+}
+
 func createGuestShareToken(t *testing.T, ctx context.Context, baseURL, bearer, cwd, model string) string {
 	t.Helper()
 	token, _ := createGuestShare(t, ctx, baseURL, bearer, cwd, model)

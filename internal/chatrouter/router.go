@@ -357,6 +357,13 @@ func (r *Router) handleListSessions(env wire.Envelope) {
 	r.mu.Lock()
 	out := make([]wire.ChatSession, 0, len(r.sessions))
 	for _, s := range r.sessions {
+		// Guest (share-link) sessions are invisible to regular clients —
+		// the owner's UI should not fill up with guest chatter. (The relay
+		// never forwards list_sessions from guests, so the requester here
+		// is always a regular client.)
+		if s.guest {
+			continue
+		}
 		out = append(out, s.ChatSession)
 	}
 	r.mu.Unlock()
@@ -441,8 +448,11 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	// Read-only guest ("ask"-share) sessions are forced into ask mode at
 	// creation so the agent cannot make changes, no matter what mode it
 	// defaulted to. The relay also blocks guests from calling set_mode.
+	// They're also stamped with Origin=guest on the wire so they stay out
+	// of the owner's session list and event stream.
 	s.guest = env.Origin == wire.OriginGuest
 	if s.guest {
+		s.ChatSession.Origin = wire.OriginGuest
 		if askID := askModeID(s.modes); askID != "" && askID != s.currentModeID {
 			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
 			if err := a.SetMode(setCtx, nativeID, askID); err != nil {
@@ -504,7 +514,7 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 		CurrentModeID:  s.currentModeID,
 		PendingUpdates: buffered,
 	})
-	r.broadcastEvent(wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
+	r.broadcastSessionEvent(s.guest, wire.ChatEventSessionCreated, wire.ChatSessionCreatedEvent{Session: s.ChatSession})
 }
 
 // perSessionProcess reports whether the agent runs one subprocess per chat
@@ -798,7 +808,7 @@ func (r *Router) handleCloseSession(env wire.Envelope, req wire.ChatCloseSession
 		_ = s.adapter.Close()
 	}
 	r.respondOK(env, map[string]bool{"ok": true})
-	r.broadcastEvent(wire.ChatEventSessionClosed, wire.ChatSessionClosedEvent{SessionID: s.ID})
+	r.broadcastSessionEvent(s.guest, wire.ChatEventSessionClosed, wire.ChatSessionClosedEvent{SessionID: s.ID})
 }
 
 func (r *Router) handleResolvePermission(env wire.Envelope, req wire.ChatResolvePermissionRequest) {
@@ -1015,7 +1025,7 @@ func (r *Router) handleAgentUpdate(agentID, nativeSessionID string, update json.
 
 	seq := s.appendUpdate(update)
 	r.applyUpdateStateMutations(s, update)
-	r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+	r.broadcastSessionEvent(s.guest, wire.ChatEventUpdate, wire.ChatUpdateEvent{
 		SessionID:  daemonID,
 		Update:     update,
 		SequenceID: seq,
@@ -1105,7 +1115,7 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 		}
 		if synthetic := r.modelConfigUpdate(s); synthetic != nil {
 			seq := s.appendUpdate(synthetic)
-			r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+			r.broadcastSessionEvent(s.guest, wire.ChatEventUpdate, wire.ChatUpdateEvent{
 				SessionID:  s.ID,
 				Update:     synthetic,
 				SequenceID: seq,
@@ -1141,7 +1151,7 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 			r.logger.Warn("synthesise config_option_update", "err", err)
 		} else {
 			seq := s.appendUpdate(synthetic)
-			r.broadcastEvent(wire.ChatEventUpdate, wire.ChatUpdateEvent{
+			r.broadcastSessionEvent(s.guest, wire.ChatEventUpdate, wire.ChatUpdateEvent{
 				SessionID:  s.ID,
 				Update:     synthetic,
 				SequenceID: seq,
@@ -1279,13 +1289,16 @@ func (r *Router) setStatus(s *session, status string) {
 	id := s.ID
 	title := s.Title
 	agentID := s.AgentID
+	guest := s.guest
 	r.mu.Unlock()
-	r.broadcastEvent(wire.ChatEventSessionStatus, wire.ChatSessionStatusEvent{
+	r.broadcastSessionEvent(guest, wire.ChatEventSessionStatus, wire.ChatSessionStatusEvent{
 		SessionID: id, Status: status,
 	})
 	// Push a Web Push when the agent finishes a turn so backgrounded
-	// devices see the result without keeping the tab open.
-	if status == "idle" && (prev == "thinking" || prev == "awaiting_permission") {
+	// devices see the result without keeping the tab open. Guest sessions
+	// don't ping the owner's devices — their activity is invisible to
+	// regular clients by design.
+	if !guest && status == "idle" && (prev == "thinking" || prev == "awaiting_permission") {
 		body := agentDisplayName(agentID) + " has finished thinking."
 		if title != "" {
 			body = title + " · " + body
@@ -1335,6 +1348,9 @@ func (r *Router) respondOK(env wire.Envelope, payload any) {
 		r.logger.Warn("respondOK encode", "err", err)
 		return
 	}
+	// Echo the request's Origin so the relay can route guest responses to
+	// guests only instead of fanning them out to every regular client.
+	res.Origin = env.Origin
 	r.cli.Send(res)
 }
 
@@ -1345,16 +1361,27 @@ func (r *Router) respondErr(env wire.Envelope, code, msg string) {
 	if err != nil {
 		return
 	}
+	res.Origin = env.Origin
 	r.cli.Send(res)
 }
 
 func (r *Router) broadcastEvent(method string, payload any) {
+	r.broadcastSessionEvent(false, method, payload)
+}
+
+// broadcastSessionEvent emits a chat event; events about guest (share-link)
+// sessions are stamped Origin=guest so the relay fans them out to guests
+// only — the owner's regular clients never see guest chatter.
+func (r *Router) broadcastSessionEvent(guest bool, method string, payload any) {
 	r.eventSeq.Add(1)
 	id := fmt.Sprintf("%s-%d", ulid.Make().String(), r.eventSeq.Load())
 	ev, err := wire.MakeEvent(id, wire.ChannelChat, method, payload)
 	if err != nil {
 		r.logger.Warn("MakeEvent chat", "method", method, "err", err)
 		return
+	}
+	if guest {
+		ev.Origin = wire.OriginGuest
 	}
 	r.cli.Send(ev)
 }
