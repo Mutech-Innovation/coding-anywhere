@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { BrandLogo } from './components/BrandLogo.js';
 import { GuestChat } from './components/GuestChat.js';
+import { startFlightRecorder } from './diagnostics.js';
 import { useChat } from './store/chat.js';
 import { useConnection } from './store/connection.js';
 
@@ -61,6 +62,12 @@ export function GuestApp() {
   const [error, setError] = useState<string | null>(null);
   const activeId = useChat((s) => s.activeId);
   const startedRef = useRef(false);
+
+  // Always-on flight recorder: the guest page runs on machines we can't
+  // attach DevTools to ahead of time, and a crashed tab loses its console.
+  // See diagnostics.ts — it logs [ca-fr] lines and persists snapshots so the
+  // NEXT page load can print what the tab looked like right before a crash.
+  useEffect(() => startFlightRecorder({ page: 'guest' }), []);
 
   useEffect(() => {
     if (!token || !relay) {

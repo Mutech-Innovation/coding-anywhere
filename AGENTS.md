@@ -244,6 +244,14 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   re-renders per chunk. Pinned by
   `apps/web/src/components/markdown-stream.test.tsx`. Don't render a
   streaming message's full text through a non-memo'd path.
+- **Flight recorder** (`apps/web/src/diagnostics.ts`): in-page crash/OOM
+  forensics. Logs a `[ca-fr]` line every 2s (Chrome JS heap, DOM count,
+  long tasks, chat gauges) and persists a rolling snapshot window to
+  localStorage; a crashed tab never fires pagehide, so the next load prints
+  the previous session's record (`takeCrashRecord`). Always on for the guest
+  page; owner app opt-in via `?debug` or
+  `localStorage['coding-anywhere/debug']='1'`. No `[ca-fr]` lines in a user's
+  console ⇒ they're on a stale bundle. Pinned by `diagnostics.test.ts`.
 
 ## Daemon orientation
 

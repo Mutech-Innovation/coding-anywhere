@@ -45,12 +45,21 @@ import { PortsPanel } from './components/PortsPanel.js';
 import { ShareAskMenu, ShareAskModal } from './components/ShareAskMenu.js';
 import { TerminalsPanel } from './components/TerminalsPanel.js';
 import { WelcomeTab } from './components/WelcomeTab.js';
+import { isDebugEnabled, startFlightRecorder } from './diagnostics.js';
 import { useConnection } from './store/connection.js';
 
 export function App() {
   const credentials = useConnection((s) => s.credentials);
   const hydrate = useConnection((s) => s.hydrate);
   const [hydrating, setHydrating] = useState(true);
+
+  // Opt-in flight recorder for the owner UI: append ?debug to the URL or
+  // localStorage.setItem('coding-anywhere/debug', '1'). Guest page has it
+  // always on (see GuestApp).
+  useEffect(() => {
+    if (!isDebugEnabled()) return;
+    return startFlightRecorder({ page: 'app' });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
