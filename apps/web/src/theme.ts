@@ -30,6 +30,10 @@ const ink: MantineColorsTuple = [
 export const theme = createTheme({
   primaryColor: 'brand',
   primaryShade: { light: 8, dark: 3 },
+  // Disable Mantine-driven transitions (Collapse, Popover, …) for users who
+  // ask the OS for reduced motion; our own CSS animations honour the same
+  // media query in styles.css.
+  respectReducedMotion: true,
   colors: {
     brand,
     ink,

@@ -7,8 +7,10 @@ import {
   Button,
   Card,
   Code,
+  Collapse,
   Group,
   List,
+  Loader,
   Menu,
   Modal,
   Paper,
@@ -70,6 +72,7 @@ import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { useFiles } from '../store/files.js';
+import { groupTranscript, isActiveToolCall, type TranscriptEntry } from './transcript.js';
 
 const STATUS_COLOR: Record<string, string> = {
   idle: 'gray',
@@ -540,24 +543,21 @@ function ChatView({ sessionId }: { sessionId: string }) {
     session?.plan?.length,
   ]);
 
-  const transcriptItems = useMemo(
-    () =>
-      [
-        ...(session?.messages ?? []).map((message) => ({
-          type: 'message' as const,
-          id: message.id,
-          order: message.order,
-          message,
-        })),
-        ...Object.values(session?.toolCalls ?? {}).map((call) => ({
-          type: 'tool' as const,
-          id: call.id,
-          order: call.order,
-          call,
-        })),
-      ].sort((a, b) => a.order - b.order),
-    [session?.messages, session?.toolCalls],
-  );
+  const transcriptItems = useMemo(() => {
+    const entries: TranscriptEntry[] = [
+      ...(session?.messages ?? []).map((message) => ({
+        type: 'message' as const,
+        order: message.order,
+        message,
+      })),
+      ...Object.values(session?.toolCalls ?? {}).map((call) => ({
+        type: 'tool' as const,
+        order: call.order,
+        call,
+      })),
+    ].sort((a, b) => a.order - b.order);
+    return groupTranscript(entries);
+  }, [session?.messages, session?.toolCalls]);
 
   if (!session) return null;
 
@@ -612,7 +612,11 @@ function ChatView({ sessionId }: { sessionId: string }) {
               </Badge>
             </Tooltip>
           ) : (
-            <Badge color={STATUS_COLOR[status] ?? 'gray'} variant="light">
+            <Badge
+              className={status === 'thinking' ? 'cw-pulse' : undefined}
+              color={STATUS_COLOR[status] ?? 'gray'}
+              variant="light"
+            >
               {status}
             </Badge>
           )}
@@ -644,9 +648,11 @@ function ChatView({ sessionId }: { sessionId: string }) {
           <Stack gap="sm" px="xs">
             {transcriptItems.map((item) =>
               item.type === 'message' ? (
-                <MessageBubble key={`message-${item.id}`} message={item.message} />
+                <MessageBubble key={item.key} message={item.message} />
+              ) : item.type === 'tool' ? (
+                <ToolCallCard key={item.key} call={item.call} />
               ) : (
-                <ToolCallCard key={`tool-${item.id}`} call={item.call} />
+                <ToolCallGroupCard key={item.key} calls={item.calls} />
               ),
             )}
           </Stack>
@@ -1473,6 +1479,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <Group justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start">
       <Card
+        className="cw-rise-in"
         radius="md"
         padding="sm"
         style={isUser ? userStyle : isSystem ? systemStyle : agentStyle}
@@ -1497,6 +1504,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
   return (
     <Group justify="flex-start" align="flex-start">
       <Card
+        className="cw-rise-in"
         radius="md"
         padding="sm"
         miw={220}
@@ -1526,11 +1534,13 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
             {expanded ? '收起' : '展开'}
           </Button>
         </Group>
-        {expanded ? (
-          <Box mt="xs" style={{ fontStyle: 'italic' }}>
-            <MarkdownBody text={text} size="xs" c="dimmed" />
-          </Box>
-        ) : null}
+        <LazyCollapse opened={expanded}>
+          {() => (
+            <Box mt="xs" style={{ fontStyle: 'italic' }}>
+              <MarkdownBody text={text} size="xs" c="dimmed" />
+            </Box>
+          )}
+        </LazyCollapse>
       </Card>
     </Group>
   );
@@ -1806,6 +1816,18 @@ const TOOL_STATUS_COLOR: Record<string, string> = {
   failed: 'red',
 };
 
+/**
+ * Animated Collapse that defers mounting its (potentially expensive) children
+ * until the first open, then keeps them mounted so the close animation has
+ * content to shrink over. Used for tool-call detail bodies, which stringify
+ * raw JSON payloads we don't want to render for every collapsed row.
+ */
+function LazyCollapse({ opened, children }: { opened: boolean; children: () => ReactNode }) {
+  const everOpened = useRef(false);
+  if (opened) everOpened.current = true;
+  return <Collapse in={opened}>{everOpened.current ? children() : null}</Collapse>;
+}
+
 export function ToolCallCard({ call }: { call: ChatToolCall }) {
   const [expanded, setExpanded] = useState(false);
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
@@ -1817,6 +1839,7 @@ export function ToolCallCard({ call }: { call: ChatToolCall }) {
   // preserved without dominating the whole card visually.
   return (
     <Card
+      className="cw-rise-in"
       padding="sm"
       radius="md"
       maw="92%"
@@ -1829,7 +1852,12 @@ export function ToolCallCard({ call }: { call: ChatToolCall }) {
     >
       <Group gap="xs" justify="space-between" wrap="nowrap">
         <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
-          <ThemeIcon size="sm" variant="light" color={TOOL_STATUS_COLOR[status] ?? 'gray'}>
+          <ThemeIcon
+            size="sm"
+            variant="light"
+            color={TOOL_STATUS_COLOR[status] ?? 'gray'}
+            style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
+          >
             {iconForKind(call.kind)}
           </ThemeIcon>
           <Text size="sm" fw={600} truncate>
@@ -1854,45 +1882,219 @@ export function ToolCallCard({ call }: { call: ChatToolCall }) {
         ) : null}
       </Group>
       {call.locations && call.locations.length > 0 ? (
-        <Group gap={4} mt={6} wrap="wrap">
-          {call.locations.map((loc, i) => (
-            <Badge
-              key={i}
-              size="xs"
-              variant="light"
-              color="brand"
-              leftSection={<IconFileText size={10} />}
-            >
-              {shortenPath(loc.path)}
-              {loc.line ? `:${loc.line}` : ''}
-            </Badge>
-          ))}
-        </Group>
+        <ToolCallLocations locations={call.locations} mt={6} />
       ) : null}
-      {expanded ? (
-        <Stack gap="xs" mt="sm">
-          {call.content?.map((c, i) => (
-            <ToolContentBlockView key={i} block={c} />
-          ))}
-          {call.rawInput != null ? (
-            <Box>
-              <Text size="xs" c="dimmed" mb={4}>
-                input
-              </Text>
-              <RawJSONBlock value={safeStringify(call.rawInput)} />
-            </Box>
-          ) : null}
-          {call.rawOutput != null ? (
-            <Box>
-              <Text size="xs" c="dimmed" mb={4}>
-                output
-              </Text>
-              <RawJSONBlock value={safeStringify(call.rawOutput)} />
-            </Box>
-          ) : null}
-        </Stack>
-      ) : null}
+      <LazyCollapse opened={expanded}>
+        {() => (
+          <Box mt="sm">
+            <ToolCallDetails call={call} />
+          </Box>
+        )}
+      </LazyCollapse>
     </Card>
+  );
+}
+
+function ToolCallLocations({
+  locations,
+  mt,
+}: {
+  locations: NonNullable<ChatToolCall['locations']>;
+  mt?: number;
+}) {
+  return (
+    <Group gap={4} mt={mt} wrap="wrap">
+      {locations.map((loc, i) => (
+        <Badge
+          key={i}
+          size="xs"
+          variant="light"
+          color="brand"
+          leftSection={<IconFileText size={10} />}
+        >
+          {shortenPath(loc.path)}
+          {loc.line ? `:${loc.line}` : ''}
+        </Badge>
+      ))}
+    </Group>
+  );
+}
+
+/** Expanded body shared by ToolCallCard and ToolCallRow. */
+function ToolCallDetails({
+  call,
+  withLocations = false,
+}: {
+  call: ChatToolCall;
+  withLocations?: boolean;
+}) {
+  return (
+    <Stack gap="xs">
+      {withLocations && call.locations && call.locations.length > 0 ? (
+        <ToolCallLocations locations={call.locations} />
+      ) : null}
+      {call.content?.map((c, i) => (
+        <ToolContentBlockView key={i} block={c} />
+      ))}
+      {call.rawInput != null ? (
+        <Box>
+          <Text size="xs" c="dimmed" mb={4}>
+            input
+          </Text>
+          <RawJSONBlock value={safeStringify(call.rawInput)} />
+        </Box>
+      ) : null}
+      {call.rawOutput != null ? (
+        <Box>
+          <Text size="xs" c="dimmed" mb={4}>
+            output
+          </Text>
+          <RawJSONBlock value={safeStringify(call.rawOutput)} />
+        </Box>
+      ) : null}
+    </Stack>
+  );
+}
+
+/**
+ * One collapsible card for a run of >= TOOL_GROUP_THRESHOLD consecutive tool
+ * calls. Collapsed by default; while the run is still executing it surfaces
+ * just the in-flight call(s) as live rows, and once everything finishes it
+ * shrinks to the summary header. Expanding shows every call as a compact row.
+ */
+export function ToolCallGroupCard({ calls }: { calls: ChatToolCall[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const active = calls.filter(isActiveToolCall);
+  const failed = calls.filter((c) => c.status === 'failed').length;
+  const done = calls.length - active.length;
+  const running = active.length > 0;
+  const color = running ? 'yellow' : failed > 0 ? 'red' : 'green';
+  // Rows render through nested Collapses so completed live rows shrink away
+  // smoothly while the run executes, and the whole block closes in one motion
+  // when the run finishes (or the user toggles the header).
+  const visibleIds = new Set((expanded ? calls : running ? active : []).map((c) => c.id));
+  return (
+    <Card
+      className="cw-rise-in"
+      padding="sm"
+      radius="md"
+      maw="92%"
+      style={{
+        alignSelf: 'flex-start',
+        background: 'light-dark(#ffffff, var(--mantine-color-dark-6))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        color: 'var(--mantine-color-text)',
+      }}
+    >
+      <UnstyledButton
+        className="cw-row-hover"
+        onClick={() => setExpanded((x) => !x)}
+        w="100%"
+        px={6}
+        py={3}
+        style={{ borderRadius: 6 }}
+        aria-expanded={expanded}
+      >
+        <Group gap="xs" justify="space-between" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
+            <ThemeIcon
+              size="sm"
+              variant="light"
+              color={color}
+              style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
+            >
+              <IconTool size={12} />
+            </ThemeIcon>
+            <Text size="sm" fw={600}>
+              {calls.length} 个工具调用
+            </Text>
+            {running ? <Loader size={12} color="yellow" /> : null}
+            <Badge size="xs" variant="light" color={color}>
+              {running ? `${done}/${calls.length} 完成` : failed > 0 ? `${failed} 失败` : '已完成'}
+            </Badge>
+          </Group>
+          <IconChevronRight
+            size={14}
+            style={{
+              transform: expanded ? 'rotate(90deg)' : undefined,
+              transition: 'transform 120ms',
+              flexShrink: 0,
+            }}
+          />
+        </Group>
+      </UnstyledButton>
+      <Collapse in={visibleIds.size > 0}>
+        <Box mt={8}>
+          {calls.map((call) => (
+            <Collapse key={call.id} in={visibleIds.has(call.id)}>
+              <ToolCallRow call={call} />
+            </Collapse>
+          ))}
+        </Box>
+      </Collapse>
+    </Card>
+  );
+}
+
+/** Compact single-line rendering of a tool call inside ToolCallGroupCard. */
+function ToolCallRow({ call }: { call: ChatToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
+  const status = call.status ?? 'pending';
+  const hasDetails =
+    call.rawInput != null ||
+    call.rawOutput != null ||
+    (call.content && call.content.length > 0) ||
+    (call.locations && call.locations.length > 0);
+  return (
+    <Box className="cw-rise-in">
+      <UnstyledButton
+        className={hasDetails ? 'cw-row-hover' : undefined}
+        onClick={hasDetails ? () => setExpanded((x) => !x) : undefined}
+        w="100%"
+        px={6}
+        py={3}
+        style={{ borderRadius: 4, cursor: hasDetails ? 'pointer' : 'default' }}
+        aria-expanded={hasDetails ? expanded : undefined}
+      >
+        <Group gap="xs" wrap="nowrap">
+          <ThemeIcon
+            size="xs"
+            variant="light"
+            color={TOOL_STATUS_COLOR[status] ?? 'gray'}
+            style={{ transition: 'background-color 200ms ease, color 200ms ease' }}
+          >
+            {iconForKind(call.kind)}
+          </ThemeIcon>
+          <Text size="xs" truncate style={{ flex: 1, minWidth: 0 }}>
+            {title}
+          </Text>
+          {isActiveToolCall(call) ? <Loader size={10} color="yellow" /> : null}
+          {status === 'failed' ? (
+            <Badge size="xs" color="red" variant="light">
+              failed
+            </Badge>
+          ) : null}
+          {hasDetails ? (
+            <IconChevronRight
+              size={12}
+              style={{
+                transform: expanded ? 'rotate(90deg)' : undefined,
+                transition: 'transform 120ms',
+                flexShrink: 0,
+              }}
+            />
+          ) : null}
+        </Group>
+      </UnstyledButton>
+      <LazyCollapse opened={expanded}>
+        {() => (
+          <Box pl={28} pr={6} pb={4} pt={2}>
+            <ToolCallDetails call={call} withLocations />
+          </Box>
+        )}
+      </LazyCollapse>
+    </Box>
   );
 }
 

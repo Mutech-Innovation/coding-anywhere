@@ -2,12 +2,9 @@ import { ActionIcon, Box, Group, ScrollArea, Stack, Text, Textarea, Tooltip } fr
 import { IconPlayerStopFilled, IconSend } from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { type ChatMessage, type ChatToolCall, useChat } from '../store/chat.js';
-import { MessageBubble, ToolCallCard } from './ChatPanel.js';
-
-type TranscriptItem =
-  | { kind: 'msg'; order: number; msg: ChatMessage }
-  | { kind: 'tool'; order: number; tool: ChatToolCall };
+import { useChat } from '../store/chat.js';
+import { MessageBubble, ToolCallCard, ToolCallGroupCard } from './ChatPanel.js';
+import { groupTranscript, type TranscriptEntry } from './transcript.js';
 
 /**
  * GuestChat is the minimal, read-only chat surface used by the public "ask"
@@ -25,24 +22,29 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
   const status = session?.session.status;
   const thinking = status === 'thinking' || status === 'awaiting_permission';
 
-  const items = useMemo<TranscriptItem[]>(() => {
+  const entries = useMemo<TranscriptEntry[]>(() => {
     if (!session) return [];
-    const out: TranscriptItem[] = [
-      ...session.messages.map((msg) => ({ kind: 'msg' as const, order: msg.order, msg })),
-      ...Object.values(session.toolCalls).map((tool) => ({
-        kind: 'tool' as const,
-        order: tool.order,
-        tool,
+    const out: TranscriptEntry[] = [
+      ...session.messages.map((message) => ({
+        type: 'message' as const,
+        order: message.order,
+        message,
+      })),
+      ...Object.values(session.toolCalls).map((call) => ({
+        type: 'tool' as const,
+        order: call.order,
+        call,
       })),
     ];
     out.sort((a, b) => a.order - b.order);
     return out;
   }, [session]);
+  const items = useMemo(() => groupTranscript(entries), [entries]);
 
   useEffect(() => {
     const el = viewportRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [items.length, thinking]);
+  }, [entries.length, thinking]);
 
   if (!session) return null;
 
@@ -72,15 +74,17 @@ export function GuestChat({ sessionId, disabled }: { sessionId: string; disabled
             </Stack>
           ) : (
             items.map((item) =>
-              item.kind === 'msg' ? (
-                <MessageBubble key={item.msg.id} message={item.msg} />
+              item.type === 'message' ? (
+                <MessageBubble key={item.key} message={item.message} />
+              ) : item.type === 'tool' ? (
+                <ToolCallCard key={item.key} call={item.call} />
               ) : (
-                <ToolCallCard key={item.tool.id} call={item.tool} />
+                <ToolCallGroupCard key={item.key} calls={item.calls} />
               ),
             )
           )}
           {thinking ? (
-            <Text c="dimmed" size="sm" fs="italic">
+            <Text className="cw-pulse" c="dimmed" size="sm" fs="italic">
               {agentName} 正在思考…
             </Text>
           ) : null}

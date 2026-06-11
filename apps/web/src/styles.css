@@ -12,8 +12,16 @@ body {
   background: var(--mantine-color-body);
   color: var(--mantine-color-text);
   font-family:
-    'Inter', 'PingFang SC', 'Source Han Sans SC', 'Noto Sans SC', ui-sans-serif, system-ui,
-    -apple-system, 'Segoe UI', Roboto, sans-serif;
+    'Inter',
+    'PingFang SC',
+    'Source Han Sans SC',
+    'Noto Sans SC',
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
   font-feature-settings:
     'cv11' on,
     'ss01' on,
@@ -54,8 +62,7 @@ a:hover {
 
 /* "01 · Label" eyebrow text used above section titles. */
 .cw-eyebrow {
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -75,8 +82,7 @@ a:hover {
   padding: 4px 10px;
   background: light-dark(#e9eefe, #1a2148);
   color: var(--mantine-color-brand-8);
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -92,8 +98,7 @@ a:hover {
   padding: 4px 10px;
   border: 1px solid light-dark(#0e0e10, #e7ecf3);
   color: light-dark(#0e0e10, #e7ecf3);
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -108,8 +113,7 @@ a:hover {
   color: #e7ecf3;
   border-radius: 8px;
   padding: 20px 24px;
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   line-height: 1.7;
   overflow-x: auto;
@@ -155,8 +159,7 @@ a:hover {
 
 /* Big number used in stats grid. */
 .cw-bignum {
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: clamp(40px, 4.5vw, 56px);
   line-height: 1;
   font-weight: 700;
@@ -190,8 +193,7 @@ a:hover {
   padding: 8px 14px;
   background: #0e0e10;
   color: #ffffff;
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   letter-spacing: 0.18em;
   font-weight: 600;
@@ -221,8 +223,7 @@ a:hover {
   gap: 28px;
   padding: 8px 16px;
   animation: cw-ticker-scroll 60s linear infinite;
-  font-family:
-    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   color: light-dark(#272a31, #e7ecf3);
 }
@@ -292,6 +293,53 @@ a:hover {
   }
 }
 
+/* ===== Chat motion utilities ===== */
+
+/* Entrance for new transcript items (messages, tool cards, live rows):
+   a quick fade + 6px rise. Plays once on mount. */
+.cw-rise-in {
+  animation: cw-rise-in 200ms ease-out both;
+}
+@keyframes cw-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Hover feedback for clickable rows/headers inside cards. */
+.cw-row-hover {
+  transition: background-color 120ms ease;
+}
+.cw-row-hover:hover {
+  background-color: light-dark(#f3f5f9, var(--mantine-color-dark-5));
+}
+
+/* Gentle opacity pulse for "agent is thinking" indicators. */
+.cw-pulse {
+  animation: cw-pulse 1.6s ease-in-out infinite;
+}
+@keyframes cw-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cw-rise-in,
+  .cw-pulse {
+    animation: none;
+  }
+}
+
 /* Tabs override: CodeWhale-style underline tabs. */
 .cw-tabs .mantine-Tabs-list {
   border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
@@ -307,7 +355,9 @@ a:hover {
   border-bottom: 2px solid transparent;
   border-radius: 0;
   background: transparent;
-  transition: color 120ms ease, border-color 120ms ease;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
 }
 .cw-tabs .mantine-Tabs-tab:hover {
   color: light-dark(#0e0e10, #e7ecf3);
