@@ -3,7 +3,7 @@
 // to surface; clean ends do not.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { startFlightRecorder, takeCrashRecord } from './diagnostics.js';
+import { lastCrashRecord, startFlightRecorder, takeCrashRecord } from './diagnostics.js';
 
 const KEY = 'coding-anywhere/flight/test';
 
@@ -51,8 +51,27 @@ describe('flight recorder', () => {
     const crashed = takeCrashRecord('test');
     expect(crashed).not.toBeNull();
     expect(crashed!.snapshots.length).toBeGreaterThan(0);
-    // takeCrashRecord clears storage so the report fires once.
+    // The live record is consumed…
     expect(localStorage.getItem(KEY)).toBeNull();
+    // …but the crash stays retrievable until the next crash replaces it:
+    // reopening the page without DevTools must not destroy the evidence.
+    expect(lastCrashRecord('test')?.snapshots).toEqual(crashed!.snapshots);
+  });
+
+  it('later loads still point at the durable crash record', () => {
+    startFlightRecorder({ page: 'test', sample: () => ({}), intervalMs: 100 });
+    vi.advanceTimersByTime(150);
+    // Crash, then a DevTools-less reload consumes the live record.
+    const stop2 = startFlightRecorder({ page: 'test', sample: () => ({}), intervalMs: 100 });
+    stop2();
+    // A LATER load (no fresh crash) still tells the user how to copy it.
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    const stop3 = startFlightRecorder({ page: 'test', sample: () => ({}), intervalMs: 100 });
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toContain('历史崩溃记录');
+    expect(lastCrashRecord('test')).not.toBeNull();
+    stop3();
   });
 
   it('startFlightRecorder warns with the crashed record on the next load', () => {

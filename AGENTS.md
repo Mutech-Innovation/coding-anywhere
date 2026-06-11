@@ -243,7 +243,11 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   whose memo'd `MarkdownBody` bails out — only the last block re-parses and
   re-renders per chunk. Pinned by
   `apps/web/src/components/markdown-stream.test.tsx`. Don't render a
-  streaming message's full text through a non-memo'd path.
+  streaming message's full text through a non-memo'd path. The markdown
+  mini-parser (`parseMarkdownLines`) must consume ≥1 line per block — a
+  ```-prefixed line its strict fence regex rejected (```c++) once looped it
+  forever, OOM-killing the renderer with a tiny JS heap; the fence opener now
+  accepts any info string and a progress guard backstops the loop.
 - **Flight recorder** (`apps/web/src/diagnostics.ts`): in-page crash/OOM
   forensics. Persists a snapshot (Chrome JS heap, DOM count, long tasks,
   chat gauges) to localStorage every 2s, but prints a `[ca-fr]` console line

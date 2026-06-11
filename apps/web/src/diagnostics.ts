@@ -73,10 +73,16 @@ function writeRecord(record: FlightRecord): void {
   }
 }
 
+const lastCrashKey = (page: string) => `${storageKey(page)}.lastcrash`;
+
 /**
  * If the previous session on this page died without a clean pagehide (tab
- * crash, OOM, kill), return its record so it can be surfaced. Clears the
- * stored record either way. Exported for tests.
+ * crash, OOM, kill), return its record so it can be surfaced. The live
+ * record is consumed, but a crash is also COPIED to a durable
+ * `.lastcrash` key — reopening the page without DevTools must not destroy
+ * the evidence. It stays retrievable (lastCrashRecord /
+ * window.__caFlightRecorder.lastCrash()) until the next crash replaces it.
+ * Exported for tests.
  */
 export function takeCrashRecord(page: string): FlightRecord | null {
   const prev = readRecord(page);
@@ -85,7 +91,23 @@ export function takeCrashRecord(page: string): FlightRecord | null {
   } catch {
     // ignore
   }
-  return prev && !prev.endedCleanly && prev.snapshots.length > 0 ? prev : null;
+  if (!prev || prev.endedCleanly || prev.snapshots.length === 0) return null;
+  try {
+    localStorage.setItem(lastCrashKey(page), JSON.stringify(prev));
+  } catch {
+    // ignore
+  }
+  return prev;
+}
+
+/** The most recent crash record for this page, if any (durable). */
+export function lastCrashRecord(page: string): FlightRecord | null {
+  try {
+    const raw = localStorage.getItem(lastCrashKey(page));
+    return raw ? (JSON.parse(raw) as FlightRecord) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Chat-store gauges for the snapshot's `custom` field. */
@@ -142,6 +164,17 @@ export function startFlightRecorder({
         `, dom ${last?.dom ?? '?'}。完整记录(请复制给开发者):`,
     );
     console.warn(JSON.stringify(crashed));
+  } else {
+    // A crash spotted on an earlier load stays retrievable — reopening the
+    // page without DevTools must not lose the evidence.
+    const prevCrash = lastCrashRecord(page);
+    if (prevCrash) {
+      const last = prevCrash.snapshots[prevCrash.snapshots.length - 1];
+      console.warn(
+        `[ca-fr] 存有一份历史崩溃记录(${last ? new Date(last.t).toLocaleString() : '?'})。` +
+          `复制方法:在 Console 执行 copy(window.__caFlightRecorder.lastCrash())`,
+      );
+    }
   }
 
   const mem = chromeMemory();
@@ -271,9 +304,16 @@ export function startFlightRecorder({
   // signal we want for "ended cleanly".
   window.addEventListener('pagehide', markClean);
 
-  // Console convenience: copy(window.__caFlightRecorder.dump())
-  (window as { __caFlightRecorder?: { dump: () => string } }).__caFlightRecorder = {
+  // Console convenience: copy(window.__caFlightRecorder.dump()) for the live
+  // record, copy(window.__caFlightRecorder.lastCrash()) for the last crash.
+  (
+    window as { __caFlightRecorder?: { dump: () => string; lastCrash: () => string } }
+  ).__caFlightRecorder = {
     dump: () => JSON.stringify(record),
+    lastCrash: () => {
+      const crash = lastCrashRecord(page);
+      return crash ? JSON.stringify(crash) : '(no crash record)';
+    },
   };
 
   return () => {

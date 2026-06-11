@@ -23,6 +23,12 @@ const CORPUS = [
   '\tfmt.Println("hi")\n',
   '}\n',
   '```\n',
+  '\n',
+  // Fence whose info string defeats the old strict opener regex — used to
+  // spin parseMarkdownLines forever (renderer OOM, "Render process gone").
+  '```c++\n',
+  'int main() { return 0; }\n',
+  '```\n',
   '| a | b |\n',
   '|---|---|\n',
   '| 1 | 2 |\n',
@@ -53,6 +59,21 @@ describe('streamingMarkdownSegments', () => {
     let text = '';
     for (let i = 0; i < CORPUS.length; i += 7) {
       text = CORPUS.slice(0, i + 7);
+      expect(streamingMarkdownSegments(text).join('')).toBe(text);
+    }
+  });
+
+  it('terminates on fences the strict opener regex used to reject', () => {
+    // Each of these spun the parser forever pre-fix (the loop never
+    // consumed the ``` line): infinite blocks → renderer OOM in seconds.
+    const nasty = [
+      '```c++\nint main() {}\n```\n',
+      '``` js\nx\n```\n', // space before the language
+      '```ts title=app.ts\nexport {};\n```\n',
+      '```c#\nclass A {}\n', // still-open fence, streaming
+      'para\n```\n', // bare/stray fence line at EOF
+    ];
+    for (const text of nasty) {
       expect(streamingMarkdownSegments(text).join('')).toBe(text);
     }
   });

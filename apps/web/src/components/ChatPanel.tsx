@@ -1832,9 +1832,14 @@ function parseMarkdownLines(lines: string[]): { blocks: MarkdownBlock[]; starts:
     }
     // Every branch below consumes at least one line and emits one block.
     starts.push(i);
-    const fence = line.match(/^```([\w-]*)\s*$/);
+    // Any ``` line opens a fence (CommonMark: the info string is arbitrary
+    // text — ```c++, ``` js, ```ts title=x …). This MUST stay at least as
+    // broad as the paragraph loop's /^```/ break below: a ```-prefixed line
+    // that no branch consumed used to loop here forever, allocating blocks
+    // until the renderer OOM'd ("Render process gone" with a tiny JS heap).
+    const fence = line.match(/^```(.*)$/);
     if (fence) {
-      const language = fence[1] || undefined;
+      const language = fence[1]!.trim().split(/\s+/)[0] || undefined;
       const body: string[] = [];
       i++;
       while (i < lines.length && !(lines[i] ?? '').match(/^```\s*$/)) {
@@ -1900,6 +1905,13 @@ function parseMarkdownLines(lines: string[]): { blocks: MarkdownBlock[]; starts:
       i++;
     }
     blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
+    // Hard progress guarantee: if a future edit makes the paragraph loop
+    // break without consuming anything, swallow the line as paragraph text
+    // rather than spinning forever (the OOM failure mode above).
+    if (i === starts[starts.length - 1]) {
+      blocks[blocks.length - 1] = { type: 'paragraph', text: lines[i] ?? '' };
+      i++;
+    }
   }
   return { blocks, starts };
 }
