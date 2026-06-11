@@ -179,6 +179,19 @@ describe('chat store ingestUpdate', () => {
     expect(state.configOptions[0]?.currentValue).toBe('model-2');
   });
 
+  it('dedupes consecutive unknown-update system notes instead of spamming bubbles', () => {
+    seedSession();
+    for (let i = 0; i < 50; i++) {
+      pushUpdate({ sessionUpdate: 'mystery_kind', n: i });
+    }
+    pushUpdate({ sessionUpdate: 'other_mystery' });
+    const state = useChat.getState().sessions['sess-1']!;
+    expect(state.messages.map((m) => m.text)).toEqual([
+      'update: mystery_kind',
+      'update: other_mystery',
+    ]);
+  });
+
   it('drops "None" agent messages emitted by Devin between thought and tool calls', () => {
     // Devin's swe-1-6-fast model sometimes ends an assistant turn with
     // content == "None" (Python's None str-ified) when the LLM picked
@@ -329,46 +342,49 @@ describe('chat store ingestUpdate', () => {
     expect(state.configOptions).toEqual([]);
   });
 
-  it('closeLiveAgentMessage marks the live bubble as not streaming so the ' +
-     'next agent_message_chunk starts a fresh bubble', () => {
-    // Reproduces the back-to-back slash-command regression: without
-    // calling closeLiveAgentMessage between turns, chunks for /status
-    // followed by /workspace get appended into a single assistant
-    // bubble. After closing, the next chunk creates a new bubble.
-    seedSession();
-    pushUpdate({
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: '✓ Authenticated via ACP host.' },
-    });
+  it(
+    'closeLiveAgentMessage marks the live bubble as not streaming so the ' +
+      'next agent_message_chunk starts a fresh bubble',
+    () => {
+      // Reproduces the back-to-back slash-command regression: without
+      // calling closeLiveAgentMessage between turns, chunks for /status
+      // followed by /workspace get appended into a single assistant
+      // bubble. After closing, the next chunk creates a new bubble.
+      seedSession();
+      pushUpdate({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '✓ Authenticated via ACP host.' },
+      });
 
-    // Bubble for turn 1 is streaming.
-    let state = useChat.getState().sessions['sess-1']!;
-    expect(state.liveAgentMessageId).not.toBeNull();
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]!.streaming).toBe(true);
+      // Bubble for turn 1 is streaming.
+      let state = useChat.getState().sessions['sess-1']!;
+      expect(state.liveAgentMessageId).not.toBeNull();
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0]!.streaming).toBe(true);
 
-    // Simulate session/prompt response arriving.
-    useChat.getState().closeLiveAgentMessage('sess-1');
+      // Simulate session/prompt response arriving.
+      useChat.getState().closeLiveAgentMessage('sess-1');
 
-    state = useChat.getState().sessions['sess-1']!;
-    expect(state.liveAgentMessageId).toBeNull();
-    expect(state.messages[0]!.streaming).toBe(false);
+      state = useChat.getState().sessions['sess-1']!;
+      expect(state.liveAgentMessageId).toBeNull();
+      expect(state.messages[0]!.streaming).toBe(false);
 
-    // Turn 2 chunk should land in a brand-new bubble, not append.
-    pushUpdate({
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: '**Workspace directories:**' },
-    });
+      // Turn 2 chunk should land in a brand-new bubble, not append.
+      pushUpdate({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '**Workspace directories:**' },
+      });
 
-    state = useChat.getState().sessions['sess-1']!;
-    expect(state.messages).toHaveLength(2);
-    expect(state.messages.map((m) => m.text)).toEqual([
-      '✓ Authenticated via ACP host.',
-      '**Workspace directories:**',
-    ]);
-    expect(state.messages[0]!.streaming).toBe(false);
-    expect(state.messages[1]!.streaming).toBe(true);
-  });
+      state = useChat.getState().sessions['sess-1']!;
+      expect(state.messages).toHaveLength(2);
+      expect(state.messages.map((m) => m.text)).toEqual([
+        '✓ Authenticated via ACP host.',
+        '**Workspace directories:**',
+      ]);
+      expect(state.messages[0]!.streaming).toBe(false);
+      expect(state.messages[1]!.streaming).toBe(true);
+    },
+  );
 
   it('closeLiveAgentMessage is a no-op when no live bubble exists', () => {
     seedSession();

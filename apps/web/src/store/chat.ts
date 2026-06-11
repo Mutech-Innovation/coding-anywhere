@@ -778,10 +778,20 @@ function ingestUpdate(
           },
         };
       }
-      default:
+      default: {
         // Unknown update kinds keep the session ticking but we don't render
-        // them yet. Add a system-level note for visibility during MVP.
+        // them yet. Add a system-level note for visibility during MVP — but
+        // dedupe against the previous note: an agent that streams an unknown
+        // kind per token would otherwise append thousands of bubbles and
+        // balloon the transcript (and the tab's memory).
         const base = closeLiveMessage(cur);
+        const text = `update: ${kind}`;
+        const last = base.messages[base.messages.length - 1];
+        if (last?.role === 'system' && last.text === text) {
+          return {
+            sessions: { ...s.sessions, [payload.session_id]: base },
+          };
+        }
         const order = base.transcriptOrder + 1;
         return {
           sessions: {
@@ -793,7 +803,7 @@ function ingestUpdate(
                 {
                   id: newId(),
                   role: 'system',
-                  text: `update: ${kind}`,
+                  text,
                   createdAt: Date.now(),
                   order,
                 },
@@ -802,6 +812,7 @@ function ingestUpdate(
             },
           },
         };
+      }
     }
   });
   // Non-chunk updates close the previous live message before entering the

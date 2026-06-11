@@ -66,7 +66,7 @@ import {
   IconWorld,
   IconX,
 } from '@tabler/icons-react';
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
@@ -1448,7 +1448,13 @@ function AttachmentPreview({
   );
 }
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+// Transcript components are memoized: streaming chunks land several times a
+// second and each one replaces ONLY the live message (or one tool call) in
+// the store — every other transcript item keeps its object identity, so memo
+// turns a chunk's render cost from "re-render + re-parse the entire
+// transcript" into "re-render the one streaming bubble". Long agent answers
+// used to allocate fast enough to OOM the tab (guest page especially).
+export const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const isThought = message.role === 'agent_thought';
   const isSystem = message.role === 'system';
@@ -1501,9 +1507,9 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
       </Card>
     </Group>
   );
-}
+});
 
-function ThoughtBubble({ message }: { message: ChatMessage }) {
+const ThoughtBubble = memo(function ThoughtBubble({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const text = message.text || (message.streaming ? '…' : '');
   return (
@@ -1549,7 +1555,7 @@ function ThoughtBubble({ message }: { message: ChatMessage }) {
       </Card>
     </Group>
   );
-}
+});
 
 type TableAlign = 'left' | 'center' | 'right';
 
@@ -1561,7 +1567,9 @@ type MarkdownBlock =
   | { type: 'table'; header: string[]; align: (TableAlign | null)[]; rows: string[][] };
 
 function MarkdownBody({ text, size = 'sm', c }: { text: string; size?: 'xs' | 'sm'; c?: string }) {
-  const blocks = parseMarkdownBlocks(text);
+  // Parsing is linear in the text, but bubbles re-render on every streaming
+  // chunk of their own text — memoize so toggles/theme re-renders are free.
+  const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
   if (blocks.length === 0) return null;
   return (
     <Stack gap={6} style={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}>
@@ -1833,7 +1841,7 @@ function LazyCollapse({ opened, children }: { opened: boolean; children: () => R
   return <Collapse in={opened}>{everOpened.current ? children() : null}</Collapse>;
 }
 
-export function ToolCallCard({ call }: { call: ChatToolCall }) {
+export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ChatToolCall }) {
   const [expanded, setExpanded] = useState(false);
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';
@@ -1900,7 +1908,7 @@ export function ToolCallCard({ call }: { call: ChatToolCall }) {
       </LazyCollapse>
     </Card>
   );
-}
+});
 
 function ToolCallLocations({
   locations,
@@ -1975,7 +1983,18 @@ function ToolCallDetails({
  * just the in-flight call(s) as live rows, and once everything finishes it
  * shrinks to the summary header. Expanding shows every call as a compact row.
  */
-export function ToolCallGroupCard({ calls }: { calls: ChatToolCall[] }) {
+export const ToolCallGroupCard = memo(
+  function ToolCallGroupCard({ calls }: { calls: ChatToolCall[] }) {
+    return <ToolCallGroupBody calls={calls} />;
+  },
+  // groupTranscript rebuilds the calls array on every store change, but the
+  // ChatToolCall objects inside keep their identity unless that call really
+  // changed — compare element-wise so unrelated streaming chunks bail out.
+  (prev, next) =>
+    prev.calls.length === next.calls.length && prev.calls.every((c, i) => c === next.calls[i]),
+);
+
+function ToolCallGroupBody({ calls }: { calls: ChatToolCall[] }) {
   const [expanded, setExpanded] = useState(false);
   const active = calls.filter(isActiveToolCall);
   const failed = calls.filter((c) => c.status === 'failed').length;
@@ -2050,7 +2069,7 @@ export function ToolCallGroupCard({ calls }: { calls: ChatToolCall[] }) {
 }
 
 /** Compact single-line rendering of a tool call inside ToolCallGroupCard. */
-function ToolCallRow({ call }: { call: ChatToolCall }) {
+const ToolCallRow = memo(function ToolCallRow({ call }: { call: ChatToolCall }) {
   const [expanded, setExpanded] = useState(false);
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';
@@ -2109,7 +2128,7 @@ function ToolCallRow({ call }: { call: ChatToolCall }) {
       </LazyCollapse>
     </Box>
   );
-}
+});
 
 /**
  * Compact mono code block used for tool-call input/output JSON. Light theme
