@@ -300,6 +300,19 @@ Cursor-specific quirks, all handled inside the daemon:
 - **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
   force `ask` the same way as Devin (`askModeID`), and guest permission
   requests are auto-denied for every agent.
+- **Tool-call args are lost upstream**: cursor's ACP presenter (bundle
+  `7414.index.js`) does extract per-tool args (`extractToolCallInput`: glob →
+  pattern, read → path, shell → command, …) and its title templates would
+  render ``Find `path` `pattern` `` — but it snapshots `args` at the internal
+  `toolCallStarted` event, before the model has finished streaming them, and
+  no `tool_call_update` ever re-sends `rawInput`/`title`. Net effect on the
+  wire (verified by live probing): generic titles ("Read File", "Find"),
+  `rawInput: {}`, no `locations`, only the completion update has `rawOutput`.
+  Shell calls are the exception (command is complete when the card is
+  created, so it lands in the title). The web UI treats an empty-object
+  payload as absent (`hasMeaningfulPayload` in
+  `apps/web/src/components/transcript.ts`) and shows a "该 agent 未上报调用参数"
+  note instead of a confusing `{}`.
 - e2e coverage: `TestChatCursorAgentModels` in
   `apps/relay/internal/server/chat_e2e_test.go`; adapter-level tests in
   `internal/agent/acpagent/adapter_test.go`.

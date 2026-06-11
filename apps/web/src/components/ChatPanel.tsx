@@ -72,7 +72,12 @@ import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { useFiles } from '../store/files.js';
-import { groupTranscript, isActiveToolCall, type TranscriptEntry } from './transcript.js';
+import {
+  groupTranscript,
+  hasMeaningfulPayload,
+  isActiveToolCall,
+  type TranscriptEntry,
+} from './transcript.js';
 
 const STATUS_COLOR: Record<string, string> = {
   idle: 'gray',
@@ -1833,7 +1838,9 @@ export function ToolCallCard({ call }: { call: ChatToolCall }) {
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';
   const hasDetails =
-    call.rawInput != null || call.rawOutput != null || (call.content && call.content.length > 0);
+    hasMeaningfulPayload(call.rawInput) ||
+    hasMeaningfulPayload(call.rawOutput) ||
+    (call.content && call.content.length > 0);
   // Hairline white card to blend into the timeline; terminal-style output
   // lives inside a dark mono block so the "this is shell output" cue is
   // preserved without dominating the whole card visually.
@@ -1936,15 +1943,21 @@ function ToolCallDetails({
       {call.content?.map((c, i) => (
         <ToolContentBlockView key={i} block={c} />
       ))}
-      {call.rawInput != null ? (
+      {hasMeaningfulPayload(call.rawInput) ? (
         <Box>
           <Text size="xs" c="dimmed" mb={4}>
             input
           </Text>
           <RawJSONBlock value={safeStringify(call.rawInput)} />
         </Box>
+      ) : call.rawInput != null ? (
+        // cursor-agent sends `rawInput: {}` and never fills it — say so
+        // instead of rendering a `{}` that looks like a UI bug.
+        <Text size="xs" c="dimmed" fs="italic">
+          该 agent 未上报调用参数
+        </Text>
       ) : null}
-      {call.rawOutput != null ? (
+      {hasMeaningfulPayload(call.rawOutput) ? (
         <Box>
           <Text size="xs" c="dimmed" mb={4}>
             output
@@ -2042,8 +2055,8 @@ function ToolCallRow({ call }: { call: ChatToolCall }) {
   const title = call.title ?? humanizeToolFromInput(call) ?? '(tool)';
   const status = call.status ?? 'pending';
   const hasDetails =
-    call.rawInput != null ||
-    call.rawOutput != null ||
+    hasMeaningfulPayload(call.rawInput) ||
+    hasMeaningfulPayload(call.rawOutput) ||
     (call.content && call.content.length > 0) ||
     (call.locations && call.locations.length > 0);
   return (

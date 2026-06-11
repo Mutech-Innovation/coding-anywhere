@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ChatToolCall } from '../store/chat.js';
 import {
   groupTranscript,
+  hasMeaningfulPayload,
   isActiveToolCall,
   TOOL_GROUP_THRESHOLD,
   type TranscriptEntry,
@@ -66,5 +67,21 @@ describe('isActiveToolCall', () => {
     expect(isActiveToolCall({ id: 't', order: 1, status: 'in_progress' })).toBe(true);
     expect(isActiveToolCall({ id: 't', order: 1, status: 'completed' })).toBe(false);
     expect(isActiveToolCall({ id: 't', order: 1, status: 'failed' })).toBe(false);
+  });
+});
+
+describe('hasMeaningfulPayload', () => {
+  it('treats nullish and empty objects (cursor placeholder rawInput) as absent', () => {
+    expect(hasMeaningfulPayload(undefined)).toBe(false);
+    expect(hasMeaningfulPayload(null)).toBe(false);
+    expect(hasMeaningfulPayload({})).toBe(false);
+  });
+
+  it('keeps populated payloads, arrays and primitives', () => {
+    expect(hasMeaningfulPayload({ command: 'ls' })).toBe(true);
+    expect(hasMeaningfulPayload([])).toBe(true);
+    expect(hasMeaningfulPayload('text')).toBe(true);
+    expect(hasMeaningfulPayload(0)).toBe(true);
+    expect(hasMeaningfulPayload(false)).toBe(true);
   });
 });

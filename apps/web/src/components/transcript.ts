@@ -57,3 +57,17 @@ export function isActiveToolCall(call: ChatToolCall): boolean {
   const status = call.status ?? 'pending';
   return status === 'pending' || status === 'in_progress';
 }
+
+/**
+ * True when a rawInput/rawOutput payload actually says something. cursor-agent
+ * stamps `rawInput: {}` on every tool_call and never fills it (verified by
+ * live-probing its ACP), so an empty plain object counts as absent — the UI
+ * hides the block instead of rendering a confusing `{}`.
+ */
+export function hasMeaningfulPayload(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+    return false;
+  }
+  return true;
+}
