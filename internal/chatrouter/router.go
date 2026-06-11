@@ -555,18 +555,16 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 		_ = old.Close()
 	}
 
-	load := func(target *acpagent.Adapter) error {
-		s.suppressUpdates.Store(true)
-		defer s.suppressUpdates.Store(false)
-		return target.LoadSession(ctx, s.NativeID, s.Cwd, nil)
-	}
-
-	if err := load(a); err != nil {
+	// resumeSessionOnAdapter falls back to a fresh native session when the
+	// agent doesn't know the chat — cursor never persists a chat that has
+	// no completed message, so switching the model on a brand-new session
+	// used to fail the load AND the restore, leaving a dead adapter.
+	if err := r.resumeSessionOnAdapter(ctx, a, s); err != nil {
 		_ = a.Close()
 		// The old process is already gone — try to restore the session on a
 		// process pinned to the previous model so it keeps working.
 		if restored, rerr := r.buildAdapterForSession(s.AgentID, prevModel); rerr == nil {
-			if lerr := load(restored); lerr == nil {
+			if lerr := r.resumeSessionOnAdapter(ctx, restored, s); lerr == nil {
 				r.mu.Lock()
 				s.adapter = restored
 				r.mu.Unlock()
@@ -574,7 +572,7 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 				_ = restored.Close()
 			}
 		}
-		return fmt.Errorf("resume session on new process: %w", err)
+		return err
 	}
 	r.mu.Lock()
 	s.adapter = a
@@ -585,15 +583,72 @@ func (r *Router) restartSessionWithModel(ctx context.Context, s *session, model 
 	return nil
 }
 
+// sessionNotFoundErr reports whether an ACP error means "the agent doesn't
+// know this session id". cursor answers session/load of a chat that never
+// completed a prompt with -32602 "Invalid params" + data
+// `{"message":"Session \"…\" not found"}` — it only persists a chat to disk
+// once it has at least one message (verified by live probing).
+func sessionNotFoundErr(err error) bool {
+	var rpcErr *acp.RPCError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	blob := strings.ToLower(rpcErr.Message + " " + string(rpcErr.Data))
+	return strings.Contains(blob, "not found")
+}
+
+// resumeSessionOnAdapter carries s's conversation onto a freshly spawned
+// adapter: session/load with the history replay suppressed. When the agent
+// answers "session not found" — a never-prompted cursor chat is never
+// persisted, so a model switch or process death before the first message
+// used to brick the session — fall back to session/new on the same process
+// and adopt the new native id: there is no agent-side context to lose, and
+// the daemon-side transcript is preserved. Guest sessions get ask mode
+// re-forced on the fallback session.
+func (r *Router) resumeSessionOnAdapter(ctx context.Context, a *acpagent.Adapter, s *session) error {
+	s.suppressUpdates.Store(true)
+	err := a.LoadSession(ctx, s.NativeID, s.Cwd, nil)
+	s.suppressUpdates.Store(false)
+	if err == nil {
+		return nil
+	}
+	if !sessionNotFoundErr(err) {
+		return fmt.Errorf("resume session on new process: %w", err)
+	}
+	res, nerr := a.NewSession(ctx, s.Cwd, nil)
+	if nerr != nil {
+		return fmt.Errorf("resume session on new process: %w (fresh native session also failed: %v)", err, nerr)
+	}
+	r.logger.Warn("session/load said not found (never-prompted chat); adopted a fresh native session",
+		"session", s.ID, "agent", s.AgentID, "old_native", s.NativeID, "new_native", res.SessionID)
+	r.mu.Lock()
+	s.NativeID = res.SessionID
+	// session/new may have emitted updates for the not-yet-mapped native id;
+	// they were buffered as early updates for a create that will never come.
+	delete(r.earlyUpdates, earlyKey(s.AgentID, res.SessionID))
+	r.mu.Unlock()
+	if s.guest {
+		if askID := askModeID(s.modes); askID != "" {
+			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
+			if err := a.SetMode(setCtx, res.SessionID, askID); err != nil {
+				r.logger.Warn("re-force ask mode on fallback session failed",
+					"session", s.ID, "err", err)
+			}
+			setCancel()
+		}
+	}
+	return nil
+}
+
 // reviveSessionProcess replaces a per-session subprocess that died while the
 // session sat idle (dev-stack restarts kill the daemon's children; the agent
 // binary can also crash on its own) with a fresh process pinned to the
-// session's current model, resuming the conversation via session/load with
-// the history replay suppressed — the same machinery as a model switch,
-// minus the model change. Returns the new adapter so the caller can retry
-// the call that found the corpse. Without this, a dead process left the
-// session a zombie: every subsequent prompt failed with "acp client closed"
-// until the user closed and recreated the session.
+// session's current model, resuming the conversation via
+// resumeSessionOnAdapter — the same machinery as a model switch, minus the
+// model change. Returns the new adapter so the caller can retry the call
+// that found the corpse. Without this, a dead process left the session a
+// zombie: every subsequent prompt failed with "acp client closed" until the
+// user closed and recreated the session.
 func (r *Router) reviveSessionProcess(ctx context.Context, s *session) (*acpagent.Adapter, error) {
 	r.mu.Lock()
 	old := s.adapter
@@ -610,12 +665,9 @@ func (r *Router) reviveSessionProcess(ctx context.Context, s *session) (*acpagen
 	if old != nil {
 		_ = old.Close() // reap the dead process; no-op if it's already gone
 	}
-	s.suppressUpdates.Store(true)
-	err = a.LoadSession(ctx, s.NativeID, s.Cwd, nil)
-	s.suppressUpdates.Store(false)
-	if err != nil {
+	if err := r.resumeSessionOnAdapter(ctx, a, s); err != nil {
 		_ = a.Close()
-		return nil, fmt.Errorf("resume session on new process: %w", err)
+		return nil, err
 	}
 	r.mu.Lock()
 	s.adapter = a

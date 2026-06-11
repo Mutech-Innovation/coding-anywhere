@@ -312,6 +312,14 @@ Cursor-specific quirks, all handled inside the daemon:
   fresh process pinned to the session's current model + `session/load`
   resume with replay suppression (`reviveSessionProcess`) — and retries the
   prompt once. Pinned by `TestChatCursorSessionRevive`.
+- **cursor only persists a chat after its first completed prompt** (verified
+  by live probing): `session/load` of a never-prompted chat fails with
+  -32602 + `Session "…" not found`. Both the revive and the model-switch
+  restart therefore fall back to `session/new` on the freshly spawned
+  process when load says not-found (`resumeSessionOnAdapter` — adopts the
+  new native id, keeps the daemon-side transcript, re-forces ask for guest
+  sessions; there was no agent-side context to lose). Pinned by
+  `TestChatCursorReviveFreshSession` + `TestChatCursorModelSwitchFreshSession`.
 - **Modes**: cursor advertises `agent` / `plan` / `ask`; guest "ask" shares
   force `ask` the same way as Devin (`askModeID`), and guest permission
   requests are auto-denied for every agent.

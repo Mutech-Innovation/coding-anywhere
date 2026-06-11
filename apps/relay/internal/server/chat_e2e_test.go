@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -1048,11 +1049,18 @@ type cursorMockACP struct {
 	out        *io.PipeWriter // write side handed to the adapter (for kill)
 	spawnModel string         // the --model the process was "spawned" with
 
+	// persisted mimics cursor's on-disk chat store: session/load only finds
+	// a chat once a prompt has completed. Shared (pointer) across the mock
+	// "processes" of one test, like the real disk store. nil = load always
+	// succeeds (legacy tests).
+	persisted *bool
+
 	mu               sync.Mutex
 	writeMu          sync.Mutex
 	authenticated    bool
 	lastAuthMethod   string
 	lastLoadedSID    string
+	newSessions      int // session/new calls served by this process
 	sawSetConfigCall bool
 	sawSetModelCall  bool
 }
@@ -1122,13 +1130,15 @@ func (m *cursorMockACP) run() {
 		case "session/new":
 			m.mu.Lock()
 			ok := m.authenticated
+			m.newSessions++
+			n := m.newSessions
 			m.mu.Unlock()
 			if !ok {
 				m.respondError(idVal, -32000, "Authentication required")
 				continue
 			}
 			m.respond(idVal, map[string]any{
-				"sessionId": "sess-cursor-1",
+				"sessionId": fmt.Sprintf("sess-cursor-%d", n),
 				"modes":     m.modesPayload(),
 				"models":    m.modelsPayload(),
 			})
@@ -1138,6 +1148,20 @@ func (m *cursorMockACP) run() {
 			m.mu.Lock()
 			m.lastLoadedSID = sid
 			m.mu.Unlock()
+			// Real cursor only finds a chat that completed >=1 prompt — a
+			// never-prompted chat is not persisted and load answers -32602
+			// with a "Session not found" data payload.
+			if m.persisted != nil && !*m.persisted {
+				m.write(map[string]any{
+					"jsonrpc": "2.0", "id": idVal,
+					"error": map[string]any{
+						"code":    -32602,
+						"message": "Invalid params",
+						"data":    map[string]any{"message": "Session \"" + sid + "\" not found"},
+					},
+				})
+				continue
+			}
 			// Real cursor replays the conversation as session/update
 			// notifications BEFORE answering load — the router must drop
 			// these (clients already have the transcript).
@@ -1168,6 +1192,11 @@ func (m *cursorMockACP) run() {
 			m.mu.Unlock()
 			m.respondError(idVal, -32601, "unknown method")
 		case "session/prompt":
+			m.mu.Lock()
+			if m.persisted != nil {
+				*m.persisted = true // first completed prompt persists the chat
+			}
+			m.mu.Unlock()
 			m.respond(idVal, map[string]any{"stopReason": "end_turn"})
 		case "session/cancel":
 			// notification, no reply
@@ -1557,5 +1586,224 @@ func TestChatCursorSessionRevive(t *testing.T) {
 		if strings.Contains(string(u), "REPLAYED-HISTORY") {
 			t.Fatal("revive's session/load replay leaked into the session snapshot")
 		}
+	}
+}
+
+// cursorRig spins up the full relay + daemon + mock-cursor stack used by the
+// fresh-session fallback tests: a paired client WS, a chatrouter whose cursor
+// builder mints one cursorMockACP "process" per spawn (recording it), and an
+// envelope pump with request/response helpers.
+type cursorRig struct {
+	t        *testing.T
+	ctx      context.Context
+	clientWS *websocket.Conn
+	envCh    chan wire.Envelope
+
+	mocksMu  sync.Mutex
+	mocks    []*cursorMockACP
+	adapters []*acpagent.Adapter
+}
+
+// newCursorRig builds the stack. persisted, when non-nil, is the shared
+// "cursor chat store": session/load fails with "Session not found" until a
+// prompt completes — exactly how the real binary behaves.
+func newCursorRig(t *testing.T, ctx context.Context, persisted *bool) *cursorRig {
+	t.Helper()
+	hs, _ := newPairingTestServer(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	pc := pairingclient.New(hs.URL)
+	init, _ := pc.Init(ctx, "daemon", "lap", "")
+	claim, _ := pc.Claim(ctx, init.Code, "client", "phone", "")
+	dc, _ := pc.WaitClaimed(ctx, init.PairingToken, 50*time.Millisecond)
+
+	rig := &cursorRig{t: t, ctx: ctx, envCh: make(chan wire.Envelope, 64)}
+	builder := func(opts acpagent.Options) (*acpagent.Adapter, error) {
+		stdoutR, stdoutW := io.Pipe()
+		stdinR, stdinW := io.Pipe()
+		m := &cursorMockACP{
+			t: t, in: stdinR, wr: bufio.NewWriter(stdoutW), out: stdoutW,
+			spawnModel: opts.Model, persisted: persisted,
+		}
+		go m.run()
+		opts.AuthMethodID = "cursor_login"
+		a := acpagent.NewWithStreams(stdinW, stdoutR, opts)
+		rig.mocksMu.Lock()
+		rig.mocks = append(rig.mocks, m)
+		rig.adapters = append(rig.adapters, a)
+		rig.mocksMu.Unlock()
+		return a, nil
+	}
+
+	relayURL := strings.Replace(hs.URL, "http", "ws", 1)
+	dcli := relayclient.New(relayclient.Config{
+		RelayURL: relayURL, AccessToken: dc.AccessToken,
+		PingInterval: time.Second, HandshakeTimeout: 3 * time.Second,
+	}, logger)
+	cr := chatrouter.New(dcli, logger, chatrouter.Builders{
+		chatrouter.AgentCursor: builder,
+	})
+	t.Cleanup(func() { _ = cr.Close() })
+	go func() { _ = dcli.Run(ctx) }()
+	if err := dcli.WaitConnected(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close(websocket.StatusNormalClosure, "") })
+	rig.clientWS = ws
+	go func() {
+		for {
+			var env wire.Envelope
+			if err := wsjson.Read(ctx, ws, &env); err != nil {
+				return
+			}
+			rig.envCh <- env
+		}
+	}()
+	return rig
+}
+
+// request round-trips one chat request and returns the response envelope.
+func (rig *cursorRig) request(id, method string, payload any) wire.Envelope {
+	rig.t.Helper()
+	req, _ := wire.MakeRequest(id, wire.ChannelChat, method, payload)
+	_ = wsjson.Write(rig.ctx, rig.clientWS, req)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case env := <-rig.envCh:
+			if env.ID == id && env.Type == wire.TypeResponse {
+				return env
+			}
+		case <-deadline:
+			rig.t.Fatalf("timeout waiting for response %s", id)
+			return wire.Envelope{}
+		}
+	}
+}
+
+func (rig *cursorRig) mock(i int) *cursorMockACP {
+	rig.mocksMu.Lock()
+	defer rig.mocksMu.Unlock()
+	if i >= len(rig.mocks) {
+		rig.t.Fatalf("mock %d not spawned (have %d)", i, len(rig.mocks))
+	}
+	return rig.mocks[i]
+}
+
+func (rig *cursorRig) mockCount() int {
+	rig.mocksMu.Lock()
+	defer rig.mocksMu.Unlock()
+	return len(rig.mocks)
+}
+
+func (rig *cursorRig) createSession(id string) string {
+	rig.t.Helper()
+	res := rig.request(id, wire.ChatMethodCreateSession,
+		wire.ChatCreateSessionRequest{AgentID: "cursor-cli", Cwd: "/tmp"})
+	if res.Error != nil {
+		rig.t.Fatalf("create_session error: %+v", res.Error)
+	}
+	var createRes wire.ChatCreateSessionResponse
+	if err := json.Unmarshal(res.Payload, &createRes); err != nil {
+		rig.t.Fatalf("create payload: %v", err)
+	}
+	return createRes.Session.ID
+}
+
+// TestChatCursorReviveFreshSession pins the fallback for the field failure
+// "prompt_failed: acp client closed (process revive failed: resume session on
+// new process: rpc error -32602 … Session not found)": cursor never persists
+// a chat without a completed prompt, so reviving a never-prompted session
+// cannot session/load — the router must fall back to session/new on the
+// revived process and answer the prompt there.
+func TestChatCursorReviveFreshSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	persisted := false
+	rig := newCursorRig(t, ctx, &persisted)
+
+	sessionID := rig.createSession("c-1")
+
+	// Kill the never-prompted session's process and wait until the adapter
+	// has noticed, so the prompt deterministically hits ErrClientClosed.
+	rig.mocksMu.Lock()
+	first := rig.adapters[0]
+	rig.mocksMu.Unlock()
+	rig.mock(0).kill()
+	select {
+	case <-first.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("adapter did not notice the dead process")
+	}
+
+	res := rig.request("p-1", wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: sessionID, Text: "still there?"})
+	if res.Error != nil {
+		t.Fatalf("prompt should revive via the fresh-session fallback, got: %+v", res.Error)
+	}
+
+	if n := rig.mockCount(); n != 2 {
+		t.Fatalf("expected a revived second process, got %d", n)
+	}
+	second := rig.mock(1)
+	second.mu.Lock()
+	loaded, news := second.lastLoadedSID, second.newSessions
+	second.mu.Unlock()
+	if loaded != "sess-cursor-1" {
+		t.Fatalf("revive must try session/load first, got %q", loaded)
+	}
+	if news != 1 {
+		t.Fatalf("expected the fallback session/new on the revived process, got %d", news)
+	}
+}
+
+// TestChatCursorModelSwitchFreshSession covers the same fallback on the
+// model-switch path: switching the model of a brand-new (never-prompted)
+// cursor session used to fail the session/load on the new process AND the
+// restore, leaving the session on a dead adapter forever.
+func TestChatCursorModelSwitchFreshSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	persisted := false
+	rig := newCursorRig(t, ctx, &persisted)
+
+	sessionID := rig.createSession("c-1")
+
+	res := rig.request("sc-1", wire.ChatMethodSetConfigOption,
+		wire.ChatSetConfigOptionRequest{
+			SessionID: sessionID,
+			ConfigID:  "model",
+			Value:     "gpt-5.5[reasoning=medium]",
+		})
+	if res.Error != nil {
+		t.Fatalf("model switch on a fresh session should fall back to session/new, got: %+v", res.Error)
+	}
+
+	if n := rig.mockCount(); n != 2 {
+		t.Fatalf("expected a second pinned process, got %d", n)
+	}
+	second := rig.mock(1)
+	if second.spawnModel != "gpt-5.5[reasoning=medium]" {
+		t.Fatalf("second spawn model: %q", second.spawnModel)
+	}
+	second.mu.Lock()
+	loaded, news := second.lastLoadedSID, second.newSessions
+	second.mu.Unlock()
+	if loaded != "sess-cursor-1" {
+		t.Fatalf("switch must try session/load first, got %q", loaded)
+	}
+	if news != 1 {
+		t.Fatalf("expected the fallback session/new on the pinned process, got %d", news)
+	}
+
+	// The session must remain usable on the new process.
+	if res := rig.request("p-1", wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: sessionID, Text: "hello"}); res.Error != nil {
+		t.Fatalf("prompt after fresh-session model switch: %+v", res.Error)
 	}
 }
