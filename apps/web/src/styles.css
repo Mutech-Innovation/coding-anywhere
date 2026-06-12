@@ -340,6 +340,17 @@ a:hover {
   }
 }
 
+/* Mantine's Button loader is absolutely positioned at left/top 50% and relies
+   on the loading Transition's *inline* transform to actually center itself.
+   With theme.respectReducedMotion + an OS reduced-motion preference, that
+   Transition renders with no inline styles, leaving the loader pinned by its
+   top-left corner in the button's bottom-right quadrant. Static fallback —
+   the animated inline transform still overrides this when motion is allowed.
+   (Matches Mantine's settled in-state: translate(-50%, calc(-50% + 1px)).) */
+.mantine-Button-loader {
+  transform: translate(-50%, calc(-50% + 1px));
+}
+
 /* Tabs override: CodeWhale-style underline tabs. */
 .cw-tabs .mantine-Tabs-list {
   border-bottom: 1px solid light-dark(#e5e7eb, #222a36);
