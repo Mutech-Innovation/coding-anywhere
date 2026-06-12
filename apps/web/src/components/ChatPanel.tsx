@@ -1664,6 +1664,116 @@ function AttachmentPreview({
   );
 }
 
+function attachmentDataUrl(att: ChatAttachment): string | null {
+  return att.type === 'image' && att.data
+    ? `data:${att.mime_type ?? 'image/png'};base64,${att.data}`
+    : null;
+}
+
+// Approximate decoded size from the base64 payload length.
+function attachmentSize(att: ChatAttachment): string | null {
+  if (!att.data) return null;
+  const n = Math.floor((att.data.length * 3) / 4);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Read-only attachment strip inside a transcript bubble: image attachments
+// render as click-to-enlarge thumbnails, everything else as a name+size
+// chip. Visually tuned for both the indigo user bubble and plain cards.
+function MessageAttachments({
+  attachments,
+  onBrand,
+}: {
+  attachments: ChatAttachment[];
+  onBrand: boolean;
+}) {
+  const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
+  const chipStyle: React.CSSProperties = onBrand
+    ? {
+        background: 'rgba(255, 255, 255, 0.12)',
+        border: '1px solid rgba(255, 255, 255, 0.28)',
+        color: '#ffffff',
+      }
+    : {
+        background: 'light-dark(#f5f6f8, var(--mantine-color-dark-5))',
+        border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+        color: 'var(--mantine-color-text)',
+      };
+  return (
+    <Group gap={6} wrap="wrap">
+      {attachments.map((att, idx) => {
+        const url = attachmentDataUrl(att);
+        if (url) {
+          return (
+            <UnstyledButton
+              key={idx}
+              onClick={() => setPreview({ url, name: att.name })}
+              aria-label={`查看图片 ${att.name}`}
+              title={att.name}
+            >
+              <Box
+                component="img"
+                src={url}
+                alt={att.name}
+                style={{
+                  display: 'block',
+                  maxWidth: 200,
+                  maxHeight: 140,
+                  borderRadius: 8,
+                  border: onBrand
+                    ? '1px solid rgba(255, 255, 255, 0.35)'
+                    : '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
+                  cursor: 'zoom-in',
+                }}
+              />
+            </UnstyledButton>
+          );
+        }
+        const size = attachmentSize(att);
+        return (
+          <Group
+            key={idx}
+            gap={6}
+            wrap="nowrap"
+            px={8}
+            py={4}
+            style={{ ...chipStyle, borderRadius: 8, maxWidth: 240 }}
+            title={att.name}
+          >
+            <IconFileText size={14} style={{ flexShrink: 0, opacity: 0.85 }} />
+            <Text size="xs" truncate style={{ color: 'inherit' }}>
+              {att.name}
+            </Text>
+            {size ? (
+              <Text size="xs" style={{ color: 'inherit', opacity: 0.7, whiteSpace: 'nowrap' }}>
+                {size}
+              </Text>
+            ) : null}
+          </Group>
+        );
+      })}
+      <Modal
+        opened={preview !== null}
+        onClose={() => setPreview(null)}
+        title={preview?.name}
+        size="auto"
+        centered
+      >
+        {preview ? (
+          <Box
+            component="img"
+            src={preview.url}
+            alt={preview.name}
+            style={{ display: 'block', maxWidth: '85vw', maxHeight: '75vh' }}
+          />
+        ) : null}
+      </Modal>
+    </Group>
+  );
+}
+
 // Transcript components are memoized: streaming chunks land several times a
 // second and each one replaces ONLY the live message (or one tool call) in
 // the store — every other transcript item keeps its object identity, so memo
@@ -1703,6 +1813,10 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
     border: '1px solid light-dark(#e5e7eb, var(--mantine-color-dark-4))',
   };
 
+  const attachments = !isSystem && message.attachments?.length ? message.attachments : null;
+  // Attachment-only prompts have no text — skip the empty markdown body.
+  const showBody = Boolean(text) || !attachments;
+
   return (
     <Group justify={isUser ? 'flex-end' : 'flex-start'} align="flex-start">
       <Card
@@ -1713,15 +1827,18 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
         miw={isUser ? 100 : 200}
         maw="80%"
       >
-        {isSystem ? (
-          <Text size="xs" c="dimmed">
-            {text}
-          </Text>
-        ) : message.streaming ? (
-          <StreamingMarkdownBody text={text} c={isUser ? 'white' : undefined} />
-        ) : (
-          <MarkdownBody text={text} c={isUser ? 'white' : undefined} />
-        )}
+        <Stack gap="xs">
+          {attachments ? <MessageAttachments attachments={attachments} onBrand={isUser} /> : null}
+          {isSystem ? (
+            <Text size="xs" c="dimmed">
+              {text}
+            </Text>
+          ) : !showBody ? null : message.streaming ? (
+            <StreamingMarkdownBody text={text} c={isUser ? 'white' : undefined} />
+          ) : (
+            <MarkdownBody text={text} c={isUser ? 'white' : undefined} />
+          )}
+        </Stack>
       </Card>
     </Group>
   );

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { useChat } from './chat.js';
+import { useConnection } from './connection.js';
 
 const baseSession = {
   id: 'sess-1',
@@ -393,5 +394,56 @@ describe('chat store ingestUpdate', () => {
     expect(() => useChat.getState().closeLiveAgentMessage('sess-1')).not.toThrow();
     expect(useChat.getState().sessions['sess-1']!.liveAgentMessageId).toBeNull();
     expect(useChat.getState().sessions['sess-1']!.messages).toEqual([]);
+  });
+
+  it('refreshHistory replays user prompts together with their attachments', async () => {
+    // The daemon persists prompt attachments in ChatPromptEntry and
+    // returns them from chat.get_history; dropping them on replay made
+    // image/file bubbles silently lose their attachments after a reload
+    // or when a second device fetched the snapshot.
+    seedSession();
+    attachOnce();
+    const image = {
+      type: 'image' as const,
+      name: 'shot.png',
+      data: 'aGVsbG8=',
+      mime_type: 'image/png',
+    };
+    // Replies to chat.get_history through the chat handler, like the relay would.
+    const respondingClient = {
+      handle: () => {},
+      send: (env: { id: string }) => {
+        queueMicrotask(() =>
+          chatHandler?.({
+            type: 'res',
+            id: env.id,
+            payload: {
+              session: { ...baseSession },
+              updates: [],
+              user_prompts: [
+                {
+                  text: 'look at this',
+                  created_at: new Date(0).toISOString(),
+                  sequence_id: 1,
+                  attachments: [image],
+                },
+                { text: 'plain follow-up', created_at: new Date(1).toISOString(), sequence_id: 2 },
+              ],
+            },
+          }),
+        );
+      },
+    };
+    useConnection.setState({ client: respondingClient as never });
+    try {
+      await useChat.getState().refreshHistory('sess-1');
+    } finally {
+      useConnection.setState({ client: null });
+    }
+
+    const msgs = useChat.getState().sessions['sess-1']!.messages;
+    expect(msgs.map((m) => m.text)).toEqual(['look at this', 'plain follow-up']);
+    expect(msgs[0]!.attachments).toEqual([image]);
+    expect(msgs[1]!.attachments).toBeUndefined();
   });
 });

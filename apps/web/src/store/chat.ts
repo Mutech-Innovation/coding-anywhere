@@ -495,7 +495,12 @@ export const useChat = create<ChatStore>((set, get) => ({
     const hist = env.payload as {
       session: ChatSession;
       updates?: Array<Record<string, unknown>>;
-      user_prompts?: Array<{ text: string; created_at: string; sequence_id?: number }>;
+      user_prompts?: Array<{
+        text: string;
+        created_at: string;
+        sequence_id?: number;
+        attachments?: ChatAttachment[];
+      }>;
       available_modes?: SessionMode[];
       current_mode_id?: string;
     };
@@ -515,6 +520,7 @@ export const useChat = create<ChatStore>((set, get) => ({
       kind: 'prompt' as const,
       seq: p.sequence_id ?? 0,
       text: p.text,
+      attachments: p.attachments?.length ? p.attachments : undefined,
       createdAt: Date.parse(p.created_at) || Date.now(),
     }));
     const updateEvents = (hist.updates ?? []).map((u, i) => ({
@@ -536,7 +542,14 @@ export const useChat = create<ChatStore>((set, get) => ({
                 ...cur,
                 messages: [
                   ...cur.messages,
-                  { id: newId(), role: 'user', text: ev.text, createdAt: ev.createdAt, order },
+                  {
+                    id: newId(),
+                    role: 'user',
+                    text: ev.text,
+                    attachments: ev.attachments,
+                    createdAt: ev.createdAt,
+                    order,
+                  },
                 ],
                 transcriptOrder: order,
               },
