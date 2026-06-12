@@ -96,6 +96,10 @@ type Router struct {
 	adapters   map[string]*acpagent.Adapter // agent id → adapter; nil until first session
 	sessions   map[string]*session
 	defaultCwd string
+	// ensureMu serializes shared-adapter creation (see ensureAgent). Distinct
+	// from mu because a spawn can take tens of seconds and must not block
+	// the fast in-memory handlers.
+	ensureMu sync.Mutex
 	// earlyUpdates buffers session/update notifications that arrive while a
 	// `chat.create_session` (and the underlying ACP `session/new`) is still
 	// in flight — Devin sends configOptions / modes / availableCommands
@@ -274,7 +278,13 @@ func (r *Router) handle(env wire.Envelope) error {
 		if err := r.parse(env, &req); err != nil {
 			return nil
 		}
-		r.handleCreateSession(env, req)
+		// Async: spawning an agent subprocess (cursor auth + session/new +
+		// model-spelling retries) can take 30s+. The relayclient dispatches
+		// envelopes synchronously on its WS read loop, so a slow create used
+		// to stall EVERY other request on the daemon — concurrent guests
+		// (and the owner's UI) piled up behind one cold spawn, and a guest
+		// page refresh just queued another create behind the stall.
+		go r.handleCreateSession(env, req)
 	case wire.ChatMethodPrompt:
 		var req wire.ChatPromptRequest
 		if err := r.parse(env, &req); err != nil {
@@ -310,7 +320,10 @@ func (r *Router) handle(env wire.Envelope) error {
 		if err := r.parse(env, &req); err != nil {
 			return nil
 		}
-		r.handleSetConfigOption(env, req)
+		// Async for the same reason as create_session: a model switch on a
+		// per-session-process agent restarts the subprocess (spawn +
+		// session/load), which must not stall the dispatch loop.
+		go r.handleSetConfigOption(env, req)
 	case wire.ChatMethodGetHistory:
 		var req wire.ChatGetHistoryRequest
 		if err := r.parse(env, &req); err != nil {
@@ -882,7 +895,14 @@ func (r *Router) handleResolvePermission(env wire.Envelope, req wire.ChatResolve
 // on first use. The adapter's run loop is pinned to r.runCtx so it survives
 // request-level timeouts. Per-session-process agents (cursor) bypass this
 // cache and call buildAdapter directly.
+//
+// ensureMu (not r.mu — spawning is slow and must not block fast handlers)
+// serializes the check-then-spawn: create_session now runs concurrently, and
+// two racing creates for the same shared agent must not each spawn a process
+// (the loser's subprocess would leak unsupervised).
 func (r *Router) ensureAgent(agentID string) (*acpagent.Adapter, error) {
+	r.ensureMu.Lock()
+	defer r.ensureMu.Unlock()
 	r.mu.Lock()
 	if a, ok := r.adapters[agentID]; ok {
 		r.mu.Unlock()

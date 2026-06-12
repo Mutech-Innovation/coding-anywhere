@@ -166,9 +166,10 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     // Build the link from this app's origin (where /guest is served) and the
     // relay URL the guest page needs to dial. The guest token rides in the
     // query so a freshly opened tab connects with no further input.
+    const relay = guestRelayURL(credentials.relay_url, window.location.hostname);
     const url =
       `${window.location.origin}/guest?token=${encodeURIComponent(res.token)}` +
-      `&relay=${encodeURIComponent(credentials.relay_url)}`;
+      `&relay=${encodeURIComponent(relay)}`;
     return { url, expiresAt: res.expires_at };
   },
 
@@ -324,4 +325,35 @@ function scheduleRefresh(
 /** Returns just the credential bundle if signed in. */
 export function selectBundle(s: ConnectionStore): CredentialBundle | null {
   return s.credentials?.bundle ?? null;
+}
+
+/**
+ * The relay URL a GUEST's browser should dial, given the relay URL stored in
+ * this client's credentials and the host the app is currently viewed from.
+ *
+ * Pairing on the dev box typically stores `http://localhost:8443` — correct
+ * for THIS browser, dead wrong inside a share link opened on another machine
+ * (it would point at the guest's own loopback, which either refuses fast or,
+ * worse, hits whatever the guest happens to run on that port and hangs the
+ * page on "正在连接"). The dev stack serves web and relay from the same
+ * machine, so when the stored relay host is loopback and the page is being
+ * viewed from a non-loopback host, substitute the page's hostname (keeping
+ * the relay's scheme + port). Exported for tests.
+ */
+export function guestRelayURL(relayURL: string, pageHost: string): string {
+  try {
+    const u = new URL(relayURL);
+    if (isLoopbackHost(u.hostname) && pageHost && !isLoopbackHost(pageHost)) {
+      u.hostname = pageHost;
+      return u.toString().replace(/\/$/, '');
+    }
+  } catch {
+    // Malformed relay URL — leave it as-is; connecting will surface it.
+  }
+  return relayURL;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
 }

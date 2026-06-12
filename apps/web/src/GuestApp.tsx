@@ -102,16 +102,25 @@ export function GuestApp() {
     let creating = false;
     const off = client.onState((s) => {
       useConnection.setState({ status: s });
+      // Flight-recorder breadcrumbs: which leg hangs when the page sits on
+      // "正在连接"? Stuck `connecting` + late close 1006 = network/firewall
+      // between guest and relay; instant `connected` but a slow/failed
+      // create_session = relay/daemon side.
+      const close = s === 'disconnected' ? client.getLastClose() : null;
+      console.log(`[ca-fr] ws ${s}${close ? ` (close ${close.code} ${close.reason || '-'})` : ''}`);
       if (s === 'connected' && !startedRef.current && !creating) {
         creating = true;
+        const t0 = Date.now();
         useChat
           .getState()
           .createSession({})
           .then(() => {
+            console.log(`[ca-fr] create_session ok in ${Date.now() - t0}ms`);
             startedRef.current = true;
             setPhase('ready');
           })
           .catch((e: unknown) => {
+            console.warn(`[ca-fr] create_session failed in ${Date.now() - t0}ms:`, e);
             setError(e instanceof Error ? e.message : '创建会话失败');
             setPhase('error');
           })

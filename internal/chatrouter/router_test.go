@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mutech-Innovation/coding-anywhere/internal/agent/acpagent"
+	"github.com/Mutech-Innovation/coding-anywhere/internal/relayclient"
 	"github.com/Mutech-Innovation/coding-anywhere/internal/wire"
 )
 
@@ -178,6 +180,53 @@ func TestBuildAdapterForSessionShortCircuitsAuthFailure(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("auth failure should stop the fallback loop after 1 attempt, got %d", attempts)
+	}
+}
+
+// TestCreateSessionDispatchDoesNotBlock pins that a slow agent spawn cannot
+// stall the chat dispatch loop. The relayclient delivers envelopes
+// synchronously on its WS read loop; create_session used to run inline, so
+// one cold spawn (cursor auth + model retries can take 30s+) queued every
+// other chat request behind it — concurrent guest opens and the owner's UI
+// all hung on "正在连接", and a guest-page refresh just piled another create
+// onto the stall.
+func TestCreateSessionDispatchDoesNotBlock(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cli := relayclient.New(relayclient.Config{RelayURL: "http://127.0.0.1:1", AccessToken: "t"}, discard)
+	r := New(cli, discard, Builders{
+		AgentCursor: func(acpagent.Options) (*acpagent.Adapter, error) {
+			close(started)
+			<-release // park the spawn like a hung cursor authenticate
+			return nil, errors.New("spawn aborted by test")
+		},
+	})
+	defer r.Close()
+	defer close(release)
+
+	payload, err := json.Marshal(map[string]string{"agent_id": AgentCursor, "cwd": t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := wire.MakeRequest("req-create", wire.ChannelChat, wire.ChatMethodCreateSession, json.RawMessage(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = r.handle(env)
+		close(done)
+	}()
+
+	<-started // the spawn is in flight (and parked)
+	select {
+	case <-done:
+		// Dispatch returned while the spawn is still blocked — the read
+		// loop stays free for other requests.
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat dispatch blocked behind a slow agent spawn")
 	}
 }
 
