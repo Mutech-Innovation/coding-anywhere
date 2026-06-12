@@ -228,8 +228,9 @@ func (s *Server) wsReadLoop(ctx context.Context, conn *Conn, logger *slog.Logger
 		// Origin is a trust marker; never honour one a client/guest set —
 		// guestGate re-stamps it for allowed guest traffic below. Daemons
 		// are trusted: they stamp Origin=guest on envelopes about guest
-		// sessions (events + responses) so the hub keeps that traffic away
-		// from the account's regular clients.
+		// sessions (events + responses) so peers can tell share-link
+		// traffic apart (e.g. the owner's UI renders those sessions
+		// view-only).
 		if conn.kind != auth.DeviceDaemon {
 			env.Origin = ""
 		}

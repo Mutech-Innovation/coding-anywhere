@@ -55,6 +55,7 @@ import {
   IconRoute,
   IconSearch,
   IconSend,
+  IconShare3,
   IconShieldCheck,
   IconTerminal2,
   IconTool,
@@ -65,11 +66,12 @@ import {
 } from '@tabler/icons-react';
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ChatMessage, ChatToolCall } from '../store/chat.js';
+import type { ChatMessage, ChatToolCall, SessionState } from '../store/chat.js';
 import { useChat } from '../store/chat.js';
 import { useConnection } from '../store/connection.js';
 import { useFiles } from '../store/files.js';
 import { MarkdownBody, StreamingMarkdownBody } from './Markdown.js';
+import { groupSessionList, type GuestSessionGroup } from './session-groups.js';
 import {
   groupTranscript,
   hasMeaningfulPayload,
@@ -108,14 +110,7 @@ export function ChatPanel() {
     void loadAgents().catch(() => {});
   }, [status, refresh, loadAgents]);
 
-  const list = useMemo(
-    () =>
-      Object.values(sessions).sort(
-        (a, b) =>
-          new Date(b.session.started_at).getTime() - new Date(a.session.started_at).getTime(),
-      ),
-    [sessions],
-  );
+  const { regular, guestGroups } = useMemo(() => groupSessionList(sessions), [sessions]);
 
   return (
     <Group align="stretch" gap="md" h="100%" wrap="nowrap" style={{ minHeight: 0 }}>
@@ -150,59 +145,31 @@ export function ChatPanel() {
         ) : null}
         <ScrollArea.Autosize mah="60vh">
           <Stack gap={4}>
-            {list.length === 0 ? (
+            {regular.length === 0 && guestGroups.length === 0 ? (
               <Text size="sm" c="dimmed">
                 No sessions yet. Click + to start one.
               </Text>
             ) : (
-              list.map((s) => (
-                <Group
-                  key={s.session.id}
-                  gap="xs"
-                  px="xs"
-                  py={6}
-                  wrap="nowrap"
-                  onClick={() => setActive(s.session.id)}
-                  style={{
-                    cursor: 'pointer',
-                    borderRadius: 6,
-                    background:
-                      activeId === s.session.id
-                        ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))'
-                        : 'transparent',
-                    color:
-                      activeId === s.session.id
-                        ? 'light-dark(var(--mantine-color-brand-8), #ffffff)'
-                        : undefined,
-                  }}
-                >
-                  <IconMessageCircle size={14} />
-                  <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
-                    <Text size="xs" fw={500} truncate>
-                      {s.session.title || s.session.cwd}
-                    </Text>
-                    <Text size="xs" c="dimmed" truncate>
-                      {s.session.agent_id}
-                    </Text>
-                  </Stack>
-                  <Badge size="xs" color={STATUS_COLOR[s.session.status] ?? 'gray'} variant="light">
-                    {s.session.status}
-                  </Badge>
-                  <Tooltip label="Close session">
-                    <ActionIcon
-                      size="sm"
-                      variant="subtle"
-                      color="gray"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void closeSession(s.session.id);
-                      }}
-                    >
-                      <IconX size={14} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
-              ))
+              <>
+                {regular.map((s) => (
+                  <SessionRow
+                    key={s.session.id}
+                    state={s}
+                    active={activeId === s.session.id}
+                    onSelect={() => setActive(s.session.id)}
+                    onClose={() => void closeSession(s.session.id)}
+                  />
+                ))}
+                {guestGroups.map((g) => (
+                  <GuestShareGroup
+                    key={g.shareId || '(unknown)'}
+                    group={g}
+                    activeId={activeId}
+                    onSelect={setActive}
+                    onClose={(id) => void closeSession(id)}
+                  />
+                ))}
+              </>
             )}
           </Stack>
         </ScrollArea.Autosize>
@@ -232,6 +199,198 @@ export function ChatPanel() {
 
       <CreateSessionModal opened={creatorOpen} onClose={() => setCreatorOpen(false)} />
     </Group>
+  );
+}
+
+function SessionRow({
+  state,
+  active,
+  onSelect,
+  onClose,
+}: {
+  state: SessionState;
+  active: boolean;
+  onSelect: () => void;
+  onClose: () => void;
+}) {
+  const s = state.session;
+  return (
+    <Group
+      gap="xs"
+      px="xs"
+      py={6}
+      wrap="nowrap"
+      onClick={onSelect}
+      style={{
+        cursor: 'pointer',
+        borderRadius: 6,
+        background: active ? 'light-dark(#e9eefe, var(--mantine-color-brand-9))' : 'transparent',
+        color: active ? 'light-dark(var(--mantine-color-brand-8), #ffffff)' : undefined,
+      }}
+    >
+      <IconMessageCircle size={14} />
+      <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
+        <Text size="xs" fw={500} truncate>
+          {s.title || s.cwd}
+        </Text>
+        <Text size="xs" c="dimmed" truncate>
+          {s.agent_id}
+        </Text>
+      </Stack>
+      <Badge size="xs" color={STATUS_COLOR[s.status] ?? 'gray'} variant="light">
+        {s.status}
+      </Badge>
+      <Tooltip label="Close session">
+        <ActionIcon
+          size="sm"
+          variant="subtle"
+          color="gray"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+        >
+          <IconX size={14} />
+        </ActionIcon>
+      </Tooltip>
+    </Group>
+  );
+}
+
+/**
+ * One share link's guest sessions as a collapsible group, so the owner can
+ * monitor a link's chatter in one place and revoke the link from its header.
+ * Rows reuse the normal session row; opening one shows the view-only chat.
+ */
+function GuestShareGroup({
+  group,
+  activeId,
+  onSelect,
+  onClose,
+}: {
+  group: GuestSessionGroup;
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onClose: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const first = group.sessions[0]!.session;
+  const label = group.shareId ? `分享链接 ·${group.shareId.slice(-6)}` : '分享链接（旧版）';
+  return (
+    <Stack gap={2}>
+      <Group
+        gap={6}
+        px="xs"
+        py={4}
+        wrap="nowrap"
+        onClick={() => setOpen((o) => !o)}
+        style={{ cursor: 'pointer', borderRadius: 6 }}
+      >
+        {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+        <IconShare3 size={14} />
+        <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
+          <Text size="xs" fw={600} truncate>
+            {label}
+          </Text>
+          <Text size="xs" c="dimmed" truncate>
+            {agentShortName(first.agent_id)} · {first.cwd}
+          </Text>
+        </Stack>
+        <Badge size="xs" variant="light" color="grape">
+          {group.sessions.length}
+        </Badge>
+        {group.shareId ? <RevokeShareButton shareId={group.shareId} /> : null}
+      </Group>
+      <Collapse in={open}>
+        <Stack gap={4} pl="md">
+          {group.sessions.map((s) => (
+            <SessionRow
+              key={s.session.id}
+              state={s}
+              active={activeId === s.session.id}
+              onSelect={() => onSelect(s.session.id)}
+              onClose={() => onClose(s.session.id)}
+            />
+          ))}
+        </Stack>
+      </Collapse>
+    </Stack>
+  );
+}
+
+/**
+ * Popover-confirmed revoke of a share link: the relay marks it revoked and
+ * disconnects its live guests. Existing sessions stay listed (close them per
+ * row) — revoking only stops the link from being used again.
+ */
+function RevokeShareButton({ shareId }: { shareId: string }) {
+  const revokeAskShare = useConnection((s) => s.revokeAskShare);
+  const [opened, setOpened] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onRevoke() {
+    setError(null);
+    setBusy(true);
+    try {
+      await revokeAskShare(shareId);
+      setDone(true);
+      setOpened(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <Tooltip label="链接已撤销（已建的会话保留，可逐个关闭）">
+        <ThemeIcon size="sm" variant="light" color="gray">
+          <IconCheck size={12} />
+        </ThemeIcon>
+      </Tooltip>
+    );
+  }
+  return (
+    <Popover opened={opened} onChange={setOpened} width={240} position="bottom-end" withArrow>
+      <Popover.Target>
+        <Tooltip label="撤销该分享链接">
+          <ActionIcon
+            size="sm"
+            variant="subtle"
+            color="red"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpened((o) => !o);
+            }}
+          >
+            <IconTrash size={14} />
+          </ActionIcon>
+        </Tooltip>
+      </Popover.Target>
+      <Popover.Dropdown onClick={(e) => e.stopPropagation()}>
+        <Stack gap="xs">
+          <Text size="xs">
+            撤销后链接立即失效，在线访客会被断开；已创建的会话保留，可在列表里逐个关闭。
+          </Text>
+          {error ? (
+            <Text size="xs" c="red">
+              {error}
+            </Text>
+          ) : null}
+          <Group justify="flex-end" gap="xs">
+            <Button size="compact-xs" variant="default" onClick={() => setOpened(false)}>
+              取消
+            </Button>
+            <Button size="compact-xs" color="red" loading={busy} onClick={() => void onRevoke()}>
+              撤销
+            </Button>
+          </Group>
+        </Stack>
+      </Popover.Dropdown>
+    </Popover>
   );
 }
 
@@ -565,6 +724,10 @@ function ChatView({ sessionId }: { sessionId: string }) {
   if (!session) return null;
 
   const status = session.session.status;
+  // Guest (share-link) sessions are view-only for the owner: the daemon
+  // rejects owner prompt/set_mode/set_config_option on them, so the UI
+  // hides the composer and mode picker; cancel stays for management.
+  const isGuestSession = session.session.origin === 'guest';
   const pendingPermissions = Object.values(session.permissions).filter((p) => p.pending);
   const modelOption = session.configOptions.find((o) => o.id.toLowerCase() === 'model') ?? null;
 
@@ -599,7 +762,14 @@ function ChatView({ sessionId }: { sessionId: string }) {
           </Tooltip>
         </Stack>
         <Group gap="xs">
-          {session.modes.length > 0 ? (
+          {isGuestSession ? (
+            <Tooltip label="访客通过分享链接创建的会话 — 只读旁观（固定 ask 模式），可停止/关闭">
+              <Badge color="grape" variant="light" leftSection={<IconShare3 size={10} />}>
+                访客
+              </Badge>
+            </Tooltip>
+          ) : null}
+          {session.modes.length > 0 && !isGuestSession ? (
             <SegmentedControl
               size="xs"
               data={session.modes.map((m) => ({ label: m.name, value: m.id }))}
@@ -685,23 +855,44 @@ function ChatView({ sessionId }: { sessionId: string }) {
       ) : null}
 
       <ReadingColumn>
-        <CommandInput
-          commands={session.availableCommands}
-          value={draft}
-          onChange={setDraft}
-          onSubmit={onSend}
-          busy={busy}
-          attachments={attachments}
-          onAttachmentsChange={setAttachments}
-          status={status}
-          onCancel={() => void cancel(sessionId)}
-          modelOption={modelOption}
-          onModelChange={(value) =>
-            modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
-          }
-          usage={session.usage}
-          agentName={agentShortName(session.session.agent_id)}
-        />
+        {isGuestSession ? (
+          <Paper withBorder radius="md" p="xs">
+            <Group justify="space-between" wrap="nowrap" gap="xs">
+              <Text size="xs" c="dimmed">
+                访客会话只读 — 你可以实时旁观；必要时停止当前回合，或在左侧列表关闭会话/撤销链接。
+              </Text>
+              {status === 'thinking' ? (
+                <Button
+                  size="compact-xs"
+                  color="red"
+                  variant="light"
+                  leftSection={<IconPlayerStop size={12} />}
+                  onClick={() => void cancel(sessionId)}
+                >
+                  停止
+                </Button>
+              ) : null}
+            </Group>
+          </Paper>
+        ) : (
+          <CommandInput
+            commands={session.availableCommands}
+            value={draft}
+            onChange={setDraft}
+            onSubmit={onSend}
+            busy={busy}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            status={status}
+            onCancel={() => void cancel(sessionId)}
+            modelOption={modelOption}
+            onModelChange={(value) =>
+              modelOption ? void setConfigOption(sessionId, modelOption.id, value) : undefined
+            }
+            usage={session.usage}
+            agentName={agentShortName(session.session.agent_id)}
+          />
+        )}
       </ReadingColumn>
     </Stack>
   );

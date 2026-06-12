@@ -304,14 +304,11 @@ func (h *Hub) Broadcast(from *Conn, env wire.Envelope) {
 			h.deliverToGuest(peer, env)
 			continue
 		}
-		// Guest-session traffic (daemon-stamped Origin=guest: events about
-		// guest sessions and responses to guest requests) never reaches the
-		// account's regular clients — the owner's UI must not fill up with
-		// share-link chatter. Daemons still receive guest-stamped traffic:
-		// guest→daemon requests carry Origin=guest as the trust marker.
-		if env.Origin == wire.OriginGuest && peer.kind == auth.DeviceClient {
-			continue
-		}
+		// Guest-session traffic (daemon-stamped Origin=guest) IS delivered
+		// to the account's regular clients: the owner watches and manages
+		// guest sessions live, grouped by share link in the UI. Responses
+		// to guest requests also fan out, but clients drop responses whose
+		// id they never sent — same as any other peer's responses.
 		select {
 		case peer.send <- env:
 		default:

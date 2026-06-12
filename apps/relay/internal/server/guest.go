@@ -141,16 +141,16 @@ func (s *Server) guestGate(ctx context.Context, conn *Conn, env *wire.Envelope) 
 		// Force the owner-chosen cwd, model, and agent onto the session:
 		// guests have no directory/model/agent picker and must not be able
 		// to pick/omit any of them. Empty share values leave that field
-		// untouched (legacy shares / daemon defaults).
-		if gs.cwd != "" || gs.model != "" || gs.agentID != "" {
-			payload, err := injectCreateFields(env.Payload, gs.cwd, gs.model, gs.agentID)
-			if err != nil {
-				gs.releaseSessionSlot()
-				s.rejectGuest(ctx, conn, *env, "bad_request", "invalid create_session payload")
-				return false
-			}
-			env.Payload = payload
+		// untouched (legacy shares / daemon defaults). The share id (the
+		// guest's device id) is always injected so the daemon can tag the
+		// session and the owner's UI can group sessions per link.
+		payload, err := injectCreateFields(env.Payload, gs.cwd, gs.model, gs.agentID, conn.deviceID)
+		if err != nil {
+			gs.releaseSessionSlot()
+			s.rejectGuest(ctx, conn, *env, "bad_request", "invalid create_session payload")
+			return false
 		}
+		env.Payload = payload
 		gs.addPending(env.ID, env.Method)
 	case wire.ChatMethodPrompt:
 		if sid := sessionIDFromPayload(env.Payload); sid == "" || !gs.owns(sid) {
@@ -187,18 +187,19 @@ func (s *Server) rejectGuest(ctx context.Context, conn *Conn, env wire.Envelope,
 	})))
 }
 
-// injectCreateFields overwrites the "cwd", "model", and/or "agent_id" fields
-// of a create_session payload with the owner-chosen values, preserving any
-// other fields the guest sent (title). Empty values are left untouched. It
-// returns an error only when the payload is present but not a JSON object.
-func injectCreateFields(payload json.RawMessage, cwd, model, agentID string) (json.RawMessage, error) {
+// injectCreateFields overwrites the "cwd", "model", "agent_id", and
+// "share_id" fields of a create_session payload with the relay-trusted
+// values, preserving any other fields the guest sent (title). Empty values
+// are left untouched (share_id is never empty in practice). It returns an
+// error only when the payload is present but not a JSON object.
+func injectCreateFields(payload json.RawMessage, cwd, model, agentID, shareID string) (json.RawMessage, error) {
 	fields := map[string]json.RawMessage{}
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &fields); err != nil {
 			return nil, err
 		}
 	}
-	for key, value := range map[string]string{"cwd": cwd, "model": model, "agent_id": agentID} {
+	for key, value := range map[string]string{"cwd": cwd, "model": model, "agent_id": agentID, "share_id": shareID} {
 		if value == "" {
 			continue
 		}

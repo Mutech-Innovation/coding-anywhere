@@ -125,7 +125,10 @@ type session struct {
 
 	// guest marks a session created by a read-only "ask"-mode share link
 	// (relay-stamped Origin=guest). Such sessions are forced into ask mode at
-	// creation and auto-deny every agent permission request.
+	// creation and auto-deny every agent permission request. They are listed
+	// to the owner's clients (grouped by ChatSession.ShareID) but stay
+	// view-only for them: only the guest itself may prompt, and mode/model
+	// stay locked for everyone.
 	guest bool
 
 	// modes captured from session/new, updated by current_mode_update.
@@ -370,13 +373,11 @@ func (r *Router) handleListSessions(env wire.Envelope) {
 	r.mu.Lock()
 	out := make([]wire.ChatSession, 0, len(r.sessions))
 	for _, s := range r.sessions {
-		// Guest (share-link) sessions are invisible to regular clients —
-		// the owner's UI should not fill up with guest chatter. (The relay
-		// never forwards list_sessions from guests, so the requester here
-		// is always a regular client.)
-		if s.guest {
-			continue
-		}
+		// Guest (share-link) sessions are included: they carry
+		// Origin=guest + ShareID so the owner's UI can group them per
+		// link and render them view-only. (The relay never forwards
+		// list_sessions from guests, so the requester here is always a
+		// regular client.)
 		out = append(out, s.ChatSession)
 	}
 	r.mu.Unlock()
@@ -461,11 +462,14 @@ func (r *Router) handleCreateSession(env wire.Envelope, req wire.ChatCreateSessi
 	// Read-only guest ("ask"-share) sessions are forced into ask mode at
 	// creation so the agent cannot make changes, no matter what mode it
 	// defaulted to. The relay also blocks guests from calling set_mode.
-	// They're also stamped with Origin=guest on the wire so they stay out
-	// of the owner's session list and event stream.
+	// They're stamped with Origin=guest + the relay-injected ShareID so the
+	// owner's UI can show them grouped per share link (view-only). ShareID
+	// is honoured only on guest-origin requests — a regular client cannot
+	// dress a session up as guest traffic.
 	s.guest = env.Origin == wire.OriginGuest
 	if s.guest {
 		s.ChatSession.Origin = wire.OriginGuest
+		s.ChatSession.ShareID = req.ShareID
 		if askID := askModeID(s.modes); askID != "" && askID != s.currentModeID {
 			setCtx, setCancel := context.WithTimeout(r.runCtx, 10*time.Second)
 			if err := a.SetMode(setCtx, nativeID, askID); err != nil {
@@ -730,12 +734,30 @@ func (r *Router) modelConfigUpdate(s *session) json.RawMessage {
 	return synthetic
 }
 
+// guestLocked reports whether env is a non-guest (owner-side) request
+// against a guest share session, rejecting it with the given reason when so.
+// Guest sessions are visible to the owner's clients but view-only: prompting
+// belongs to the guest alone, and mode/model stay locked to the share's
+// settings. Cancel, close_session, and get_history stay open to the owner
+// for management. The check keys off the relay's Origin trust marker, so a
+// client cannot spoof its way in.
+func (r *Router) guestLocked(env wire.Envelope, s *session, reason string) bool {
+	if !s.guest || env.Origin == wire.OriginGuest {
+		return false
+	}
+	r.respondErr(env, "guest_view_only", reason)
+	return true
+}
+
 func (r *Router) handlePrompt(env wire.Envelope, req wire.ChatPromptRequest) {
 	r.mu.Lock()
 	s, ok := r.sessions[req.SessionID]
 	r.mu.Unlock()
 	if !ok {
 		r.respondErr(env, "not_found", "unknown session")
+		return
+	}
+	if r.guestLocked(env, s, "guest share sessions are view-only; only the guest can send prompts") {
 		return
 	}
 
@@ -1140,6 +1162,9 @@ func (r *Router) handleSetMode(env wire.Envelope, req wire.ChatSetModeRequest) {
 		r.respondErr(env, "not_found", "unknown session")
 		return
 	}
+	if r.guestLocked(env, s, "guest share sessions are locked to ask mode") {
+		return
+	}
 	if req.ModeID == "" {
 		r.respondErr(env, "bad_request", "mode_id required")
 		return
@@ -1164,6 +1189,9 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 	r.mu.Unlock()
 	if !ok {
 		r.respondErr(env, "not_found", "unknown session")
+		return
+	}
+	if r.guestLocked(env, s, "guest share sessions are locked to the share's model") {
 		return
 	}
 	if req.ConfigID == "" {
@@ -1368,8 +1396,8 @@ func (r *Router) setStatus(s *session, status string) {
 	})
 	// Push a Web Push when the agent finishes a turn so backgrounded
 	// devices see the result without keeping the tab open. Guest sessions
-	// don't ping the owner's devices — their activity is invisible to
-	// regular clients by design.
+	// don't ping the owner's devices — the owner watches them live in the
+	// UI instead; share-link chatter must not buzz every paired device.
 	if !guest && status == "idle" && (prev == "thinking" || prev == "awaiting_permission") {
 		body := agentDisplayName(agentID) + " has finished thinking."
 		if title != "" {
@@ -1442,8 +1470,10 @@ func (r *Router) broadcastEvent(method string, payload any) {
 }
 
 // broadcastSessionEvent emits a chat event; events about guest (share-link)
-// sessions are stamped Origin=guest so the relay fans them out to guests
-// only — the owner's regular clients never see guest chatter.
+// sessions are stamped Origin=guest. The relay fans them out to the guests
+// owning the session AND to the account's regular clients — the owner
+// watches guest sessions live; the stamp lets peers tell share traffic
+// apart.
 func (r *Router) broadcastSessionEvent(guest bool, method string, payload any) {
 	r.eventSeq.Add(1)
 	id := fmt.Sprintf("%s-%d", ulid.Make().String(), r.eventSeq.Load())

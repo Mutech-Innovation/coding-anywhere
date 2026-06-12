@@ -163,9 +163,10 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   picker, but the daemon's chat agents refuse to run without an explicit
   project cwd. The owner picks the cwd (required), optionally a model, and the
   agent (devin / cursor-cli) when minting the share; the relay **injects** all
-  three into the guest's `create_session` (`injectCreateFields` in
-  `guest.go`), so the guest can neither omit nor tamper with them. The daemon
-  then applies the locked model right after creating a guest session via the
+  three — plus the **share id** (`share_id`, = the guest's device id) — into
+  the guest's `create_session` (`injectCreateFields` in `guest.go`), so the
+  guest can neither omit nor tamper with them. The daemon then applies the
+  locked model right after creating a guest session via the
   agent-appropriate mechanism (`chatrouter.applySessionModel`:
   `set_config_option` for Devin, `session/set_model` for cursor-agent). An
   empty cwd (legacy shares) fails with `cwd required` until re-issued; an
@@ -192,13 +193,20 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   - stamps `wire.Envelope.Origin = "guest"` on forwarded traffic and strips any
     client/guest-set Origin on ingress (trust marker for the daemon). Daemon-set
     Origin is preserved: the daemon stamps `Origin=guest` on events about guest
-    sessions and on responses to guest requests, and `Hub.Broadcast` skips
-    regular clients for such envelopes.
-- **Guest sessions are invisible to the owner's UI**: the daemon marks them
-  (`session.guest`, `ChatSession.Origin = "guest"`), excludes them from
-  `chat.list_sessions`, stamps their event broadcasts with `Origin=guest`
-  (relay fans those out to guests only), and skips the finished-turn Web Push.
-  Pinned by `TestGuestSessionHiddenFromClients`.
+    sessions and on responses to guest requests; `Hub.Broadcast` delivers
+    those to regular clients too (the owner watches live) — guests still only
+    receive their own session's traffic.
+- **Guest sessions are visible to the owner's UI, view-only, grouped per
+  link**: the daemon marks them (`session.guest`,
+  `ChatSession.Origin = "guest"`, `ChatSession.ShareID` from the
+  relay-injected `share_id`), includes them in `chat.list_sessions`, and fans
+  their events out to owner clients live. The owner cannot interact:
+  `chatrouter.guestLocked` rejects owner `prompt` / `set_mode` /
+  `set_config_option` on guest sessions with code `guest_view_only` (the
+  Origin trust marker tells guest requests apart); `cancel` / `close_session`
+  / `get_history` stay open for management. The finished-turn Web Push is
+  still skipped (no buzz from share-link chatter). Pinned by
+  `TestGuestSessionVisibleToClients`.
 - **Daemon enforcement** (`internal/chatrouter/router.go`): a session whose
   create request carries `Origin=guest` is forced into ask mode at creation
   (`askModeID` + `SetMode`) and **auto-denies every permission request**
@@ -213,10 +221,19 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   model (choices pulled from an open session of the **same agent** — model ids
   differ per agent). The guest page also reuses `ChatPanel`'s exported
   `MessageBubble` / `ToolCallCard` so it renders markdown/tool cards like the
-  main chat, and names the session's agent in its copy.
-- **Tests**: `apps/relay/internal/server/guest_internal_test.go` (gating logic),
-  `guest_e2e_test.go` (force-ask + gating + isolation + permission auto-deny
-  end to end), `store/store_test.go` (`TestGuestShareCRUD`).
+  main chat, and names the session's agent in its copy. On the owner side,
+  `ChatPanel` groups guest sessions under collapsible per-link headers
+  (`GuestShareGroup`, pure grouping logic in
+  `components/session-groups.ts`); the header shows agent + cwd and offers a
+  popover-confirmed **revoke** (`connection.ts` `revokeAskShare` →
+  `PairingClient.revokeAskShare` → `DELETE /v1/share/{id}`). Opening a guest
+  session shows a 访客 badge, hides composer/mode/model controls, and offers
+  停止 (cancel) while the guest's turn is running.
+- **Tests**: `apps/relay/internal/server/guest_internal_test.go` (gating logic
+  - share_id injection), `guest_e2e_test.go` (force-ask + gating + isolation +
+    permission auto-deny + owner visibility/view-only end to end),
+    `store/store_test.go` (`TestGuestShareCRUD`),
+    `apps/web/src/components/session-groups.test.ts` (per-link grouping).
 - **Deploying the guest page behind a reverse proxy**: `/guest` is a client-side
   route, so the static host needs SPA fallback (serve `index.html` for unknown
   paths). Vite dev does this automatically.

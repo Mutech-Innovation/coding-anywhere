@@ -49,9 +49,13 @@ export const ChatSession = z.object({
   title: z.string().optional(),
   status: ChatSessionStatus,
   started_at: z.string(),
-  /** "guest" for sessions created via a read-only share link. The daemon
-   * hides those from regular clients; guests see it on their own session. */
+  /** "guest" for sessions created via a read-only share link. Such sessions
+   * are visible to the owner's clients (grouped by share_id) but view-only:
+   * the daemon rejects owner prompt/set_mode/set_config_option on them. */
   origin: z.string().optional(),
+  /** Guest share link id the session was created through (origin="guest"
+   * only). Lets the owner's UI group one link's sessions together. */
+  share_id: z.string().optional(),
 });
 export type ChatSession = z.infer<typeof ChatSession>;
 

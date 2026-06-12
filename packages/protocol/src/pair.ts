@@ -237,6 +237,31 @@ export class PairingClient {
   }
 
   /**
+   * Revoke a guest share link by id. The relay marks it revoked and drops any
+   * live guest connection using it; already-created sessions stay on the
+   * daemon until closed.
+   */
+  async revokeAskShare(shareId: string, opts: RequestOpts & { bearer: string }): Promise<void> {
+    const res = await fetch(`${this.base}/v1/share/${encodeURIComponent(shareId)}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${opts.bearer}` },
+      signal: opts.signal,
+    });
+    if (!res.ok && res.status !== 204) {
+      let code = 'http_error';
+      let message = res.statusText;
+      try {
+        const body = (await res.json()) as { code?: string; message?: string };
+        if (body.code) code = body.code;
+        if (body.message) message = body.message;
+      } catch {
+        // ignore
+      }
+      throw new RelayError(res.status, code, message);
+    }
+  }
+
+  /**
    * Clear the account key AND revoke every refresh token on the account.
    * Use only when the key (or a device's credentials) is suspected
    * compromised; recovery requires a fresh pair flow.

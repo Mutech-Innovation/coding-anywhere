@@ -78,6 +78,12 @@ interface ConnectionStore {
     model: string;
     agentId: string;
   }): Promise<{ url: string; expiresAt: number }>;
+  /**
+   * Revoke a guest share link by id: the relay marks it revoked and drops
+   * live guest connections. Already-created guest sessions stay on the
+   * daemon (close them from the session list).
+   */
+  revokeAskShare(shareId: string): Promise<void>;
   setStatus(s: ConnectionState): void;
   setError(message: string | null): void;
 }
@@ -171,6 +177,13 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
       `${window.location.origin}/guest?token=${encodeURIComponent(res.token)}` +
       `&relay=${encodeURIComponent(relay)}`;
     return { url, expiresAt: res.expires_at };
+  },
+
+  async revokeAskShare(shareId) {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    await pc.revokeAskShare(shareId, { bearer: credentials.bundle.access_token });
   },
 
   async signInWithAccountKey({ relay_url, account_key, device_label }) {

@@ -60,10 +60,16 @@ type ChatSession struct {
 	Status    string    `json:"status"` // "idle" | "thinking" | "awaiting_permission" | "closed"
 	StartedAt time.Time `json:"started_at"`
 	// Origin is "guest" for sessions created through a read-only share link.
-	// Guest sessions are hidden from the account's regular clients: the
-	// daemon excludes them from list_sessions and stamps Origin=guest on
-	// their event envelopes so the relay only fans them out to guests.
+	// Guest sessions ARE visible to the account's regular clients (the owner
+	// monitors and manages them, grouped by share link), but stay view-only
+	// for the owner: the daemon rejects owner prompt/set_mode/
+	// set_config_option on them. Cancel, close, and get_history work.
 	Origin string `json:"origin,omitempty"`
+	// ShareID is the guest share link this session was created through
+	// (only set when Origin is "guest"). The relay injects it into the
+	// guest's create_session, so the owner's UI can group one link's
+	// sessions together.
+	ShareID string `json:"share_id,omitempty"`
 }
 
 // SessionMode mirrors the ACP `SessionMode` value type. We surface modes
@@ -88,6 +94,10 @@ type ChatCreateSessionRequest struct {
 	// session creation. Used by guest "ask"-share sessions, where the relay
 	// injects the share's owner-chosen model so the guest cannot change it.
 	Model string `json:"model,omitempty"`
+	// ShareID is relay-injected on guest create_session requests (the guest
+	// share id). The daemon honours it only when the envelope carries the
+	// relay's Origin=guest trust marker, so clients cannot spoof it.
+	ShareID string `json:"share_id,omitempty"`
 }
 
 type ChatCreateSessionResponse struct {

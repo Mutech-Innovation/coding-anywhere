@@ -94,6 +94,15 @@ func TestGuestGateAllowsCreateSessionAndStampsOrigin(t *testing.T) {
 	if env.Origin != wire.OriginGuest {
 		t.Fatalf("expected Origin=guest, got %q", env.Origin)
 	}
+	// The share id (= guest device id) is always injected so the daemon can
+	// tag the session for per-link grouping in the owner's UI.
+	var got wire.ChatCreateSessionRequest
+	if err := json.Unmarshal(env.Payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.ShareID != "share-1" {
+		t.Fatalf("expected injected share_id share-1, got %q", got.ShareID)
+	}
 	// A second create exceeds maxSessions=1.
 	env2 := chatReq(t, "c-2", wire.ChatMethodCreateSession, wire.ChatCreateSessionRequest{AgentID: "devin"})
 	if s.guestGate(context.Background(), conn, &env2) {
@@ -104,11 +113,11 @@ func TestGuestGateAllowsCreateSessionAndStampsOrigin(t *testing.T) {
 func TestGuestGateInjectsShareCwdModelAndAgent(t *testing.T) {
 	s := &Server{}
 	conn := newTestGuestConnFields(0, 1, "/srv/app", "gpt-5-high", "cursor-cli")
-	// The guest tries to pick its own cwd/model/agent; the relay must
-	// overwrite all three with the owner-chosen share values while
-	// preserving other fields.
+	// The guest tries to pick its own cwd/model/agent/share id; the relay
+	// must overwrite all of them with the trusted values while preserving
+	// other fields.
 	env := chatReq(t, "c-1", wire.ChatMethodCreateSession,
-		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/etc", Model: "sneaky", Title: "hi"})
+		wire.ChatCreateSessionRequest{AgentID: "devin", Cwd: "/etc", Model: "sneaky", Title: "hi", ShareID: "spoofed"})
 	if !s.guestGate(context.Background(), conn, &env) {
 		t.Fatal("expected create_session to be allowed")
 	}
@@ -124,6 +133,9 @@ func TestGuestGateInjectsShareCwdModelAndAgent(t *testing.T) {
 	}
 	if got.AgentID != "cursor-cli" {
 		t.Fatalf("expected injected agent cursor-cli, got %q", got.AgentID)
+	}
+	if got.ShareID != "share-1" {
+		t.Fatalf("expected spoofed share_id overwritten with share-1, got %q", got.ShareID)
 	}
 	if got.Title != "hi" {
 		t.Fatalf("expected other fields preserved, got %+v", got)
@@ -144,6 +156,9 @@ func TestGuestGateLeavesFieldsWhenShareUnset(t *testing.T) {
 	}
 	if got.Cwd != "/guest/pick" || got.Model != "guest-model" || got.AgentID != "devin" {
 		t.Fatalf("expected guest fields preserved when share has none, got %+v", got)
+	}
+	if got.ShareID != "share-1" {
+		t.Fatalf("expected share_id still injected, got %q", got.ShareID)
 	}
 }
 

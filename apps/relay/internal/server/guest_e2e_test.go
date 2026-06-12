@@ -264,13 +264,16 @@ func TestGuestPermissionAutoDeny(t *testing.T) {
 	}
 }
 
-// TestGuestSessionHiddenFromClients pins the "guest chatter stays out of the
-// owner's UI" contract: sessions created through a share link must not appear
-// in chat.list_sessions, and none of their traffic (session_created / status /
-// update events, responses to guest requests, finished-turn notifications)
-// may reach the account's regular clients — while the guest itself still
-// receives everything for its own session.
-func TestGuestSessionHiddenFromClients(t *testing.T) {
+// TestGuestSessionVisibleToClients pins the owner-side contract for guest
+// ("ask"-share) sessions: the owner's regular clients DO see them — the
+// session_created / update events fan out to clients live, and
+// chat.list_sessions includes the session tagged origin=guest + share_id so
+// the UI can group one link's sessions together — but the session stays
+// view-only for the owner: prompt/set_mode are rejected with
+// guest_view_only, while get_history and cancel (management) succeed.
+// Permission requests never fan out at all (the daemon auto-denies them),
+// and the guest keeps receiving everything for its own session.
+func TestGuestSessionVisibleToClients(t *testing.T) {
 	hs, _ := newPairingTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -298,7 +301,7 @@ func TestGuestSessionHiddenFromClients(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Owner client connection — it must stay completely silent throughout.
+	// Owner client connection — it must observe the guest session live.
 	ownerWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+claim.Credentials.AccessToken, nil)
 	if err != nil {
 		t.Fatalf("owner dial: %v", err)
@@ -314,9 +317,28 @@ func TestGuestSessionHiddenFromClients(t *testing.T) {
 			ownerCh <- env
 		}
 	}()
+	var ownerEvents []wire.Envelope
+	awaitOwner := func(id string) wire.Envelope {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case env := <-ownerCh:
+				if env.ID == id && env.Type == wire.TypeResponse {
+					return env
+				}
+				if env.Type == wire.TypeEvent {
+					ownerEvents = append(ownerEvents, env)
+				}
+			case <-deadline:
+				t.Fatalf("timeout waiting for owner response %s", id)
+				return wire.Envelope{}
+			}
+		}
+	}
 
 	// Guest: create a session and run a full prompt turn.
-	guestToken := createGuestShareToken(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "")
+	guestToken, shareID := createGuestShare(t, ctx, hs.URL, claim.Credentials.AccessToken, "/tmp", "")
 	guestWS, _, err := websocket.Dial(ctx, relayURL+"/v1/ws/connect?token="+guestToken, nil)
 	if err != nil {
 		t.Fatalf("guest dial: %v", err)
@@ -367,6 +389,9 @@ func TestGuestSessionHiddenFromClients(t *testing.T) {
 	if createRes.Session.Origin != "guest" {
 		t.Fatalf("guest session should carry origin=guest, got %q", createRes.Session.Origin)
 	}
+	if createRes.Session.ShareID != shareID {
+		t.Fatalf("guest session should carry share_id=%q, got %q", shareID, createRes.Session.ShareID)
+	}
 
 	req, _ = wire.MakeRequest("p-1", wire.ChannelChat, wire.ChatMethodPrompt,
 		wire.ChatPromptRequest{SessionID: guestSession, Text: "hello"})
@@ -387,31 +412,90 @@ func TestGuestSessionHiddenFromClients(t *testing.T) {
 		t.Fatal("guest did not receive its own chat.update events")
 	}
 
-	// Owner barrier + assertions: list_sessions answers AFTER the daemon
-	// already emitted all guest traffic (single ordered socket), so by the
-	// time the response arrives, any leaked guest envelope would already be
-	// in ownerCh ahead of it.
+	// Owner barrier: list_sessions answers AFTER the daemon already emitted
+	// all guest traffic (single ordered socket), so by the time the response
+	// arrives, every guest event has been collected into ownerEvents.
 	req, _ = wire.MakeRequest("l-1", wire.ChannelChat, wire.ChatMethodListSessions, map[string]any{})
 	_ = wsjson.Write(ctx, ownerWS, req)
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case env := <-ownerCh:
-			if env.ID == "l-1" && env.Type == wire.TypeResponse {
-				var list wire.ChatListSessionsResponse
-				if err := json.Unmarshal(env.Payload, &list); err != nil {
-					t.Fatalf("list payload: %v", err)
-				}
-				if len(list.Sessions) != 0 {
-					t.Fatalf("guest session leaked into owner list_sessions: %+v", list.Sessions)
-				}
-				return // success: nothing leaked before the barrier either
-			}
-			t.Fatalf("owner received guest-session traffic: type=%s channel=%s method=%s payload=%s",
-				env.Type, env.Channel, env.Method, string(env.Payload))
-		case <-deadline:
-			t.Fatal("timeout waiting for owner list_sessions response")
+	res = awaitOwner("l-1")
+	if res.Error != nil {
+		t.Fatalf("owner list_sessions error: %+v", res.Error)
+	}
+	var list wire.ChatListSessionsResponse
+	if err := json.Unmarshal(res.Payload, &list); err != nil {
+		t.Fatalf("list payload: %v", err)
+	}
+	if len(list.Sessions) != 1 {
+		t.Fatalf("owner list_sessions should include the guest session, got %+v", list.Sessions)
+	}
+	if got := list.Sessions[0]; got.ID != guestSession || got.Origin != "guest" || got.ShareID != shareID {
+		t.Fatalf("owner list_sessions entry mismatch: %+v (want id=%s origin=guest share_id=%s)",
+			got, guestSession, shareID)
+	}
+
+	// The owner saw the session appear and stream live: session_created and
+	// update events for the guest session, stamped Origin=guest — and never
+	// a permission_request (the daemon auto-denies those without surfacing).
+	sawCreated, sawOwnerUpdate := false, false
+	for _, env := range ownerEvents {
+		if env.Method == wire.ChatEventPermissionRequest {
+			t.Fatalf("permission_request must never fan out for guest sessions: %s", env.Payload)
 		}
+		if !strings.Contains(string(env.Payload), guestSession) {
+			continue
+		}
+		switch env.Method {
+		case wire.ChatEventSessionCreated:
+			sawCreated = true
+			if env.Origin != wire.OriginGuest {
+				t.Fatalf("guest session_created should be stamped Origin=guest, got %q", env.Origin)
+			}
+		case wire.ChatEventUpdate:
+			sawOwnerUpdate = true
+		}
+	}
+	if !sawCreated {
+		t.Fatal("owner did not receive the guest session_created event")
+	}
+	if !sawOwnerUpdate {
+		t.Fatal("owner did not receive live chat.update events for the guest session")
+	}
+
+	// View-only: owner prompt and set_mode on the guest session are refused.
+	req, _ = wire.MakeRequest("p-o", wire.ChannelChat, wire.ChatMethodPrompt,
+		wire.ChatPromptRequest{SessionID: guestSession, Text: "owner butting in"})
+	_ = wsjson.Write(ctx, ownerWS, req)
+	if res = awaitOwner("p-o"); res.Error == nil || res.Error.Code != "guest_view_only" {
+		t.Fatalf("owner prompt on guest session should fail with guest_view_only, got %+v", res.Error)
+	}
+	req, _ = wire.MakeRequest("m-o", wire.ChannelChat, wire.ChatMethodSetMode,
+		wire.ChatSetModeRequest{SessionID: guestSession, ModeID: "code"})
+	_ = wsjson.Write(ctx, ownerWS, req)
+	if res = awaitOwner("m-o"); res.Error == nil || res.Error.Code != "guest_view_only" {
+		t.Fatalf("owner set_mode on guest session should fail with guest_view_only, got %+v", res.Error)
+	}
+
+	// Management stays open: the owner can read history and cancel.
+	req, _ = wire.MakeRequest("h-o", wire.ChannelChat, wire.ChatMethodGetHistory,
+		wire.ChatGetHistoryRequest{SessionID: guestSession})
+	_ = wsjson.Write(ctx, ownerWS, req)
+	res = awaitOwner("h-o")
+	if res.Error != nil {
+		t.Fatalf("owner get_history on guest session should succeed, got %+v", res.Error)
+	}
+	var hist wire.ChatGetHistoryResponse
+	if err := json.Unmarshal(res.Payload, &hist); err != nil {
+		t.Fatalf("history payload: %v", err)
+	}
+	if hist.Session.ShareID != shareID || len(hist.Updates) == 0 {
+		t.Fatalf("owner history should carry share_id + updates, got share_id=%q updates=%d",
+			hist.Session.ShareID, len(hist.Updates))
+	}
+	req, _ = wire.MakeRequest("x-o", wire.ChannelChat, wire.ChatMethodCancel,
+		wire.ChatCancelRequest{SessionID: guestSession})
+	_ = wsjson.Write(ctx, ownerWS, req)
+	if res = awaitOwner("x-o"); res.Error != nil {
+		t.Fatalf("owner cancel on guest session should succeed, got %+v", res.Error)
 	}
 }
 
