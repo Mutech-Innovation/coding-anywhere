@@ -108,37 +108,73 @@ a:hover {
 }
 
 /* Dark code block used in install hero. */
-.cw-code-block {
-  background: #0e0e10;
-  color: #e7ecf3;
+.cw-terminal {
   border-radius: 8px;
-  padding: 20px 24px;
+  overflow: hidden;
+  border: 1px solid light-dark(#d6dae1, #2a2f3a);
+  background: #0e0e10;
   font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
+}
+.cw-terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: #1b1d21;
+  border-bottom: 1px solid #000;
+}
+.cw-terminal-dots {
+  display: inline-flex;
+  gap: 7px;
+}
+.cw-terminal-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  display: inline-block;
+}
+.cw-terminal-dot--red {
+  background: #ff5f56;
+}
+.cw-terminal-dot--yellow {
+  background: #ffbd2e;
+}
+.cw-terminal-dot--green {
+  background: #27c93f;
+}
+.cw-terminal-title {
+  color: #8a8f98;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.cw-terminal-body {
+  padding: 16px 18px;
+  color: #e7ecf3;
   line-height: 1.7;
   overflow-x: auto;
-  position: relative;
-}
-.cw-code-block::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  border-radius: 8px 8px 0 0;
-  background: linear-gradient(90deg, #1a3dbf 0%, #3d54ee 40%, #16a34a 100%);
 }
 .cw-code-comment {
-  color: #94a6ff;
+  color: #6e7681;
 }
 .cw-code-prompt {
-  color: #6b7280;
+  color: #27c93f;
   user-select: none;
   margin-right: 8px;
 }
 .cw-code-path {
-  color: #94a6ff;
+  color: #d4a35b;
+}
+.cw-code-output {
+  color: #8b949e;
+}
+.cw-code-ok {
+  color: #27c93f;
+}
+.cw-code-pair {
+  color: #e7ecf3;
+  letter-spacing: 0.32em;
+  font-weight: 600;
 }
 
 /* Hero giant heading. */
