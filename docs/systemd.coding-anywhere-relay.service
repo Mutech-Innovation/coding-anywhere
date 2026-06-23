@@ -1,0 +1,24 @@
+[Unit]
+Description=Coding Anywhere relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Bind to loopback only; a TLS reverse proxy (Caddy) terminates HTTPS in front.
+Environment=CA_LISTEN_ADDR=127.0.0.1:8443
+Environment=CA_RELAY_DATA_DIR=/var/lib/coding-anywhere
+# Put CA_RELAY_JWT_SECRET=... in this file (chmod 600). Generate with:
+#   openssl rand -base64 48
+EnvironmentFile=/etc/coding-anywhere/relay.env
+ExecStart=/usr/local/bin/coding-anywhere-relay
+Restart=on-failure
+RestartSec=5
+# Run as a transient system user; StateDirectory creates/owns
+# /var/lib/coding-anywhere (the SQLite lives here — back it up).
+DynamicUser=yes
+StateDirectory=coding-anywhere
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

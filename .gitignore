@@ -20,6 +20,9 @@ bin/
 *.test
 *.out
 vendor/
+# Cross-compiled binaries dropped in the repo root (see docs/setup.md §1.5/§2.4)
+/coding-anywhere-relay
+/coding-anywhere-daemon
 
 # Env
 .env

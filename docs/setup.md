@@ -7,7 +7,7 @@ URL).
 
 This guide walks through:
 
-1. Standing up the relay via `docker compose`.
+1. Standing up the relay via `docker compose` (or a bare-metal binary + Caddy).
 2. Installing the daemon on macOS or Linux and pairing it to the relay.
 3. Pointing your browser at the relay and pairing it.
 
@@ -59,6 +59,88 @@ CA_RELAY_JWT_SECRET=$(openssl rand -base64 48) \
 
 The web client and daemon will both treat `http://your-host:8443` as the
 relay URL.
+
+### 1.5 Bare-metal public deploy (no Docker)
+
+If the host has no Docker, run the relay as a plain binary behind a native
+Caddy. The relay is a **static, CGO-free Go binary**, so you can cross-compile
+it on your laptop and copy it over — nothing (no Go, no Docker) needs to be
+installed on the server.
+
+**1. Cross-compile and upload.** Match the server's architecture
+(`uname -m`: `x86_64` → `amd64`, `aarch64` → `arm64`):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o coding-anywhere-relay ./apps/relay/cmd
+scp coding-anywhere-relay root@RELAY_HOST:/usr/local/bin/coding-anywhere-relay
+```
+
+> A mismatched arch fails at startup with `Exec format error` (systemd status
+> `203/EXEC`). Confirm with `file coding-anywhere-relay` vs `uname -m`.
+
+**2. Secret + systemd service.** On the server:
+
+```bash
+sudo mkdir -p /etc/coding-anywhere
+echo "CA_RELAY_JWT_SECRET=$(openssl rand -base64 48)" | sudo tee /etc/coding-anywhere/relay.env >/dev/null
+sudo chmod 600 /etc/coding-anywhere/relay.env
+```
+
+Copy [`systemd.coding-anywhere-relay.service`](./systemd.coding-anywhere-relay.service)
+to `/etc/systemd/system/coding-anywhere-relay.service`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now coding-anywhere-relay
+curl -s http://127.0.0.1:8443/healthz    # {"ok":true,...}
+```
+
+The relay binds loopback only; Caddy fronts it with TLS.
+
+**3. Caddy (native) for TLS.** Install Caddy (see
+<https://caddyserver.com/docs/install>), set `/etc/caddy/Caddyfile`:
+
+```caddy
+relay.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8443
+}
+```
+
+```bash
+sudo systemctl restart caddy
+curl -s https://relay.example.com/healthz
+```
+
+Open ports **80** (Let's Encrypt HTTP-01 challenge) and **443** in the host
+firewall / cloud security group.
+
+**Sharing the box with something already on 443** (e.g. an Xray proxy). A port
+has one listener; keep the other service on 443 and serve the relay on an
+alternate HTTPS port. Caddy still gets a real cert via the HTTP-01 challenge on
+port 80:
+
+```caddy
+{
+	https_port 2096
+}
+
+relay.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8443
+}
+```
+
+Open **80** and **2096** (leave 443 to the other service). Clients then address
+the relay with the port: `wss://relay.example.com:2096`.
+
+**Updating.** Stop first so the running binary isn't `Text file busy`:
+
+```bash
+sudo systemctl stop coding-anywhere-relay
+scp coding-anywhere-relay root@RELAY_HOST:/usr/local/bin/   # from your laptop
+sudo systemctl start coding-anywhere-relay
+```
 
 ## 2. Daemon
 
@@ -157,6 +239,82 @@ systemctl --user enable --now coding-anywhere-daemon
 journalctl --user -u coding-anywhere-daemon -f
 ```
 
+### 2.4 Headless / remote server (cross-compile + transfer)
+
+For a dev box you only reach over SSH (e.g. a cloud VM in another region),
+build the daemon on your laptop and copy the binary over — it's a static,
+CGO-free binary, so the server needs no Go toolchain.
+
+**1. Cross-compile and upload** (match the server's `uname -m`: `x86_64` →
+`amd64`, `aarch64` → `arm64`):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o coding-anywhere-daemon ./apps/daemon/cmd
+ssh user@DEV_HOST 'mkdir -p ~/.local/bin'
+scp coding-anywhere-daemon user@DEV_HOST:~/.local/bin/coding-anywhere-daemon
+```
+
+**2. Pair it** over SSH. `init` prints a 6-digit code and waits; type that
+code into any logged-in web client (run locally per §3, or your hosted
+deployment) to claim it. Include the relay's port if it isn't on 443:
+
+```bash
+~/.local/bin/coding-anywhere-daemon init \
+  --relay-url wss://relay.example.com:2096 \
+  --device-label "silicon-valley"
+```
+
+**3. Attach to your username/password login** so this machine appears when you
+sign in from any browser. Run once per machine with the _same_ username +
+password; the first machine creates the login, the rest attach to it:
+
+```bash
+~/.local/bin/coding-anywhere-daemon user register --username me
+```
+
+**4. Keep it running** as a systemd _system_ service — robust on a headless
+box (starts at boot, no `loginctl enable-linger` dance). Run the block below
+**as the user that paired in step 2** (the inner `sudo` only elevates the file
+write); it bakes that user and its paths into the unit:
+
+```bash
+U=$(whoami); H="$HOME"
+sudo tee /etc/systemd/system/coding-anywhere-daemon.service >/dev/null <<EOF
+[Unit]
+Description=Coding Anywhere daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$U
+Environment=CA_CREDENTIALS_FILE=$H/.local/share/coding-anywhere/credentials.json
+Environment=PATH=$H/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$H/.local/bin/coding-anywhere-daemon -workspace $H
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now coding-anywhere-daemon
+sudo systemctl status coding-anywhere-daemon --no-pager -l
+```
+
+`CA_CREDENTIALS_FILE` and `PATH` are pinned so the service finds the
+credentials from step 2 and the agent CLIs even under systemd's minimal
+environment. Point `-workspace` at the directory you want the Files/Diff tabs
+rooted at.
+
+> Terminals, files, diff, and ports work immediately. **Chat** additionally
+> needs the agent CLI installed and authenticated on this machine (`devin`, or
+> `cursor-agent login`).
+>
+> Prefer a _user_ service? Use the §2.3 unit plus `loginctl enable-linger
+"$USER"` so it survives after you log out of SSH.
+
 ## 3. Web client
 
 The web app is a static React site. You can:
@@ -200,6 +358,7 @@ background.
 # Daemon
 coding-anywhere-daemon                          # connect with stored creds
 coding-anywhere-daemon init --relay-url ...     # re-pair
+coding-anywhere-daemon user register --username me   # create/attach the login
 coding-anywhere-daemon -log-level=debug         # verbose
 coding-anywhere-daemon -workspace ~/code/proj   # change file root
 
@@ -207,4 +366,9 @@ coding-anywhere-daemon -workspace ~/code/proj   # change file root
 docker compose -f docker/relay/compose.yml logs -f
 docker compose -f docker/relay/compose.yml restart
 docker compose -f docker/relay/compose.yml down
+
+# Relay (bare-metal / systemd)
+sudo systemctl restart coding-anywhere-relay
+journalctl -u coding-anywhere-relay -f
+journalctl -u caddy -f
 ```
