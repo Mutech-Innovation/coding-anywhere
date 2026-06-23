@@ -279,3 +279,122 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 		t.Fatal("expected revoked")
 	}
 }
+
+func TestUserCRUD(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	// Two accounts (each a "dev machine") that one user will own.
+	for _, id := range []string{"acc-a", "acc-b"} {
+		if _, err := s.CreateAccount(ctx, id); err != nil {
+			t.Fatalf("CreateAccount %s: %v", id, err)
+		}
+	}
+
+	u := store.User{ID: "u1", Username: "Me", PasswordHash: "argon2-hash"}
+	if err := s.CreateUser(ctx, u); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Username uniqueness is case-insensitive.
+	if err := s.CreateUser(ctx, store.User{ID: "u2", Username: "me", PasswordHash: "x"}); err == nil {
+		t.Fatal("expected duplicate-username error (case-insensitive)")
+	}
+
+	// Lookup is case-insensitive too.
+	got, err := s.GetUserByUsername(ctx, "ME")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if got.ID != "u1" || got.PasswordHash != "argon2-hash" {
+		t.Fatalf("unexpected user: %+v", got)
+	}
+
+	if _, err := s.GetUserByUsername(ctx, "nobody"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	// Own two accounts; linking is idempotent.
+	if err := s.LinkAccountOwner(ctx, "u1", "acc-a"); err != nil {
+		t.Fatalf("LinkAccountOwner a: %v", err)
+	}
+	if err := s.LinkAccountOwner(ctx, "u1", "acc-a"); err != nil {
+		t.Fatalf("LinkAccountOwner a (repeat): %v", err)
+	}
+	if err := s.LinkAccountOwner(ctx, "u1", "acc-b"); err != nil {
+		t.Fatalf("LinkAccountOwner b: %v", err)
+	}
+
+	accts, err := s.ListAccountsForUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListAccountsForUser: %v", err)
+	}
+	if len(accts) != 2 {
+		t.Fatalf("expected 2 accounts, got %d", len(accts))
+	}
+
+	owns, err := s.UserOwnsAccount(ctx, "u1", "acc-a")
+	if err != nil || !owns {
+		t.Fatalf("UserOwnsAccount acc-a: owns=%v err=%v", owns, err)
+	}
+	owns, _ = s.UserOwnsAccount(ctx, "u1", "acc-missing")
+	if owns {
+		t.Fatal("expected not to own acc-missing")
+	}
+
+	if err := s.SetUserPassword(ctx, "u1", "new-hash"); err != nil {
+		t.Fatalf("SetUserPassword: %v", err)
+	}
+	got, _ = s.GetUserByID(ctx, "u1")
+	if got.PasswordHash != "new-hash" {
+		t.Fatalf("password not updated: %q", got.PasswordHash)
+	}
+}
+
+func TestListSiblingAccounts(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	for _, id := range []string{"acc-a", "acc-b", "acc-c"} {
+		if _, err := s.CreateAccount(ctx, id); err != nil {
+			t.Fatalf("CreateAccount %s: %v", id, err)
+		}
+	}
+	// u1 owns a + b; u2 owns c (a different person).
+	if err := s.CreateUser(ctx, store.User{ID: "u1", Username: "me", PasswordHash: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateUser(ctx, store.User{ID: "u2", Username: "other", PasswordHash: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, acc := range []string{"acc-a", "acc-b"} {
+		if err := s.LinkAccountOwner(ctx, "u1", acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.LinkAccountOwner(ctx, "u2", "acc-c"); err != nil {
+		t.Fatal(err)
+	}
+
+	// From acc-a, the siblings are a + b (not c).
+	sib, err := s.ListSiblingAccounts(ctx, "acc-a")
+	if err != nil {
+		t.Fatalf("ListSiblingAccounts: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, a := range sib {
+		ids[a.ID] = true
+	}
+	if len(sib) != 2 || !ids["acc-a"] || !ids["acc-b"] || ids["acc-c"] {
+		t.Fatalf("expected {acc-a,acc-b}, got %v", ids)
+	}
+
+	// acc-c stands alone.
+	sib, err = s.ListSiblingAccounts(ctx, "acc-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sib) != 1 || sib[0].ID != "acc-c" {
+		t.Fatalf("expected {acc-c}, got %+v", sib)
+	}
+}

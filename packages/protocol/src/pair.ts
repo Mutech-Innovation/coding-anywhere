@@ -61,6 +61,53 @@ export const RotateKeyResponse = z.object({
 });
 export type RotateKeyResponse = z.infer<typeof RotateKeyResponse>;
 
+/** One machine in the picker shown when a user owns more than one account. */
+export const UserAccountSummary = z.object({
+  account_id: z.string(),
+  /** Friendly name, derived from the account's daemon device label. */
+  label: z.string(),
+});
+export type UserAccountSummary = z.infer<typeof UserAccountSummary>;
+
+/**
+ * Response from POST /v1/auth/user/login. `credentials` is present when a
+ * single account was resolved (one machine, or an explicit `account_id`).
+ * When the user owns several machines and none was chosen, `credentials` is
+ * absent and `accounts` carries the list to pick from.
+ */
+export const UserLoginResponse = z.object({
+  accounts: z.array(UserAccountSummary),
+  credentials: CredentialBundle.optional(),
+});
+export type UserLoginResponse = z.infer<typeof UserLoginResponse>;
+
+/** Response from POST /v1/auth/register. */
+export const RegisterResponse = z.object({
+  user_id: z.string(),
+  username: z.string(),
+  linked_account_id: z.string(),
+});
+export type RegisterResponse = z.infer<typeof RegisterResponse>;
+
+/**
+ * Response from GET /v1/auth/user/machines — the machines (accounts) reachable
+ * from the current session, plus which one is current. Drives the in-app
+ * machine switcher.
+ */
+export const UserMachinesResponse = z.object({
+  accounts: z.array(UserAccountSummary),
+  current: z.string(),
+});
+export type UserMachinesResponse = z.infer<typeof UserMachinesResponse>;
+
+/** Response from POST /v1/auth/user/switch — fresh creds for the chosen machine. */
+export const SwitchResponse = z.object({
+  accounts: z.array(UserAccountSummary),
+  current: z.string(),
+  credentials: CredentialBundle,
+});
+export type SwitchResponse = z.infer<typeof SwitchResponse>;
+
 /** Response from POST /v1/share/ask — a short-lived read-only "ask" link. */
 export const AskShareResponse = z.object({
   share_id: z.string(),
@@ -206,6 +253,51 @@ export class PairingClient {
       LoginResponse,
       opts,
     );
+  }
+
+  /**
+   * Log in with a username + password (the user system layered on top of
+   * accounts). When the user owns one machine, the response carries
+   * credentials directly. When they own several and `account_id` is omitted,
+   * the response carries the machine list (no credentials) so the caller can
+   * show a picker and call again with a chosen `account_id`.
+   */
+  userLogin(
+    args: { username: string; password: string; device_label: string; account_id?: string },
+    opts?: RequestOpts,
+  ) {
+    return postJSON(`${this.base}/v1/auth/user/login`, args, UserLoginResponse, opts);
+  }
+
+  /**
+   * Create a username+password login and link the authenticated account to
+   * it (or, for an existing username, password-verify and attach this
+   * account). Requires a Bearer — i.e. the browser must already be paired
+   * into the account it is registering. The daemon CLI (`user register`) is
+   * the usual entry point; this exists for a future web "set up login" flow.
+   */
+  register(args: { username: string; password: string }, opts: RequestOpts & { bearer: string }) {
+    return postJSON(`${this.base}/v1/auth/register`, args, RegisterResponse, opts);
+  }
+
+  /**
+   * List the machines (accounts) the current session can switch to — those
+   * owned by the same user as the account this token is for. No password
+   * needed; the Bearer is enough.
+   */
+  listMachines(opts: RequestOpts & { bearer: string }) {
+    return getJSON(`${this.base}/v1/auth/user/machines`, UserMachinesResponse, opts);
+  }
+
+  /**
+   * Switch to another machine the same user owns, returning fresh credentials
+   * for it. The current Bearer proves identity; no password re-entry.
+   */
+  switchMachine(
+    args: { account_id: string; device_label?: string },
+    opts: RequestOpts & { bearer: string },
+  ) {
+    return postJSON(`${this.base}/v1/auth/user/switch`, args, SwitchResponse, opts);
   }
 
   /**

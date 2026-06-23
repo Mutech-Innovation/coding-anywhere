@@ -78,6 +78,19 @@ Two phases:
    - A refresh token: 32 random bytes, 90d for clients and daemons.
      Stored as SHA-256 hash; exchanged via `POST /v1/auth/refresh`.
 
+Two ways to log a _new_ browser into an existing account without re-pairing:
+
+- **Account key** (`ca_key_…`): a long-lived bearer secret, one per account,
+  traded for credentials at `POST /v1/auth/login`.
+- **Username/password** (preferred): an optional `users` layer on top of
+  accounts. One user owns one or more accounts (`account_owners` join), so a
+  single login reaches every dev machine the operator owns.
+  `POST /v1/auth/register` mints/attaches the login from a paired machine
+  (Bearer required); `POST /v1/auth/user/login` trades username+password for
+  credentials, returning a machine picker when the user owns several.
+  Passwords are argon2id-hashed (`internal/auth/password.go`); set one up per
+  machine with `coding-anywhere-daemon user register`.
+
 The WebSocket endpoint (`GET /v1/ws/connect`) authenticates via Bearer
 header (preferred) or `?token=` query param. The HTTP proxy endpoint
 (`/v1/proxy/...`) accepts only `?token=` (so a freshly opened tab works).
@@ -87,6 +100,7 @@ header (preferred) or `?token=` query param. The HTTP proxy endpoint
 The relay stores **only routing/auth state**, never conversation content:
 
 - `accounts`, `devices`, `pairings`, `refresh_tokens`
+- `users`, `account_owners` (username/password login on top of accounts)
 - `vapid_keys`, `push_subscriptions`
 
 The daemon stores credentials at

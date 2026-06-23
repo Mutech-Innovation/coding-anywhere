@@ -131,13 +131,73 @@ Run commands from the repo root unless there is a reason not to.
   - SQLite repos/types: `apps/relay/internal/store/`
 - Access tokens are JWTs (HS256, 1h for clients, 30d for daemons). Refresh
   tokens are random opaque tokens stored only as SHA-256 hashes in relay SQLite.
-- Web credentials are browser-local: `localStorage["coding-anywhere/credentials"]`. Different browsers do not share this state; a new browser must pair again or use a future account/login/import flow.
+- Web credentials are browser-local: `localStorage["coding-anywhere/credentials"]`. Different browsers do not share this state; a new browser must pair again, paste an account key, or (preferred) log in with a username/password (see "User accounts" below).
 - Web-side credential code:
   - Storage: `apps/web/src/store/credentials.ts`
   - Connection/refresh scheduling: `apps/web/src/store/connection.ts`
   - Pair screen: `apps/web/src/components/PairScreen.tsx`
 - Daemon credentials are stored at `$XDG_DATA_HOME/coding-anywhere/credentials.json` by default, implemented in `apps/daemon/internal/credentials/credentials.go`.
 - Daemon pairing CLI is in `apps/daemon/internal/initcmd/initcmd.go`.
+
+## User accounts (username/password login)
+
+A human-identity layer on top of accounts so one operator can sign in from
+any browser with a memorable username + password and reach every dev machine
+they own — no pairing code, no `ca_key_…` paste. The account key still works
+as a fallback / API token.
+
+- **Model**: a `users` row (`username` UNIQUE `COLLATE NOCASE`, argon2id
+  `password_hash`, never plaintext) owns one or more accounts via the
+  `account_owners(user_id, account_id)` join. Each dev machine stays its own
+  account (one daemon each → the hub fan-out is untouched); the user just has
+  many of them. Schema: `migrations/0008_users.sql`; store methods in
+  `store/users.go` (`CreateUser` / `GetUserByUsername` / `LinkAccountOwner` /
+  `ListAccountsForUser` / `UserOwnsAccount`), pinned by `TestUserCRUD`.
+- **Password hashing**: `internal/auth/password.go` (`HashPassword` /
+  `VerifyPassword`), argon2id in PHC string format (`$argon2id$v=19$m=…$…`),
+  constant-time compare, params embedded per-hash. Tested in
+  `password_test.go`.
+- **Endpoints** (`apps/relay/internal/server/users.go`, wired in `routes.go`):
+  - `POST /v1/auth/register` (**requires a Bearer** — you must already own a
+    paired machine): username free → create user + link the Bearer's account;
+    username taken → password-verify, then link the Bearer's account. So the
+    same call mints the login on machine #1 and attaches machines #2..n. No
+    open registration needed.
+  - `POST /v1/auth/user/login` (no auth — this _is_ the login):
+    username+password → on success creates a fresh client device and returns a
+    credential bundle. Single account → straight in; multiple accounts with no
+    `account_id` → returns the machine list (no creds) so the client shows a
+    picker and re-POSTs with a chosen `account_id`. Account labels are derived
+    from each account's daemon device label.
+  - `GET /v1/auth/user/machines` + `POST /v1/auth/user/switch` (Bearer):
+    power the in-app **machine switcher**. `machines` lists every account that
+    shares an owner with the caller's current account
+    (`store.ListSiblingAccounts`, a self-join on `account_owners`); `switch`
+    issues a fresh credential bundle for a chosen sibling account (new client
+    device) **without re-entering the password** — the current Bearer + the
+    owner graph are the proof. The target must be a sibling or it's 403. Works
+    for pairing-only sessions too (anything whose account has a multi-machine
+    owner). Pinned by `TestUserMachinesAndSwitch` + `TestListSiblingAccounts`.
+  - Validation/bounds (username 3–32 chars `[A-Za-z0-9._-]`, password 8–200)
+    live in `users.go`. E2E coverage: `users_e2e_test.go`.
+- **Daemon CLI**: `coding-anywhere-daemon user register [--username me]`
+  (`apps/daemon/cmd/main.go` `runUser`): prompts for username + password
+  (hidden via `golang.org/x/term`), refreshes the stored access token if
+  needed (`freshBearer`), and calls `pairingclient.Register`. Run it once per
+  machine to bring that machine under the one login.
+- **Client**: `PairingClient.userLogin` / `.register` / `.listMachines` /
+  `.switchMachine` + zod schemas (`UserLoginResponse`, `UserAccountSummary`,
+  `RegisterResponse`, `UserMachinesResponse`, `SwitchResponse`) in
+  `packages/protocol/src/pair.ts`. The web store action
+  `connection.ts` `signInWithPassword` returns `{ accounts, signedIn }`; the
+  `PairScreen` "用户名 / 密码" tab (the default) drives it, including the
+  login-time multi-machine picker.
+- **In-app machine switcher**: `connection.ts` keeps a `machines` list
+  (refreshed by `loadMachines`, called from `attachClient` on every connect)
+  and a `switchMachine(accountId)` action that swaps credentials + reconnects.
+  `App.tsx` `MachineSwitcher` renders a header dropdown (only when ≥2
+  machines) to flip between them without logging out. Each switch creates a
+  new client device on the target account.
 
 ## Guest "ask"-mode share links
 

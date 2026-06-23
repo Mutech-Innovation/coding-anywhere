@@ -13,6 +13,17 @@ type Account struct {
 	AccountKeyHash *string
 }
 
+// User is a human identity that can own one or more accounts. The password
+// is stored only as an argon2id PHC-format hash; the plaintext never touches
+// the database. A user logs in with username+password to reach every account
+// (dev machine) they own without re-pairing or pasting an account key.
+type User struct {
+	ID           string
+	Username     string
+	PasswordHash string
+	CreatedAt    time.Time
+}
+
 // DeviceKind is mirrored on internal/auth.DeviceKind. Keep both in sync.
 type DeviceKind string
 
@@ -37,18 +48,18 @@ type Device struct {
 // token used to poll status, and (after claim) the credentials the initiator
 // will fetch.
 type Pairing struct {
-	PairingToken            string
-	Code                    string
-	InitiatorAccountID      *string
-	InitiatorDeviceKind     DeviceKind
-	InitiatorDeviceLabel    string
-	InitiatorDeviceID       *string
-	CreatedAt               time.Time
-	ExpiresAt               time.Time
-	Claimed                 bool
-	ClaimedAccountID        *string
-	ClaimedDeviceID         *string
-	ClaimedCredentialsJSON  *string
+	PairingToken           string
+	Code                   string
+	InitiatorAccountID     *string
+	InitiatorDeviceKind    DeviceKind
+	InitiatorDeviceLabel   string
+	InitiatorDeviceID      *string
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
+	Claimed                bool
+	ClaimedAccountID       *string
+	ClaimedDeviceID        *string
+	ClaimedCredentialsJSON *string
 }
 
 // RefreshToken is stored as a SHA-256 hash; the plaintext is only ever shown

@@ -25,6 +25,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/auth/key/rotate", s.handleAuthKeyRotate)
 	mux.HandleFunc("DELETE /v1/auth/key", s.handleAuthKeyRevoke)
 
+	// User accounts (username/password login on top of accounts)
+	mux.HandleFunc("POST /v1/auth/register", s.handleAuthRegister)
+	mux.HandleFunc("POST /v1/auth/user/login", s.handleUserLogin)
+	mux.HandleFunc("GET /v1/auth/user/machines", s.handleUserMachines)
+	mux.HandleFunc("POST /v1/auth/user/switch", s.handleUserSwitch)
+
 	// Push notifications
 	mux.HandleFunc("GET /v1/push/vapid_public_key", s.handleVAPIDPublicKey)
 	mux.HandleFunc("POST /v1/push/subscribe", s.handlePushSubscribe)

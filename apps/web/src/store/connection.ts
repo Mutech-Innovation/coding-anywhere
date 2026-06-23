@@ -3,6 +3,7 @@ import {
   PairingClient,
   RelayWSClient,
   type CredentialBundle,
+  type UserAccountSummary,
 } from '@coding-anywhere/protocol';
 import { create } from 'zustand';
 
@@ -40,6 +41,12 @@ interface ConnectionStore {
   keyActionError: string | null;
   /** UI flag for the "share read-only ask link" modal. */
   shareAskOpen: boolean;
+  /**
+   * Machines (accounts) the current login can switch between — those owned by
+   * the same user as the active account. Empty or single-element means there's
+   * nothing to switch to (the UI hides the switcher). Populated on connect.
+   */
+  machines: UserAccountSummary[];
 
   // Actions
   hydrate(): Promise<void>;
@@ -49,6 +56,26 @@ interface ConnectionStore {
     account_key: string;
     device_label: string;
   }): Promise<void>;
+  /**
+   * Log in with username + password (the user system on top of accounts).
+   * Returns the user's machine list and whether we signed in. When the user
+   * owns multiple machines and `account_id` is omitted, `signedIn` is false
+   * and the caller shows a picker, then calls again with a chosen account.
+   */
+  signInWithPassword(args: {
+    relay_url: string;
+    username: string;
+    password: string;
+    device_label: string;
+    account_id?: string;
+  }): Promise<{ accounts: UserAccountSummary[]; signedIn: boolean }>;
+  /** Refresh the list of switchable machines for the current session. */
+  loadMachines(): Promise<void>;
+  /**
+   * Switch the active machine (account) without re-entering a password — the
+   * current session's token proves identity. Reconnects to the new machine.
+   */
+  switchMachine(accountId: string): Promise<void>;
   signOut(): void;
   refreshAccessToken(): Promise<void>;
   /** Rotate the account key on the relay; returns the new plaintext value. */
@@ -98,6 +125,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
   revokeKeyOpen: false,
   keyActionError: null,
   shareAskOpen: false,
+  machines: [],
 
   async hydrate() {
     const creds = loadCredentials();
@@ -202,6 +230,44 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     attachClient(set, get, saved);
   },
 
+  async signInWithPassword({ relay_url, username, password, device_label, account_id }) {
+    const pc = new PairingClient(relay_url);
+    const res = await pc.userLogin({ username, password, device_label, account_id });
+    if (res.credentials) {
+      const saved = saveCredentials({ relay_url, bundle: res.credentials });
+      attachClient(set, get, saved);
+      return { accounts: res.accounts, signedIn: true };
+    }
+    return { accounts: res.accounts, signedIn: false };
+  },
+
+  async loadMachines() {
+    const { credentials } = get();
+    if (!credentials) return;
+    try {
+      const pc = new PairingClient(credentials.relay_url);
+      const res = await pc.listMachines({ bearer: credentials.bundle.access_token });
+      set({ machines: res.accounts });
+    } catch {
+      // Non-fatal: just means no switcher this session.
+      set({ machines: [] });
+    }
+  },
+
+  async switchMachine(accountId) {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    if (accountId === credentials.bundle.account_id) return;
+    const pc = new PairingClient(credentials.relay_url);
+    const res = await pc.switchMachine(
+      { account_id: accountId, device_label: credentials.bundle.device_label },
+      { bearer: credentials.bundle.access_token },
+    );
+    const saved = saveCredentials({ relay_url: credentials.relay_url, bundle: res.credentials });
+    attachClient(set, get, saved);
+    set({ machines: res.accounts });
+  },
+
   async rotateAccountKey() {
     const { credentials } = get();
     if (!credentials) throw new Error('not signed in');
@@ -253,6 +319,7 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
       revokeKeyOpen: false,
       keyActionError: null,
       pendingKeyReveal: null,
+      machines: [],
     });
   },
 
@@ -295,6 +362,8 @@ function attachClient(
   set({ credentials: creds, client, status: 'connecting', lastError: null });
   scheduleRefresh(set, get, creds);
   client.start();
+  // Populate the machine switcher for this session (fire-and-forget).
+  void get().loadMachines();
 }
 
 async function refreshIfNeeded(creds: StoredCredentials): Promise<StoredCredentials> {

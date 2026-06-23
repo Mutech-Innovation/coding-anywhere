@@ -208,6 +208,25 @@ func (c *Client) Login(ctx context.Context, req LoginRequest) (*CredentialBundle
 	return &out.Credentials, nil
 }
 
+// RegisterResponse is what POST /v1/auth/register returns.
+type RegisterResponse struct {
+	UserID          string `json:"user_id"`
+	Username        string `json:"username"`
+	LinkedAccountID string `json:"linked_account_id"`
+}
+
+// Register creates (or, for an existing username, password-verifies) a user
+// and links the authenticated account to it. The Bearer proves the caller
+// already owns a paired machine — that is what authorises minting the login.
+func (c *Client) Register(ctx context.Context, bearer, username, password string) (*RegisterResponse, error) {
+	body := map[string]string{"username": username, "password": password}
+	var out RegisterResponse
+	if err := c.post(ctx, "/v1/auth/register", body, bearer, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // RotateAccountKey rotates the account key for the authenticated account
 // and returns the new plaintext value. The new key is only visible in this
 // response — callers must persist it.

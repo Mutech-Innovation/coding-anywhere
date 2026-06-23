@@ -17,7 +17,10 @@ import {
 } from '@mantine/core';
 import {
   IconBrandGithub,
+  IconCheck,
+  IconChevronDown,
   IconCode,
+  IconDeviceDesktop,
   IconDotsVertical,
   IconFiles,
   IconGitCompare,
@@ -107,6 +110,68 @@ function ColorSchemeToggle() {
   );
 }
 
+// MachineSwitcher is a header dropdown that flips the active machine (account)
+// without logging out. It only renders when the current login owns more than
+// one machine; switching re-auths via the session token and reconnects.
+function MachineSwitcher() {
+  const machines = useConnection((s) => s.machines);
+  const currentId = useConnection((s) => s.credentials?.bundle.account_id ?? null);
+  const switchMachine = useConnection((s) => s.switchMachine);
+  const [busy, setBusy] = useState(false);
+
+  if (machines.length < 2) return null;
+
+  const currentLabel = machines.find((m) => m.account_id === currentId)?.label ?? '本机';
+
+  async function onPick(accountId: string) {
+    if (accountId === currentId || busy) return;
+    setBusy(true);
+    try {
+      await switchMachine(accountId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Menu position="bottom-start" withArrow width={220}>
+      <Menu.Target>
+        <UnstyledButton
+          px={10}
+          py={6}
+          aria-label="切换机器"
+          style={{ borderRadius: 8, border: '1px solid var(--mantine-color-default-border)' }}
+        >
+          <Group gap={6} wrap="nowrap">
+            <IconDeviceDesktop size={16} />
+            <Text size="sm" fw={600} maw={140} truncate>
+              {currentLabel}
+            </Text>
+            <IconChevronDown size={14} />
+          </Group>
+        </UnstyledButton>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>切换机器</Menu.Label>
+        {machines.map((m) => (
+          <Menu.Item
+            key={m.account_id}
+            disabled={busy}
+            onClick={() => onPick(m.account_id)}
+            leftSection={
+              m.account_id === currentId ? <IconCheck size={14} /> : <IconDeviceDesktop size={14} />
+            }
+          >
+            <Text size="sm" truncate>
+              {m.label}
+            </Text>
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
 function MainShell() {
   const credentials = useConnection((s) => s.credentials);
   const signOut = useConnection((s) => s.signOut);
@@ -131,6 +196,7 @@ function MainShell() {
             </Group>
           </Group>
           <Group gap="xs">
+            <MachineSwitcher />
             <ConnectionStatus />
             <NotificationsMenu />
             <Tooltip label="GitHub">

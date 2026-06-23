@@ -7,14 +7,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
+
+	"golang.org/x/term"
 
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/credentials"
 	"github.com/Mutech-Innovation/coding-anywhere/apps/daemon/internal/initcmd"
@@ -45,6 +51,13 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "key" {
 		if err := runKey(os.Args[2:]); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "key: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "user" {
+		if err := runUser(os.Args[2:]); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "user: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -85,12 +98,15 @@ func usage() {
 	_, _ = fmt.Fprintf(flag.CommandLine.Output(), `Usage: coding-anywhere-daemon [flags]
        coding-anywhere-daemon init [flags]
        coding-anywhere-daemon key <show|rotate|revoke> [flags]
+       coding-anywhere-daemon user register [flags]
 
 Subcommands:
   init             Pair this machine with the relay (interactive, prints a 6-digit code)
   key show         Print the account key stored in the credentials file
   key rotate       Mint a new account key (old one stops working for new logins)
   key revoke       Clear the account key AND drop every session on the account
+  user register    Create/attach a username+password login for this machine's account
+                   (run once per machine; then sign in from any browser)
 
 Flags:
 `)
@@ -291,6 +307,139 @@ func runKey(args []string) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q (expected show | rotate | revoke)", sub)
 	}
+}
+
+// runUser dispatches the `user` sub-commands. Today there is just one:
+// `register`, which creates a username+password login (or attaches this
+// machine's account to an existing one) so the operator can sign in from any
+// browser without pairing or pasting an account key.
+func runUser(args []string) error {
+	if len(args) == 0 {
+		return errors.New("subcommand required: register")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("user "+sub, flag.ExitOnError)
+	credPath := fs.String("credentials", "", "Path to credentials file (default: $XDG_DATA_HOME/coding-anywhere/credentials.json)")
+	relayURL := fs.String("relay-url", "", "Override the relay URL stored in credentials")
+	username := fs.String("username", "", "Username to register/attach (prompted if omitted)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	if *credPath == "" {
+		p, err := credentials.DefaultPath()
+		if err != nil {
+			return fmt.Errorf("default credentials path: %w", err)
+		}
+		*credPath = p
+	}
+	bundle, err := credentials.Load(*credPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no credentials yet at %s — run `coding-anywhere-daemon init` first", *credPath)
+		}
+		return fmt.Errorf("load credentials: %w", err)
+	}
+
+	relay := bundle.RelayURL
+	if *relayURL != "" {
+		relay = *relayURL
+	}
+
+	switch sub {
+	case "register":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		pc := pairingclient.New(relay)
+
+		uname := strings.TrimSpace(*username)
+		if uname == "" {
+			line, err := promptLine("Username: ")
+			if err != nil {
+				return err
+			}
+			uname = strings.TrimSpace(line)
+		}
+		if uname == "" {
+			return errors.New("username required")
+		}
+		pw, err := promptPassword("Password: ")
+		if err != nil {
+			return err
+		}
+		pw2, err := promptPassword("Confirm password: ")
+		if err != nil {
+			return err
+		}
+		if pw != pw2 {
+			return errors.New("passwords do not match")
+		}
+
+		bearer, err := freshBearer(ctx, pc, bundle, *credPath)
+		if err != nil {
+			return fmt.Errorf("authenticate: %w", err)
+		}
+		resp, err := pc.Register(ctx, bearer, uname, pw)
+		if err != nil {
+			return fmt.Errorf("register: %w", err)
+		}
+		fmt.Printf("\nRegistered user %q and linked this machine (account %s).\n", resp.Username, resp.LinkedAccountID)
+		fmt.Println("Sign in from any browser with your username and password — no pairing code, no account key.")
+		fmt.Println("Run the same command on your other machines to manage them all under this one login.")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand %q (expected register)", sub)
+	}
+}
+
+// freshBearer returns a valid access token for the daemon's account,
+// refreshing (and persisting) it when the stored one is within a minute of
+// expiry. The in-memory bundle is updated in place.
+func freshBearer(ctx context.Context, pc *pairingclient.Client, bundle *credentials.Bundle, credPath string) (string, error) {
+	if time.Now().UTC().Before(bundle.AccessTokenExpiresAt.Add(-time.Minute)) {
+		return bundle.AccessToken, nil
+	}
+	access, ttl, err := pc.Refresh(ctx, bundle.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("refresh: %w", err)
+	}
+	bundle.AccessToken = access
+	bundle.AccessTokenExpiresAt = time.Now().UTC().Add(time.Duration(ttl) * time.Second)
+	if err := credentials.Save(credPath, bundle); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: could not save refreshed credentials: %v\n", err)
+	}
+	return access, nil
+}
+
+// promptLine prints a prompt and reads a single line from stdin.
+func promptLine(prompt string) (string, error) {
+	fmt.Print(prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// promptPassword reads a password without echoing when stdin is a terminal,
+// falling back to a plain line read for piped input.
+func promptPassword(prompt string) (string, error) {
+	fmt.Print(prompt)
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // loadOrAutoPair loads credentials from disk; if the file does not exist,
