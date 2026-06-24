@@ -322,6 +322,7 @@ The web app is a static React site. You can:
 - Use the public deployment we host (when available), or
 - Self-host on any static hosting service (Vercel, Cloudflare Pages,
   S3+CloudFront, GitHub Pages), or
+- Self-host on your own server behind Traefik (see §3.1), or
 - Run it locally during development:
 
 ```bash
@@ -329,6 +330,48 @@ cd apps/web
 pnpm install
 pnpm dev
 ```
+
+Whatever you choose, three things must hold:
+
+- **Serve it over HTTPS.** The service worker (Web Push) and a real wss relay
+  both require a secure context. An HTTPS page also *cannot* dial a plaintext
+  `ws://` relay, so pair it with a `wss://` relay.
+- **Serve it from the domain root**, not a sub-path — `index.html` references
+  assets, the manifest, and `/service-worker.js` with absolute paths.
+- **Fall back to `index.html`** for unknown paths. The guest share page lives at
+  `/guest` and is the same `index.html` branching on the URL, so SPA-style
+  fallback is required.
+
+The relay URL is *not* baked into the build — you type it on the pair / login
+screen at runtime — so the same static bundle works against any relay.
+
+### 3.1 Self-host behind an existing Traefik (Docker)
+
+If your server already runs Traefik (Docker provider + an ACME cert resolver),
+`docker/web/` ships a tiny nginx image (SPA fallback + correct cache headers
+baked in) wired to Traefik by labels.
+
+```bash
+cd coding-anywhere/docker/web
+cp .env.example .env
+# Edit .env:
+#   CA_WEB_DOMAIN=app.example.com
+#   CA_TRAEFIK_NETWORK / CA_TRAEFIK_ENTRYPOINT / CA_TRAEFIK_CERTRESOLVER
+#     -> must match the names in your existing Traefik install
+docker compose up -d --build
+```
+
+Point an A/AAAA record for `CA_WEB_DOMAIN` at the host; Traefik issues the cert
+on first request. Then open `https://app.example.com`, and on the pair / login
+screen enter your relay (e.g. `wss://relay.example.com`).
+
+> The web app and the relay can live on different hosts and different
+> sub-domains — the relay reflects the request `Origin` in its CORS headers and
+> auth rides in a Bearer token (no cookies), so cross-origin works out of the
+> box.
+
+Updating to a new build: `docker compose up -d --build` again (re-runs the
+bundle and replaces the container). Logs: `docker compose logs -f`.
 
 The first time you load the app you'll see the **Pair this browser**
 screen. Enter the same relay URL you gave the daemon, the 6-digit code

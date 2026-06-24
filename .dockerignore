@@ -1,0 +1,16 @@
+# Keep the Docker build context lean. This is shared by every image built with
+# the repo root as context (docker/relay, docker/web). Everything excluded here
+# is build output or local state that no image needs — the Go relay build and
+# the pnpm web build both regenerate what they require.
+**/node_modules
+**/dist
+**/.turbo
+**/build
+# TS incremental state: must not leak in, or composite deps "skip" emitting
+# their dist/*.d.ts in the image and the web tsc fails with TS6305.
+**/*.tsbuildinfo
+.git
+.github
+bin
+relay-data
+*.log

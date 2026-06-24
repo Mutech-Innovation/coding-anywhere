@@ -1,0 +1,41 @@
+# Self-hosted Coding Anywhere web client, fronted by an existing Traefik.
+#
+# Assumes Traefik is already running on this host with the Docker provider and
+# an ACME (Let's Encrypt) cert resolver. Bring up:
+#   1. Copy `.env.example` to `.env` and set CA_WEB_DOMAIN (+ match your Traefik
+#      network / entrypoint / certresolver names).
+#   2. Point an A/AAAA record for $CA_WEB_DOMAIN at this host.
+#   3. `docker compose up -d --build`
+#
+# The web app ships no backend config: the relay URL is entered at runtime on
+# the pair / login screen. Use your wss:// relay (e.g. wss://relay.example.com)
+# there — an HTTPS page cannot talk to a plaintext ws:// relay.
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: docker/web/Dockerfile
+    image: coding-anywhere/web:latest
+    restart: unless-stopped
+    networks:
+      - traefik
+    labels:
+      - 'traefik.enable=true'
+      # Pin which Traefik network to use (matters if the container is on more
+      # than one network).
+      - 'traefik.docker.network=${CA_TRAEFIK_NETWORK:-traefik}'
+      # HTTPS router.
+      - 'traefik.http.routers.ca-web.rule=Host(`${CA_WEB_DOMAIN}`)'
+      - 'traefik.http.routers.ca-web.entrypoints=${CA_TRAEFIK_ENTRYPOINT:-websecure}'
+      - 'traefik.http.routers.ca-web.tls=true'
+      - 'traefik.http.routers.ca-web.tls.certresolver=${CA_TRAEFIK_CERTRESOLVER:-letsencrypt}'
+      # nginx listens on 80 inside the container.
+      - 'traefik.http.services.ca-web.loadbalancer.server.port=80'
+
+# Join the network your Traefik already watches. Rename below (and in .env) if
+# yours is called something else (common: "proxy", "web").
+networks:
+  traefik:
+    external: true
+    name: ${CA_TRAEFIK_NETWORK:-traefik}
