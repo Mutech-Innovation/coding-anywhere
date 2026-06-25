@@ -42,6 +42,9 @@ vendor/
 **/generated/
 !tools/codegen/generated.template.*
 
+# Local Windows dev launcher (see dev.bat)
+/dev.bat
+
 # Devin/runtime data
 .devin-runtime/
 relay-data/
