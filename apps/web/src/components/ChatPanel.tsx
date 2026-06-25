@@ -580,6 +580,7 @@ function DirectoryNode({
 }) {
   const list = useFiles((s) => s.list);
   const workspaceId = useFiles((s) => s.workspaceId);
+  const refreshToken = useFiles((s) => s.refreshToken);
   const cacheKey = `${workspaceId ?? ''}|${path}`;
   const cached = useFiles((s) => s.listings[cacheKey]);
   const [loading, setLoading] = useState(false);
@@ -588,14 +589,24 @@ function DirectoryNode({
   const absolutePath = joinWorkspacePath(workspaceRoot, path);
   const active = selectedPath === absolutePath;
 
+  // Re-fetch on open / workspace resolve / refresh (keeps the cached entries
+  // visible meanwhile) so re-expanding a folder reflects filesystem changes.
   useEffect(() => {
-    if (!isOpen || cached) return;
+    if (!isOpen || !workspaceId) return;
+    let cancelled = false;
     setLoading(true);
     setError(null);
     list(path)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [isOpen, cached, list, path]);
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, workspaceId, refreshToken, list, path]);
 
   function toggle() {
     const next = new Set(openDirs);

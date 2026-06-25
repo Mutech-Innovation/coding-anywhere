@@ -21,12 +21,17 @@ interface FilesStore {
   listings: Record<string, FilesEntry[]>;
   // Currently selected file (path within workspace).
   activePath: string | null;
+  // Bumped by refresh() so open directories re-fetch (the daemon has no
+  // file-watch yet, so this is how stale listings get invalidated).
+  refreshToken: number;
 
   loadWorkspaces(): Promise<void>;
   setWorkspace(id: string): void;
   list(path: string, opts?: { includeHidden?: boolean }): Promise<FilesEntry[]>;
   readFile(path: string): Promise<{ text: string | null; res: FilesReadResponse }>;
   setActivePath(path: string | null): void;
+  // Drop every cached listing and signal open directories to re-fetch.
+  refresh(): void;
 }
 
 const pending = new Map<
@@ -41,6 +46,7 @@ export const useFiles = create<FilesStore>((set, get) => ({
   workspaceId: null,
   listings: {},
   activePath: null,
+  refreshToken: 0,
 
   async loadWorkspaces() {
     // We're not registering a global handler for files (handler in store
@@ -89,6 +95,10 @@ export const useFiles = create<FilesStore>((set, get) => ({
 
   setActivePath(path) {
     set({ activePath: path });
+  },
+
+  refresh() {
+    set((s) => ({ listings: {}, refreshToken: s.refreshToken + 1 }));
   },
 }));
 

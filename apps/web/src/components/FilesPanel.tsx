@@ -32,6 +32,7 @@ export function FilesPanel() {
   const workspaces = useFiles((s) => s.workspaces);
   const workspaceId = useFiles((s) => s.workspaceId);
   const loadWorkspaces = useFiles((s) => s.loadWorkspaces);
+  const refresh = useFiles((s) => s.refresh);
   const activePath = useFiles((s) => s.activePath);
   const setActivePath = useFiles((s) => s.setActivePath);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +75,9 @@ export function FilesPanel() {
               onClick={() => {
                 setOpenDirs(new Set(['']));
                 setActivePath(null);
+                // Drop cached listings so the tree actually re-fetches from
+                // the daemon instead of re-rendering the same stale entries.
+                refresh();
                 loadWorkspaces().catch((e: Error) => setError(e.message));
               }}
             >
@@ -90,18 +94,26 @@ export function FilesPanel() {
           <Text size="sm" c="dimmed">
             Waiting for relay connection…
           </Text>
-        ) : null}
-        <ScrollArea.Autosize mah="calc(100vh - 200px)">
-          <DirNode
-            path=""
-            label={ws?.name ?? 'workspace'}
-            depth={0}
-            openDirs={openDirs}
-            setOpenDirs={setOpenDirs}
-            setActivePath={setActivePath}
-            activePath={activePath}
-          />
-        </ScrollArea.Autosize>
+        ) : !ws ? (
+          <Text size="sm" c="dimmed">
+            Loading workspace…
+          </Text>
+        ) : (
+          // Only mount the tree once the workspace id is known: the listing
+          // cache is keyed by workspace id, so rendering earlier would fetch
+          // (and cache) under a placeholder key and leave the tree blank.
+          <ScrollArea.Autosize mah="calc(100vh - 200px)">
+            <DirNode
+              path=""
+              label={ws.name}
+              depth={0}
+              openDirs={openDirs}
+              setOpenDirs={setOpenDirs}
+              setActivePath={setActivePath}
+              activePath={activePath}
+            />
+          </ScrollArea.Autosize>
+        )}
       </Stack>
 
       <Box
@@ -154,19 +166,35 @@ function DirNode({
 }) {
   const list = useFiles((s) => s.list);
   const workspaceId = useFiles((s) => s.workspaceId);
+  const refreshToken = useFiles((s) => s.refreshToken);
   const cacheKey = `${workspaceId ?? ''}|${path}`;
   const cached = useFiles((s) => s.listings[cacheKey]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isOpen = openDirs.has(path);
 
+  // Re-fetch whenever the directory is opened, the workspace resolves, or a
+  // refresh is requested. Cached entries (if any) keep showing while the
+  // re-fetch runs, so re-expanding a folder picks up filesystem changes
+  // without a blank flash. Depending on `workspaceId` (not just `cached`)
+  // also fixes the first-open race where the listing was fetched before the
+  // workspace id was known and cached under the wrong key.
   useEffect(() => {
-    if (!isOpen || cached) return;
+    if (!isOpen || !workspaceId) return;
+    let cancelled = false;
     setLoading(true);
+    setError(null);
     list(path)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [isOpen, cached, list, path]);
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, workspaceId, refreshToken, list, path]);
 
   const toggle = useCallback(() => {
     const next = new Set(openDirs);

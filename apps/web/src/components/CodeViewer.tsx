@@ -35,19 +35,28 @@ function languageFor(filename: string): Extension[] {
   }
 }
 
+// The editor background is forced dark, so the foreground colours must be
+// pinned too — otherwise the text colour inherits from the surrounding
+// Mantine context (dark in the app's default light scheme), which renders
+// near-black text on the dark background and makes the file unreadable.
 const READ_ONLY_THEME = EditorView.theme(
   {
-    '&': { fontSize: '13px', height: '100%' },
+    '&': { fontSize: '13px', height: '100%', color: '#c9d1d9' },
     '.cm-scroller': {
       fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace',
       lineHeight: '1.45',
     },
-    '.cm-content': { padding: '8px 0' },
+    '.cm-content': { padding: '8px 0', color: '#c9d1d9', caretColor: '#c9d1d9' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#c9d1d9' },
+    '.cm-selectionBackground, ::selection': { backgroundColor: '#26334d' },
+    '&.cm-focused .cm-selectionBackground, &.cm-focused ::selection': {
+      backgroundColor: '#26334d',
+    },
     '&.cm-focused .cm-cursor': { display: 'none' },
     '&.cm-editor': { backgroundColor: '#0b0f17' },
     '.cm-gutters': {
       backgroundColor: '#0b0f17',
-      color: '#3d4a60',
+      color: '#5a657a',
       borderRight: '1px solid #19202c',
     },
     '.cm-activeLine': { backgroundColor: 'transparent' },
