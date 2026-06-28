@@ -419,7 +419,7 @@ function DirNode({ path, label, depth }: { path: string; label: string; depth: n
   const cached = useFiles((s) => s.listings[cacheKey]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const isOpen = t.openDirs.has(path);
   const isRoot = path === '';
@@ -463,7 +463,8 @@ function DirNode({ path, label, depth }: { path: string; label: string; depth: n
         onClick={() => t.toggleDir(path)}
         onContextMenu={(e) => {
           e.preventDefault();
-          setMenuOpen(true);
+          e.stopPropagation();
+          setMenu({ x: e.clientX, y: e.clientY });
         }}
         onDragStart={(e) => {
           if (isRoot) return;
@@ -513,7 +514,7 @@ function DirNode({ path, label, depth }: { path: string; label: string; depth: n
         <Text size="xs" fw={depth === 0 ? 600 : 500} truncate style={{ flex: 1, minWidth: 0 }}>
           {label}
         </Text>
-        <RowMenu entry={entry} isDir isRoot={isRoot} opened={menuOpen} setOpened={setMenuOpen} />
+        <RowMenu entry={entry} isDir isRoot={isRoot} menu={menu} setMenu={setMenu} />
       </Group>
       {isOpen ? (
         <Stack gap={0}>
@@ -542,7 +543,7 @@ function DirNode({ path, label, depth }: { path: string; label: string; depth: n
 
 function FileLeaf({ entry, depth }: { entry: FilesEntry; depth: number }) {
   const t = useTree();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const active = t.activePath === entry.path;
   const Icon =
     entry.kind === 'symlink' ? IconLink : isLikelyText(entry.name) ? IconFileText : IconFile;
@@ -557,7 +558,8 @@ function FileLeaf({ entry, depth }: { entry: FilesEntry; depth: number }) {
       onClick={() => t.select(entry.path)}
       onContextMenu={(e) => {
         e.preventDefault();
-        setMenuOpen(true);
+        e.stopPropagation();
+        setMenu({ x: e.clientX, y: e.clientY });
       }}
       onDragStart={(e) => {
         e.stopPropagation();
@@ -579,13 +581,7 @@ function FileLeaf({ entry, depth }: { entry: FilesEntry; depth: number }) {
       <Text size="xs" truncate style={{ flex: 1, minWidth: 0 }}>
         {entry.name}
       </Text>
-      <RowMenu
-        entry={entry}
-        isDir={false}
-        isRoot={false}
-        opened={menuOpen}
-        setOpened={setMenuOpen}
-      />
+      <RowMenu entry={entry} isDir={false} isRoot={false} menu={menu} setMenu={setMenu} />
     </Group>
   );
 }
@@ -594,64 +590,95 @@ function RowMenu({
   entry,
   isDir,
   isRoot,
-  opened,
-  setOpened,
+  menu,
+  setMenu,
 }: {
   entry: FilesEntry;
   isDir: boolean;
   isRoot: boolean;
-  opened: boolean;
-  setOpened: (v: boolean) => void;
+  menu: { x: number; y: number } | null;
+  setMenu: (v: { x: number; y: number } | null) => void;
 }) {
   const t = useTree();
   return (
-    <Menu
-      opened={opened}
-      onChange={setOpened}
-      position="bottom-end"
-      withinPortal
-      shadow="md"
-      width={170}
-    >
-      <Menu.Target>
-        <ActionIcon
-          className="cw-tree-row__menu"
-          data-open={opened ? 'true' : undefined}
-          variant="subtle"
-          color="gray"
-          size="sm"
-          aria-label="文件操作"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <IconDots size={15} />
-        </ActionIcon>
-      </Menu.Target>
-      <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-        {isDir ? (
-          <Menu.Item leftSection={<IconUpload size={14} />} onClick={() => t.onUpload(entry.path)}>
-            上传到此处
-          </Menu.Item>
-        ) : (
-          <Menu.Item leftSection={<IconDownload size={14} />} onClick={() => t.onDownload(entry)}>
-            下载
-          </Menu.Item>
-        )}
-        {!isRoot ? (
-          <>
-            <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => t.onRename(entry)}>
-              重命名
-            </Menu.Item>
+    <>
+      <ActionIcon
+        className="cw-tree-row__menu"
+        data-open={menu ? 'true' : undefined}
+        variant="subtle"
+        color="gray"
+        size="sm"
+        aria-label="文件操作"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (menu) {
+            setMenu(null);
+            return;
+          }
+          // Keyboard activation reports a (0,0) pointer — fall back to the
+          // button's own position so the menu doesn't fly to the corner.
+          const r = e.currentTarget.getBoundingClientRect();
+          setMenu(e.detail === 0 ? { x: r.left, y: r.bottom } : { x: e.clientX, y: e.clientY });
+        }}
+      >
+        <IconDots size={15} />
+      </ActionIcon>
+      <Menu
+        opened={menu !== null}
+        onChange={(o) => {
+          if (!o) setMenu(null);
+        }}
+        position="bottom-start"
+        offset={2}
+        withinPortal
+        shadow="md"
+        width={170}
+      >
+        <Menu.Target>
+          {/* Invisible anchor pinned to the click point so the dropdown opens
+              at the cursor instead of at the right-aligned ⋮ button. */}
+          <div
+            aria-hidden
+            style={{
+              position: 'fixed',
+              left: menu?.x ?? -9999,
+              top: menu?.y ?? -9999,
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
+            }}
+          />
+        </Menu.Target>
+        <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
+          {isDir ? (
             <Menu.Item
-              color="red"
-              leftSection={<IconTrash size={14} />}
-              onClick={() => t.onDelete(entry)}
+              leftSection={<IconUpload size={14} />}
+              onClick={() => t.onUpload(entry.path)}
             >
-              删除
+              上传到此处
             </Menu.Item>
-          </>
-        ) : null}
-      </Menu.Dropdown>
-    </Menu>
+          ) : (
+            <Menu.Item leftSection={<IconDownload size={14} />} onClick={() => t.onDownload(entry)}>
+              下载
+            </Menu.Item>
+          )}
+          {!isRoot ? (
+            <>
+              <Menu.Item leftSection={<IconPencil size={14} />} onClick={() => t.onRename(entry)}>
+                重命名
+              </Menu.Item>
+              <Menu.Item
+                color="red"
+                leftSection={<IconTrash size={14} />}
+                onClick={() => t.onDelete(entry)}
+              >
+                删除
+              </Menu.Item>
+            </>
+          ) : null}
+        </Menu.Dropdown>
+      </Menu>
+    </>
   );
 }
 
