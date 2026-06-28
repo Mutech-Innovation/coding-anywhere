@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -247,6 +248,88 @@ func (a *API) Stat(relPath string) (Entry, error) {
 	return entry, nil
 }
 
+// WriteOptions tweaks Write behaviour.
+type WriteOptions struct {
+	// Offset is the byte position to write `data` at. Callers stream large
+	// uploads as a sequence of Write calls with increasing offsets (the WS
+	// transport caps a single message at 1 MiB).
+	Offset int64
+	// Truncate clears any existing file before writing. Set it on the first
+	// chunk of an upload (offset 0) so a re-upload replaces, not appends.
+	Truncate bool
+}
+
+// Write creates or updates a regular file at relPath, writing `data` at
+// opts.Offset. The parent directory must already exist. Returns the file's
+// size after the write.
+func (a *API) Write(relPath string, data []byte, opts WriteOptions) (int64, error) {
+	abs, err := a.resolveNew(relPath)
+	if err != nil {
+		return 0, err
+	}
+	if info, err := os.Lstat(abs); err == nil && info.IsDir() {
+		return 0, fmt.Errorf("%s is a directory", relPath)
+	}
+	flag := os.O_CREATE | os.O_WRONLY
+	if opts.Truncate {
+		flag |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(abs, flag, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteAt(data, opts.Offset); err != nil {
+		return 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+// Remove deletes the file or directory at relPath. Directories are removed
+// recursively. The workspace root itself can never be removed.
+func (a *API) Remove(relPath string) error {
+	abs, err := a.resolveNew(relPath)
+	if err != nil {
+		return err
+	}
+	// resolveNew refuses the root, but guard against a symlinked parent
+	// resolving back onto it anyway.
+	if abs == a.root {
+		return ErrEscapesRoot
+	}
+	if _, err := os.Lstat(abs); err != nil {
+		return err // surface a normal not-found
+	}
+	return os.RemoveAll(abs)
+}
+
+// Move renames/moves the entry at fromRel to toRel. Both stay inside the
+// root. It refuses to overwrite an existing destination so a rename can't
+// silently clobber another file.
+func (a *API) Move(fromRel, toRel string) error {
+	from, err := a.resolveNew(fromRel)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(from); err != nil {
+		return err
+	}
+	to, err := a.resolveNew(toRel)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(to); err == nil {
+		return fmt.Errorf("destination already exists: %s", toRel)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Rename(from, to)
+}
+
 // resolve maps relPath onto the workspace root and verifies the result is
 // inside the root (i.e. does not escape via ".." or symlinks).
 func (a *API) resolve(relPath string) (string, error) {
@@ -273,6 +356,37 @@ func (a *API) resolve(relPath string) (string, error) {
 		return "", ErrEscapesRoot
 	}
 	return resolved, nil
+}
+
+// resolveNew maps relPath to an absolute path for a mutating operation
+// (write/delete/move). Unlike resolve it does NOT follow a symlink at the
+// final component — so deleting/moving a symlink acts on the link itself —
+// and it never targets the root. It still resolves (and containment-checks)
+// the PARENT directory through symlinks, so a symlinked parent can't be used
+// to escape the root.
+func (a *API) resolveNew(relPath string) (string, error) {
+	clean := filepath.ToSlash(filepath.Clean(relPath))
+	if clean == "." || clean == "" {
+		return "", ErrEscapesRoot // never target the workspace root itself
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		return "", ErrEscapesRoot
+	}
+	base := path.Base(clean)
+	if base == "." || base == ".." || base == "/" || base == "" {
+		return "", ErrEscapesRoot
+	}
+	// Resolve the parent through symlinks and confirm it's inside the root.
+	parent, err := a.resolve(path.Dir(clean))
+	if err != nil {
+		return "", err
+	}
+	abs := filepath.Join(parent, base)
+	rel, err := filepath.Rel(a.root, abs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrEscapesRoot
+	}
+	return abs, nil
 }
 
 // joinSlash joins a relative parent and a child name with a forward slash.

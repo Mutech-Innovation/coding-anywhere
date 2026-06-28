@@ -11,6 +11,9 @@ const (
 	FilesMethodList          = "list"
 	FilesMethodRead          = "read"
 	FilesMethodStat          = "stat"
+	FilesMethodWrite         = "write"
+	FilesMethodDelete        = "delete"
+	FilesMethodMove          = "move"
 )
 
 // FilesEntryKind mirrors internal/fileapi.EntryKind.
@@ -94,4 +97,50 @@ type FilesStatRequest struct {
 type FilesStatResponse struct {
 	WorkspaceID string     `json:"workspace_id"`
 	Entry       FilesEntry `json:"entry"`
+}
+
+// --- write ---
+//
+// Uploads stream as a sequence of write calls because the WS transport caps
+// a single message at 1 MiB: the first chunk sets truncate (replacing any
+// existing file), subsequent chunks carry an increasing offset.
+
+type FilesWriteRequest struct {
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Path        string `json:"path"`
+	Offset      int64  `json:"offset,omitempty"`
+	Data        string `json:"data"` // base64 of the chunk
+	Truncate    bool   `json:"truncate,omitempty"`
+}
+
+type FilesWriteResponse struct {
+	WorkspaceID string `json:"workspace_id"`
+	Path        string `json:"path"`
+	Size        int64  `json:"size"` // file size after the write
+}
+
+// --- delete ---
+
+type FilesDeleteRequest struct {
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Path        string `json:"path"`
+}
+
+type FilesDeleteResponse struct {
+	WorkspaceID string `json:"workspace_id"`
+	Path        string `json:"path"`
+}
+
+// --- move (rename + relocate) ---
+
+type FilesMoveRequest struct {
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+}
+
+type FilesMoveResponse struct {
+	WorkspaceID string `json:"workspace_id"`
+	From        string `json:"from"`
+	To          string `json:"to"`
 }

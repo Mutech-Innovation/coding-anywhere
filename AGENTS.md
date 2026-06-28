@@ -369,6 +369,45 @@ agent stays read-only); the web UI hiding controls is cosmetic only.
   - Git diff: `internal/diffrouter`, `internal/diffapi`
   - Ports/proxy: `internal/portsrouter`, `internal/portsapi`
 
+## Files channel (browse + manage)
+
+The `files` channel is workspace-scoped (rooted at the daemon's `-workspace`)
+and split into read and write methods. Guests can't touch it at all — the
+relay's `guestGate` rejects every non-chat channel — so all write ops are
+authenticated-client-only.
+
+- **Methods** (`internal/wire/files.go`, mirrored in
+  `packages/protocol/src/files.ts`): read-only `list_workspace` / `list` /
+  `read` / `stat`, plus write ops `write` / `delete` / `move`.
+- **Path safety** (`internal/fileapi/api.go`): `resolve` follows symlinks for
+  reads; mutating ops use `resolveNew`, which resolves+containment-checks the
+  *parent* but does NOT follow a symlink at the final component (so
+  delete/move act on the link itself) and never targets the workspace root.
+  `move` refuses to overwrite an existing destination. All paths are confined
+  to the root (`ErrEscapesRoot`). Pinned by `internal/fileapi/api_test.go` and
+  the relay e2e `files_e2e_test.go`.
+- **Chunking**: the relay caps a single WS message at 1 MiB
+  (`ws.SetReadLimit`), so uploads/downloads stream in 256 KiB chunks. `write`
+  carries `offset` + base64 `data` + `truncate` (set on the first chunk);
+  `read` is ranged via `offset`/`length`. The web store
+  (`apps/web/src/store/files.ts`) does the chunk loops in `uploadFile` /
+  `downloadFile`; `deleteEntry` / `moveEntry` are single calls.
+- **Web UI** (`apps/web/src/components/FilesPanel.tsx`): per-row hover `⋮`
+  menu + right-click (upload-into-folder / download / rename / delete), HTML5
+  drag-to-move (folder rows are drop targets), rename + delete (delete needs a
+  confirm modal) via Mantine `Modal`, and a rendered/raw icon toggle for
+  Markdown files that reuses `MarkdownBody` from `Markdown.tsx`. After any
+  mutation the store's `refresh()` drops cached listings so open dirs
+  re-fetch. Store roundtrips are pinned by `apps/web/src/store/files.test.ts`.
+- **TODO (后续)**: in-browser **edit & save** and **new file** are web-only —
+  the daemon `write` method already creates/overwrites files (a new file is
+  just a truncating `write` of empty/edited content). **New folder** is the
+  only piece that needs a daemon addition: an `mkdir` method
+  (`fileapi` + `filesrouter` + `wire`/`protocol` types). The **relay needs no
+  changes** for any of these — it forwards `files` traffic by channel, not by
+  method (only `guestGate` inspects methods, and it blocks the whole channel
+  for guests).
+
 ## Chat agents (Devin + cursor-agent)
 
 The chat channel is multi-agent. `internal/agent/acpagent` is one generic ACP

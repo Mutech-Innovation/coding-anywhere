@@ -26,8 +26,10 @@ Priority order for agent integrations:
 - **A real agent in your browser.** `devin acp` or `cursor-agent acp`
   driven through the Agent Client Protocol, with streaming responses,
   tool-call cards, model picker, and inline permission prompts.
-- **Files + diff.** Navigate the workspace, read files (CodeMirror 6),
-  inspect HEAD-vs-working-tree changes side-by-side.
+- **Files + diff.** Navigate the workspace, read files (CodeMirror 6) with a
+  rendered/raw toggle for Markdown, manage them (upload, download, delete,
+  drag-to-move, rename), and inspect HEAD-vs-working-tree changes
+  side-by-side.
 - **Localhost preview.** Detect listening ports, click "Open" to view
   `localhost:3000` (or anything else) through the relay — your phone can
   see your dev server with no tunnel set-up.
@@ -111,20 +113,22 @@ Linux, web client paired in your browser — see
 
 ## Roadmap
 
-| Phase | Scope                                                                 | Status |
-| ----- | --------------------------------------------------------------------- | ------ |
-| P0    | Repo scaffold, CI, codegen pipeline, Mantine UI shell                 | ✅     |
-| P1    | WS envelope, device pairing, JWT, echo loop                           | ✅     |
-| P2    | PTY multiplexer + xterm.js standalone terminal                        | ✅     |
-| P3    | Devin for Terminal adapter via `devin acp` (chat)                     | ✅     |
-| P5    | File browser + diff viewer (CodeMirror 6)                             | ✅     |
-| P6    | Listening-port detection + service preview reverse proxy              | ✅     |
-| P7    | VAPID Web Push when agent turns finish                                | ✅     |
-| P8    | docs / launchd / systemd / docker-compose smoke                       | ✅     |
-| P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot | ✅     |
-| v2    | cursor-agent adapter (`cursor-agent acp`, auth + model mapping)       | ✅     |
-| v2    | Claude Code / Codex adapters                                          | future |
-| v3    | React Native iOS + Android sharing `packages/*`                       | future |
+| Phase | Scope                                                                                  | Status |
+| ----- | -------------------------------------------------------------------------------------- | ------ |
+| P0    | Repo scaffold, CI, codegen pipeline, Mantine UI shell                                  | ✅     |
+| P1    | WS envelope, device pairing, JWT, echo loop                                            | ✅     |
+| P2    | PTY multiplexer + xterm.js standalone terminal                                         | ✅     |
+| P3    | Devin for Terminal adapter via `devin acp` (chat)                                      | ✅     |
+| P5    | File browser + diff viewer (CodeMirror 6)                                              | ✅     |
+| P5.1  | File manager: upload / download / delete / drag-move / rename + Markdown render toggle | ✅     |
+| P5.2  | **TODO** File create (new file + folder) and in-browser edit & save                    | next   |
+| P6    | Listening-port detection + service preview reverse proxy                               | ✅     |
+| P7    | VAPID Web Push when agent turns finish                                                 | ✅     |
+| P8    | docs / launchd / systemd / docker-compose smoke                                        | ✅     |
+| P4+   | Tool-call schema, plan view, modes, slash typeahead, history snapshot                  | ✅     |
+| v2    | cursor-agent adapter (`cursor-agent acp`, auth + model mapping)                        | ✅     |
+| v2    | Claude Code / Codex adapters                                                           | future |
+| v3    | React Native iOS + Android sharing `packages/*`                                        | future |
 
 ## License
 

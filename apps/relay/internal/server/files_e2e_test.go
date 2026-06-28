@@ -166,6 +166,38 @@ func TestFilesEndToEnd(t *testing.T) {
 		t.Fatalf("read result: %q", bytes)
 	}
 
+	// write a new file, read it back
+	send("w-1", wire.FilesMethodWrite, wire.FilesWriteRequest{
+		Path: "notes.txt", Data: base64.StdEncoding.EncodeToString([]byte("uploaded")), Truncate: true,
+	})
+	if res = awaitRes("w-1"); res.Error != nil {
+		t.Fatalf("write error: %+v", res.Error)
+	}
+	send("r-2", wire.FilesMethodRead, wire.FilesReadRequest{Path: "notes.txt"})
+	res = awaitRes("r-2")
+	if err := json.Unmarshal(res.Payload, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := base64.StdEncoding.DecodeString(rr.Data); string(got) != "uploaded" {
+		t.Fatalf("write roundtrip: %q", got)
+	}
+
+	// move (rename), then delete
+	send("mv-1", wire.FilesMethodMove, wire.FilesMoveRequest{From: "notes.txt", To: "pkg/notes.txt"})
+	if res = awaitRes("mv-1"); res.Error != nil {
+		t.Fatalf("move error: %+v", res.Error)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "pkg", "notes.txt")); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+	send("del-1", wire.FilesMethodDelete, wire.FilesDeleteRequest{Path: "pkg/notes.txt"})
+	if res = awaitRes("del-1"); res.Error != nil {
+		t.Fatalf("delete error: %+v", res.Error)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "pkg", "notes.txt")); !os.IsNotExist(err) {
+		t.Fatal("deleted file should be gone")
+	}
+
 	// list ../etc → forbidden
 	send("l-3", wire.FilesMethodList, wire.FilesListRequest{Path: "../etc"})
 	res = awaitRes("l-3")

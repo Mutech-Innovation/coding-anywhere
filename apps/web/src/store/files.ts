@@ -7,6 +7,7 @@ import {
   type RelayWSClient,
   type FilesWorkspaceInfo,
   base64ToBytes,
+  bytesToBase64,
   makeRequest,
 } from '@coding-anywhere/protocol';
 import { newId } from '@coding-anywhere/utils';
@@ -30,9 +31,22 @@ interface FilesStore {
   list(path: string, opts?: { includeHidden?: boolean }): Promise<FilesEntry[]>;
   readFile(path: string): Promise<{ text: string | null; res: FilesReadResponse }>;
   setActivePath(path: string | null): void;
+  // Upload a browser File into `dirPath`, chunked under the 1 MiB WS cap.
+  uploadFile(dirPath: string, file: File): Promise<void>;
+  // Download the file at `path` as assembled bytes (chunked read).
+  downloadFile(path: string): Promise<{ bytes: Uint8Array; contentType?: string }>;
+  // Delete a file or directory (recursive on the daemon).
+  deleteEntry(path: string): Promise<void>;
+  // Move/rename an entry from one path to another.
+  moveEntry(from: string, to: string): Promise<void>;
   // Drop every cached listing and signal open directories to re-fetch.
   refresh(): void;
 }
+
+// Chunk size for upload/download. 256 KiB of raw bytes is ~341 KiB once
+// base64-encoded — comfortably under the relay's 1 MiB per-message read limit
+// even with envelope overhead.
+const CHUNK_BYTES = 256 * 1024;
 
 const pending = new Map<
   string,
@@ -97,10 +111,88 @@ export const useFiles = create<FilesStore>((set, get) => ({
     set({ activePath: path });
   },
 
+  async uploadFile(dirPath, file) {
+    ensureHandlerInstalled();
+    const wid = get().workspaceId ?? '';
+    const target = joinPath(dirPath, file.name);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // Empty file: a single truncating write creates it at zero length.
+    if (bytes.length === 0) {
+      await sendRequest(FilesMethod.Write, {
+        workspace_id: wid,
+        path: target,
+        offset: 0,
+        data: '',
+        truncate: true,
+      });
+      return;
+    }
+    for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.length));
+      await sendRequest(FilesMethod.Write, {
+        workspace_id: wid,
+        path: target,
+        offset,
+        data: bytesToBase64(chunk),
+        truncate: offset === 0,
+      });
+    }
+  },
+
+  async downloadFile(path) {
+    ensureHandlerInstalled();
+    const wid = get().workspaceId ?? '';
+    const chunks: Uint8Array[] = [];
+    let offset = 0;
+    let total = Number.POSITIVE_INFINITY;
+    let contentType: string | undefined;
+    while (offset < total) {
+      const env = await sendRequest(FilesMethod.Read, {
+        workspace_id: wid,
+        path,
+        offset,
+        length: CHUNK_BYTES,
+        max_bytes: CHUNK_BYTES,
+        allow_binary: true,
+      });
+      const res = env.payload as FilesReadResponse;
+      total = res.size;
+      contentType = res.content_type;
+      const part = base64ToBytes(res.data ?? '');
+      if (part.length === 0) break; // nothing more to read (e.g. empty file)
+      chunks.push(part);
+      offset += part.length;
+    }
+    const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let at = 0;
+    for (const c of chunks) {
+      out.set(c, at);
+      at += c.length;
+    }
+    return { bytes: out, contentType };
+  },
+
+  async deleteEntry(path) {
+    ensureHandlerInstalled();
+    await sendRequest(FilesMethod.Delete, { workspace_id: get().workspaceId ?? '', path });
+  },
+
+  async moveEntry(from, to) {
+    ensureHandlerInstalled();
+    await sendRequest(FilesMethod.Move, { workspace_id: get().workspaceId ?? '', from, to });
+  },
+
   refresh() {
     set((s) => ({ listings: {}, refreshToken: s.refreshToken + 1 }));
   },
 }));
+
+// Join a directory path and a child name with a forward slash. The workspace
+// root is the empty string, so an empty dir yields just the name.
+export function joinPath(dir: string, name: string): string {
+  const d = dir.replace(/\/+$/, '');
+  return d ? `${d}/${name}` : name;
+}
 
 let handlerClient: RelayWSClient | null = null;
 let unsubscribeHandler: (() => void) | null = null;

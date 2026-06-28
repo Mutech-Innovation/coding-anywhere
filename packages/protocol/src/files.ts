@@ -7,6 +7,9 @@ export const FilesMethod = {
   List: 'list',
   Read: 'read',
   Stat: 'stat',
+  Write: 'write',
+  Delete: 'delete',
+  Move: 'move',
 } as const;
 export type FilesMethod = (typeof FilesMethod)[keyof typeof FilesMethod];
 
@@ -79,3 +82,48 @@ export const FilesStatResponse = z.object({
   entry: FilesEntry,
 });
 export type FilesStatResponse = z.infer<typeof FilesStatResponse>;
+
+// --- write ---
+// Uploads stream as a sequence of write calls because the relay caps a single
+// WS message at 1 MiB: the first chunk sets `truncate` (replacing any existing
+// file), later chunks carry an increasing `offset`. `data` is base64.
+export interface FilesWriteRequest {
+  workspace_id?: string;
+  path: string;
+  offset?: number;
+  data: string;
+  truncate?: boolean;
+}
+
+export const FilesWriteResponse = z.object({
+  workspace_id: z.string(),
+  path: z.string(),
+  size: z.number(),
+});
+export type FilesWriteResponse = z.infer<typeof FilesWriteResponse>;
+
+// --- delete ---
+export interface FilesDeleteRequest {
+  workspace_id?: string;
+  path: string;
+}
+
+export const FilesDeleteResponse = z.object({
+  workspace_id: z.string(),
+  path: z.string(),
+});
+export type FilesDeleteResponse = z.infer<typeof FilesDeleteResponse>;
+
+// --- move (rename + relocate) ---
+export interface FilesMoveRequest {
+  workspace_id?: string;
+  from: string;
+  to: string;
+}
+
+export const FilesMoveResponse = z.object({
+  workspace_id: z.string(),
+  from: z.string(),
+  to: z.string(),
+});
+export type FilesMoveResponse = z.infer<typeof FilesMoveResponse>;
