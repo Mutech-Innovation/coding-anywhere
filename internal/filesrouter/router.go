@@ -117,6 +117,56 @@ func (r *Router) handle(env wire.Envelope) error {
 			WorkspaceID: r.workspace.ID,
 			Entry:       toWireEntry(entry),
 		})
+	case wire.FilesMethodWrite:
+		var req wire.FilesWriteRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		data, err := base64.StdEncoding.DecodeString(req.Data)
+		if err != nil {
+			r.respondErr(env, "bad_payload", "data is not valid base64")
+			return nil
+		}
+		size, err := r.api.Write(req.Path, data, fileapi.WriteOptions{
+			Offset:   req.Offset,
+			Truncate: req.Truncate,
+		})
+		if err != nil {
+			r.respondErr(env, classifyErr(err), err.Error())
+			return nil
+		}
+		r.respondOK(env, wire.FilesWriteResponse{
+			WorkspaceID: r.workspace.ID,
+			Path:        req.Path,
+			Size:        size,
+		})
+	case wire.FilesMethodDelete:
+		var req wire.FilesDeleteRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		if err := r.api.Remove(req.Path); err != nil {
+			r.respondErr(env, classifyErr(err), err.Error())
+			return nil
+		}
+		r.respondOK(env, wire.FilesDeleteResponse{
+			WorkspaceID: r.workspace.ID,
+			Path:        req.Path,
+		})
+	case wire.FilesMethodMove:
+		var req wire.FilesMoveRequest
+		if err := r.parse(env, &req); err != nil {
+			return nil
+		}
+		if err := r.api.Move(req.From, req.To); err != nil {
+			r.respondErr(env, classifyErr(err), err.Error())
+			return nil
+		}
+		r.respondOK(env, wire.FilesMoveResponse{
+			WorkspaceID: r.workspace.ID,
+			From:        req.From,
+			To:          req.To,
+		})
 	default:
 		r.respondErr(env, "unknown_method", fmt.Sprintf("unknown files method %q", env.Method))
 	}
@@ -172,6 +222,12 @@ func classifyErr(err error) string {
 	}
 	if err != nil {
 		s := err.Error()
+		if strings.Contains(s, "already exists") {
+			return "conflict"
+		}
+		if strings.Contains(s, "is a directory") {
+			return "bad_request"
+		}
 		for _, needle := range []string{"no such file", "does not exist", "not a directory"} {
 			if strings.Contains(s, needle) {
 				return "not_found"

@@ -415,3 +415,34 @@ a:hover {
   border-bottom-color: light-dark(#0e0e10, #e7ecf3);
   background: transparent;
 }
+
+/* Files tree rows: hover to reveal the per-row action menu, with a drop
+   highlight while dragging an entry onto a folder. */
+.cw-tree-row {
+  position: relative;
+}
+.cw-tree-row:hover {
+  background: light-dark(rgba(15, 23, 42, 0.04), rgba(255, 255, 255, 0.04));
+  border-radius: 4px;
+}
+.cw-tree-row__menu {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.cw-tree-row:hover .cw-tree-row__menu,
+.cw-tree-row__menu[data-open='true'],
+.cw-tree-row__menu:focus-visible {
+  opacity: 1;
+}
+.cw-tree-row[data-drop='true'] {
+  outline: 2px dashed var(--mantine-color-brand-5);
+  outline-offset: -2px;
+  border-radius: 4px;
+  background: light-dark(rgba(59, 130, 246, 0.08), rgba(59, 130, 246, 0.16));
+}
+
+/* Rendered-markdown file viewer: a little vertical rhythm so headings and
+   paragraphs read like a document rather than a chat bubble. */
+.cw-md-doc > * + * {
+  margin-top: 2px;
+}

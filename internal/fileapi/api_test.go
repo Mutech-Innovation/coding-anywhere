@@ -145,3 +145,128 @@ func TestStatReturnsKind(t *testing.T) {
 		t.Fatalf("stat dir: %+v err=%v", e, err)
 	}
 }
+
+func TestWriteCreatesFile(t *testing.T) {
+	a, dir := mkRoot(t)
+	if _, err := a.Write("sub/new.txt", []byte("hello"), fileapi.WriteOptions{Truncate: true}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "sub", "new.txt"))
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("read back: %q err=%v", got, err)
+	}
+}
+
+func TestWriteChunkedByOffset(t *testing.T) {
+	a, dir := mkRoot(t)
+	// First chunk truncates+creates; later chunks append at their offset.
+	if _, err := a.Write("blob.dat", []byte("abc"), fileapi.WriteOptions{Offset: 0, Truncate: true}); err != nil {
+		t.Fatal(err)
+	}
+	size, err := a.Write("blob.dat", []byte("def"), fileapi.WriteOptions{Offset: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 6 {
+		t.Fatalf("size: got %d want 6", size)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "blob.dat"))
+	if string(got) != "abcdef" {
+		t.Fatalf("contents: %q", got)
+	}
+}
+
+func TestWriteTruncateReplacesExisting(t *testing.T) {
+	a, dir := mkRoot(t)
+	// hello.txt starts as "hi there\n"; a truncating write must replace it.
+	if _, err := a.Write("hello.txt", []byte("x"), fileapi.WriteOptions{Truncate: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "hello.txt"))
+	if string(got) != "x" {
+		t.Fatalf("contents: %q", got)
+	}
+}
+
+func TestWriteRejectsDirectory(t *testing.T) {
+	a, _ := mkRoot(t)
+	if _, err := a.Write("sub", []byte("x"), fileapi.WriteOptions{Truncate: true}); err == nil {
+		t.Fatal("expected error writing over a directory")
+	}
+}
+
+func TestWriteEscapesRoot(t *testing.T) {
+	a, _ := mkRoot(t)
+	if _, err := a.Write("../escape.txt", []byte("x"), fileapi.WriteOptions{}); !errors.Is(err, fileapi.ErrEscapesRoot) {
+		t.Fatalf("expected ErrEscapesRoot, got %v", err)
+	}
+}
+
+func TestRemoveFileAndDir(t *testing.T) {
+	a, dir := mkRoot(t)
+	if err := a.Remove("hello.txt"); err != nil {
+		t.Fatalf("Remove file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hello.txt")); !os.IsNotExist(err) {
+		t.Fatal("file should be gone")
+	}
+	if err := a.Remove("sub"); err != nil {
+		t.Fatalf("Remove dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub")); !os.IsNotExist(err) {
+		t.Fatal("dir should be gone")
+	}
+}
+
+func TestRemoveMissingErrors(t *testing.T) {
+	a, _ := mkRoot(t)
+	if err := a.Remove("nope.txt"); err == nil {
+		t.Fatal("expected error removing missing file")
+	}
+}
+
+func TestRemoveRefusesRoot(t *testing.T) {
+	a, _ := mkRoot(t)
+	for _, p := range []string{"", ".", "../"} {
+		if err := a.Remove(p); !errors.Is(err, fileapi.ErrEscapesRoot) {
+			t.Fatalf("Remove(%q): expected ErrEscapesRoot, got %v", p, err)
+		}
+	}
+}
+
+func TestMoveRenames(t *testing.T) {
+	a, dir := mkRoot(t)
+	if err := a.Move("hello.txt", "renamed.txt"); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "renamed.txt")); err != nil {
+		t.Fatalf("renamed file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hello.txt")); !os.IsNotExist(err) {
+		t.Fatal("original should be gone")
+	}
+}
+
+func TestMoveIntoDirectory(t *testing.T) {
+	a, dir := mkRoot(t)
+	if err := a.Move("hello.txt", "sub/hello.txt"); err != nil {
+		t.Fatalf("Move into dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "hello.txt")); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+}
+
+func TestMoveRefusesExistingDestination(t *testing.T) {
+	a, _ := mkRoot(t)
+	if err := a.Move("hello.txt", "blob.bin"); err == nil {
+		t.Fatal("expected error overwriting existing destination")
+	}
+}
+
+func TestMoveEscapesRoot(t *testing.T) {
+	a, _ := mkRoot(t)
+	if err := a.Move("hello.txt", "../escape.txt"); !errors.Is(err, fileapi.ErrEscapesRoot) {
+		t.Fatalf("expected ErrEscapesRoot, got %v", err)
+	}
+}
