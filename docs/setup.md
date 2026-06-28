@@ -315,6 +315,27 @@ rooted at.
 > Prefer a _user_ service? Use the §2.3 unit plus `loginctl enable-linger
 "$USER"` so it survives after you log out of SSH.
 
+**Updating** is just replace-the-binary-and-restart: credentials and the unit
+file live elsewhere, so there's no re-pairing and no unit edits. Re-build for
+the server's arch (step 1), then swap the binary atomically — you can't
+overwrite a _running_ executable in place (`Text file busy` / `ETXTBSY`) — and
+restart:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o coding-anywhere-daemon ./apps/daemon/cmd
+scp coding-anywhere-daemon user@DEV_HOST:~/.local/bin/coding-anywhere-daemon.new
+ssh user@DEV_HOST 'mv ~/.local/bin/coding-anywhere-daemon.new ~/.local/bin/coding-anywhere-daemon && sudo systemctl restart coding-anywhere-daemon'
+```
+
+The `mv` is an atomic rename, so the running daemon keeps the old inode until
+the restart picks up the new file. Prefer brevity over zero downtime? Just
+`sudo systemctl stop coding-anywhere-daemon`, `scp` over the file, then start
+again. Either way, confirm the new build came up with
+`journalctl -u coding-anywhere-daemon -n 20 --no-pager`.
+
+> _User_ service (§2.3)? Use `systemctl --user …` and drop the `sudo` — the
+> binary sits under your own `~/.local/bin`.
+
 ## 3. Web client
 
 The web app is a static React site. You can:
@@ -334,7 +355,7 @@ pnpm dev
 Whatever you choose, three things must hold:
 
 - **Serve it over HTTPS.** The service worker (Web Push) and a real wss relay
-  both require a secure context. An HTTPS page also *cannot* dial a plaintext
+  both require a secure context. An HTTPS page also _cannot_ dial a plaintext
   `ws://` relay, so pair it with a `wss://` relay.
 - **Serve it from the domain root**, not a sub-path — `index.html` references
   assets, the manifest, and `/service-worker.js` with absolute paths.
@@ -342,7 +363,7 @@ Whatever you choose, three things must hold:
   `/guest` and is the same `index.html` branching on the URL, so SPA-style
   fallback is required.
 
-The relay URL is *not* baked into the build — you type it on the pair / login
+The relay URL is _not_ baked into the build — you type it on the pair / login
 screen at runtime — so the same static bundle works against any relay.
 
 ### 3.1 Self-host behind an existing Traefik (Docker)
