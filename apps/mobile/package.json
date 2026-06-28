@@ -16,6 +16,7 @@
     "@coding-anywhere/agents": "workspace:*",
     "@coding-anywhere/markdown": "workspace:*",
     "@coding-anywhere/protocol": "workspace:*",
+    "@coding-anywhere/state": "workspace:*",
     "@coding-anywhere/tokens": "workspace:*",
     "@coding-anywhere/utils": "workspace:*",
     "@expo/ui": "~56.0.18",

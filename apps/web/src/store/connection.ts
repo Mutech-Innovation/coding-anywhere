@@ -5,6 +5,7 @@ import {
   type CredentialBundle,
   type UserAccountSummary,
 } from '@coding-anywhere/protocol';
+import { setClientProvider } from '@coding-anywhere/state';
 import { create } from 'zustand';
 
 import {
@@ -342,6 +343,10 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     set({ lastError: message });
   },
 }));
+
+// Let the shared channel stores (@coding-anywhere/state: chat/diff/ports) reach
+// the live relay client without importing this platform-specific store.
+setClientProvider(() => useConnection.getState().client);
 
 function attachClient(
   set: (partial: Partial<ConnectionStore>) => void,

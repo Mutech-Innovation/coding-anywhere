@@ -33,6 +33,13 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "packageExtensions": {
+      "react-native-webview": {
+        "peerDependencies": {
+          "@types/react": "*"
+        }
+      }
+    }
   }
 }

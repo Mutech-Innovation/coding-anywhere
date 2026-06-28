@@ -8,6 +8,6 @@
     "sourceMap": true,
     "composite": true
   },
-  "references": [{ "path": "../protocol" }],
+  "references": [{ "path": "../protocol" }, { "path": "../utils" }],
   "include": ["src/**/*"]
 }
