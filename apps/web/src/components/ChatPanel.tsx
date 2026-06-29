@@ -116,8 +116,8 @@ export function ChatPanel() {
     <Group align="stretch" gap="md" h="100%" wrap="nowrap" style={{ minHeight: 0 }}>
       <Stack
         gap="xs"
-        miw={260}
-        maw={320}
+        miw={280}
+        maw={360}
         p="sm"
         style={{
           border: '1px solid var(--mantine-color-default-border)',
@@ -143,7 +143,7 @@ export function ChatPanel() {
             Waiting for relay connection…
           </Text>
         ) : null}
-        <ScrollArea.Autosize mah="60vh">
+        <Box style={{ maxHeight: '60vh', overflowY: 'auto', overflowX: 'hidden' }}>
           <Stack gap={4}>
             {regular.length === 0 && guestGroups.length === 0 ? (
               <Text size="sm" c="dimmed">
@@ -172,7 +172,7 @@ export function ChatPanel() {
               </>
             )}
           </Stack>
-        </ScrollArea.Autosize>
+        </Box>
       </Stack>
 
       <Box

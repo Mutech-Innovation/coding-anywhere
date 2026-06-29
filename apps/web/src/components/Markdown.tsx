@@ -341,7 +341,7 @@ function renderInlineNode(node: PhrasingContent, ctx: RenderCtx, key: number): R
       const href = safeHref(node.url);
       if (!href) return <Fragment key={key}>{renderInline(node.children, ctx)}</Fragment>;
       return (
-        <Anchor key={key} href={href} target="_blank" rel="noreferrer">
+        <Anchor key={key} href={href} target="_blank" rel="noreferrer" c={ctx.c} underline="always">
           {renderInline(node.children, ctx)}
         </Anchor>
       );
@@ -353,7 +353,7 @@ function renderInlineNode(node: PhrasingContent, ctx: RenderCtx, key: number): R
       const label = node.alt || node.url;
       if (!href) return label;
       return (
-        <Anchor key={key} href={href} target="_blank" rel="noreferrer">
+        <Anchor key={key} href={href} target="_blank" rel="noreferrer" c={ctx.c} underline="always">
           {label}
         </Anchor>
       );
@@ -367,7 +367,7 @@ function renderInlineNode(node: PhrasingContent, ctx: RenderCtx, key: number): R
         return <Fragment key={key}>[{renderInline(node.children, ctx)}]</Fragment>;
       }
       return (
-        <Anchor key={key} href={href} target="_blank" rel="noreferrer">
+        <Anchor key={key} href={href} target="_blank" rel="noreferrer" c={ctx.c} underline="always">
           {renderInline(node.children, ctx)}
         </Anchor>
       );
@@ -378,7 +378,7 @@ function renderInlineNode(node: PhrasingContent, ctx: RenderCtx, key: number): R
       const label = node.alt || node.identifier;
       if (!href) return label;
       return (
-        <Anchor key={key} href={href} target="_blank" rel="noreferrer">
+        <Anchor key={key} href={href} target="_blank" rel="noreferrer" c={ctx.c} underline="always">
           {label}
         </Anchor>
       );
