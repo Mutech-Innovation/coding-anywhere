@@ -45,6 +45,9 @@ vendor/
 # Local Windows dev launcher (see dev.bat)
 /dev.bat
 
+# Local specs / scratch (screenshots + notes)
+specs/
+
 # Devin/runtime data
 .devin-runtime/
 relay-data/

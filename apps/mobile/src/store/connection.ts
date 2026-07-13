@@ -61,6 +61,20 @@ interface ConnectionStore {
   }): Promise<{ accounts: UserAccountSummary[]; signedIn: boolean }>;
   loadMachines(): Promise<void>;
   switchMachine(accountId: string): Promise<void>;
+  /**
+   * Mint a short-lived, read-only guest "ask" link for one project directory.
+   * Returns the shareable URL + expiry so the caller can show/copy it.
+   */
+  createAskShare(args: {
+    ttlSeconds: number;
+    promptLimit: number;
+    maxSessions: number;
+    cwd: string;
+    model: string;
+    agentId: string;
+  }): Promise<{ url: string; expiresAt: number; shareId: string }>;
+  /** Revoke a previously-minted guest link by id. */
+  revokeAskShare(shareId: string): Promise<void>;
   signOut(): Promise<void>;
   refreshAccessToken(): Promise<void>;
   setStatus(s: ConnectionState): void;
@@ -153,6 +167,35 @@ export const useConnection = create<ConnectionStore>((set, get) => ({
     set({ machines: res.accounts });
   },
 
+  async createAskShare({ ttlSeconds, promptLimit, maxSessions, cwd, model, agentId }) {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    const res = await pc.createAskShare(
+      {
+        ttl_seconds: ttlSeconds,
+        prompt_limit: promptLimit,
+        max_sessions: maxSessions,
+        cwd,
+        model,
+        agent_id: agentId,
+      },
+      { bearer: credentials.bundle.access_token },
+    );
+    return {
+      url: guestShareURL(credentials.relay_url, res.token, res.url),
+      expiresAt: res.expires_at,
+      shareId: res.share_id,
+    };
+  },
+
+  async revokeAskShare(shareId) {
+    const { credentials } = get();
+    if (!credentials) throw new Error('not signed in');
+    const pc = new PairingClient(credentials.relay_url);
+    await pc.revokeAskShare(shareId, { bearer: credentials.bundle.access_token });
+  },
+
   async signOut() {
     const { client, refreshTimer } = get();
     if (client) client.stop();
@@ -212,6 +255,21 @@ function attachClient(
   scheduleRefresh(set, get, creds);
   client.start();
   void get().loadMachines();
+}
+
+/**
+ * Build a shareable guest link from a freshly-minted token. Prefers the relay's
+ * own `url` (only set when CA_GUEST_WEB_BASE_URL is configured); otherwise falls
+ * back to the relay origin, which works when the web client is co-served with
+ * the relay (the Docker/Traefik self-host path). The token + relay ride in the
+ * query so a fresh tab connects with no further input.
+ */
+function guestShareURL(relayURL: string, token: string, relayURLProvided?: string): string {
+  if (relayURLProvided) return relayURLProvided;
+  const origin = relayURL.replace(/\/+$/, '');
+  return (
+    `${origin}/guest?token=${encodeURIComponent(token)}` + `&relay=${encodeURIComponent(origin)}`
+  );
 }
 
 async function refreshIfNeeded(creds: StoredCredentials): Promise<StoredCredentials> {

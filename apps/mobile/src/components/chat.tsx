@@ -2,16 +2,18 @@
 // ChatPanel's MessageBubble / ToolCallCard / PlanCard / PermissionCard, reusing
 // the shared RN markdown renderer and the chat store's view types.
 import {
+  type ChatAttachment,
   type ChatSessionStatus,
   type PlanEntry,
   type ToolCallStatus,
   type ToolKind,
 } from '@coding-anywhere/protocol';
 import { colors } from '@coding-anywhere/tokens';
+import * as Clipboard from 'expo-clipboard';
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useColorScheme } from 'nativewind';
 import { memo, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Image, Pressable, Text, View } from 'react-native';
 
 import { type ChatMessage, type ChatToolCall } from '../store/chat';
 import { hasMeaningfulPayload } from './transcript';
@@ -68,9 +70,11 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const text = message.text || (message.streaming ? '…' : '');
+  const attachments = message.attachments?.length ? message.attachments : null;
 
-  // Some Devin models stream content == "None" for tool-only turns; suppress.
-  if (message.role === 'agent' && message.text === 'None') return null;
+  // Some Devin models stream content == "None" for tool-only turns; suppress
+  // (unless the turn carried an attachment).
+  if (message.role === 'agent' && message.text === 'None' && !attachments) return null;
   if (message.role === 'agent_thought') return <ThoughtBubble message={message} />;
 
   if (isSystem) {
@@ -81,24 +85,107 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
     );
   }
 
-  return (
-    <View className={isUser ? 'items-end' : 'items-start'}>
-      <View
-        className={`max-w-[85%] rounded-lg p-md ${
-          isUser
-            ? 'bg-brand-800'
-            : 'border border-border bg-surface dark:border-border-dark dark:bg-surface-elevated-dark'
-        }`}
-      >
-        {message.streaming ? (
-          <StreamingMarkdownBody text={text} color={isUser ? '#ffffff' : undefined} />
-        ) : (
-          <MarkdownBody text={text} color={isUser ? '#ffffff' : undefined} />
-        )}
+  // The user's own messages keep a clear, right-aligned bubble.
+  if (isUser) {
+    return (
+      <View className="items-end">
+        <View className="max-w-[85%] rounded-2xl bg-brand-800 p-md">
+          {attachments ? <MessageAttachments attachments={attachments} onBrand /> : null}
+          {text ? (
+            message.streaming ? (
+              <StreamingMarkdownBody text={text} color="#ffffff" />
+            ) : (
+              <MarkdownBody text={text} color="#ffffff" />
+            )
+          ) : null}
+        </View>
       </View>
+    );
+  }
+
+  // The agent's reply renders as plain text (no bubble) with a copy action,
+  // so long answers read like a document rather than a chat balloon.
+  return (
+    <View className="items-start gap-1">
+      {attachments ? <MessageAttachments attachments={attachments} onBrand={false} /> : null}
+      <View className="w-full">
+        {message.streaming ? <StreamingMarkdownBody text={text} /> : <MarkdownBody text={text} />}
+      </View>
+      {!message.streaming && message.text && message.text !== 'None' ? (
+        <CopyButton value={message.text} />
+      ) : null}
     </View>
   );
 });
+
+// Small "copy" affordance shown under each settled agent reply.
+function CopyButton({ value }: { value: string }) {
+  const c = useColors();
+  const [copied, setCopied] = useState(false);
+  return (
+    <Pressable
+      onPress={() => {
+        void Clipboard.setStringAsync(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      hitSlop={6}
+      className="flex-row items-center gap-xs self-start rounded-md py-0.5 active:opacity-60"
+    >
+      <SymbolView name={copied ? 'checkmark' : 'doc.on.doc'} size={12} tintColor={c.textMuted} />
+      <Text className="text-xs text-text-muted dark:text-text-muted-dark">
+        {copied ? '已复制' : '复制'}
+      </Text>
+    </Pressable>
+  );
+}
+
+// Attachment strip inside a transcript message: images render as thumbnails,
+// other files as a name chip. Styles adapt to the indigo user bubble.
+function MessageAttachments({
+  attachments,
+  onBrand,
+}: {
+  attachments: ChatAttachment[];
+  onBrand: boolean;
+}) {
+  return (
+    <View className="mb-xs flex-row flex-wrap gap-xs">
+      {attachments.map((att, i) => {
+        const uri =
+          att.type === 'image' && att.data
+            ? `data:${att.mime_type ?? 'image/jpeg'};base64,${att.data}`
+            : null;
+        if (uri) {
+          return (
+            <Image
+              key={i}
+              source={{ uri }}
+              style={{ width: 120, height: 120, borderRadius: 8 }}
+              resizeMode="cover"
+            />
+          );
+        }
+        return (
+          <View
+            key={i}
+            className={`flex-row items-center gap-xs rounded-md px-sm py-1 ${
+              onBrand ? 'bg-white/15' : 'border border-border dark:border-border-dark'
+            }`}
+          >
+            <SymbolView name="doc.fill" size={12} tintColor={onBrand ? '#ffffff' : '#9aa1ac'} />
+            <Text
+              className={`text-xs ${onBrand ? 'text-white' : 'text-text dark:text-text-dark'}`}
+              numberOfLines={1}
+            >
+              {att.name}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
 
 const ThoughtBubble = memo(function ThoughtBubble({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);

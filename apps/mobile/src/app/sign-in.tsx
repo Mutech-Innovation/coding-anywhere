@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, ErrorBanner, SegmentedControl, TextField } from '../components/ui';
 import { useConnection } from '../store/connection';
 
-const DEFAULT_RELAY_URL = 'http://localhost:8443';
+const DEFAULT_RELAY_URL = 'https://coding-anywhere-relay.mqai.chat';
 
 type Method = 'password' | 'key' | 'code';
 

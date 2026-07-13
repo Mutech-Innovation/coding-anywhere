@@ -8,7 +8,8 @@
     "scheme": "codinganywhere",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mutechinnovation.codinganywhere"
     },
     "android": {
       "adaptiveIcon": {
@@ -39,7 +40,13 @@
         }
       ],
       "expo-secure-store",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许 Coding Anywhere 访问相册，以便把图片作为上下文附件发送给 agent。"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

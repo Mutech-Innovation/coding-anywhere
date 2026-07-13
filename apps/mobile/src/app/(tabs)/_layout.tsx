@@ -49,9 +49,9 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: '对话',
+          title: '工作区',
           tabBarIcon: ({ color, size }) => (
-            <SymbolView name="message.fill" tintColor={color} size={size} />
+            <SymbolView name="bubble.left.and.bubble.right.fill" tintColor={color} size={size} />
           ),
         }}
       />
@@ -61,15 +61,6 @@ export default function TabsLayout() {
           title: '文件',
           tabBarIcon: ({ color, size }) => (
             <SymbolView name="folder.fill" tintColor={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="diff"
-        options={{
-          title: 'Diff',
-          tabBarIcon: ({ color, size }) => (
-            <SymbolView name="arrow.triangle.branch" tintColor={color} size={size} />
           ),
         }}
       />
