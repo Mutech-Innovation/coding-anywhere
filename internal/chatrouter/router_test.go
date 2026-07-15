@@ -255,3 +255,82 @@ func TestBuildAdapterForSessionRetriesNonAuthFailure(t *testing.T) {
 		t.Fatalf("expected all 3 candidates tried, got %d", attempts)
 	}
 }
+
+func TestHistoryPageBoundsAndCursors(t *testing.T) {
+	s := &session{}
+	for i := 0; i < 4; i++ {
+		update, err := json.Marshal(map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content": map[string]string{
+				"type": "text",
+				"text": strings.Repeat(string(rune('a'+i)), 300<<10),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.appendUpdate(update)
+		if i == 1 {
+			s.appendPrompt("between", nil)
+		}
+	}
+
+	cursor := uint64(0)
+	sequences := make([]uint64, 0, 5)
+	pages := 0
+	for {
+		page, err := s.historyPage(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page.Session = wire.ChatSession{ID: "session", AgentID: "devin", NativeID: "native"}
+		env, err := wire.MakeResponse("history", wire.ChannelChat, page, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > wire.MaxEnvelopeBytes {
+			t.Fatalf("history page exceeded transport cap: %d", len(encoded))
+		}
+		sequences = append(sequences, page.UpdateSequenceIDs...)
+		for _, prompt := range page.UserPrompts {
+			sequences = append(sequences, prompt.SequenceID)
+		}
+		pages++
+		if !page.HasMore {
+			break
+		}
+		if page.NextSequenceID <= cursor {
+			t.Fatalf("cursor did not advance: old=%d next=%d", cursor, page.NextSequenceID)
+		}
+		cursor = page.NextSequenceID
+	}
+	if pages < 2 {
+		t.Fatalf("expected multiple history pages, got %d", pages)
+	}
+	if len(sequences) != 5 {
+		t.Fatalf("expected every history item, got sequences %v", sequences)
+	}
+}
+
+func TestHistoryPageOmitsSingleOversizedItem(t *testing.T) {
+	s := &session{}
+	update, err := json.Marshal(map[string]string{"blob": strings.Repeat("x", historyPageMaxItemBytes)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sequenceID := s.appendUpdate(update)
+	page, err := s.historyPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Updates) != 0 || len(page.OmittedSequenceIDs) != 1 || page.OmittedSequenceIDs[0] != sequenceID {
+		t.Fatalf("oversized history item was not omitted: %+v", page)
+	}
+	if page.HasMore || page.NextSequenceID != sequenceID {
+		t.Fatalf("unexpected pagination metadata: %+v", page)
+	}
+}

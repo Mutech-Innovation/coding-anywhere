@@ -72,7 +72,7 @@ func (s *Server) handleWSConnect(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("ws accept", "err", err)
 		return
 	}
-	ws.SetReadLimit(1 << 20) // 1 MiB
+	ws.SetReadLimit(wire.MaxEnvelopeBytes)
 
 	conn := &Conn{
 		id:        newULID(),

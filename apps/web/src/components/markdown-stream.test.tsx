@@ -85,6 +85,8 @@ describe('MessageBubble streaming render', () => {
           usage: null,
           configOptions: [],
           permissions: {},
+          historyLoaded: true,
+          historyLoading: false,
           liveAgentMessageId: null,
         },
       },

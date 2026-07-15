@@ -79,6 +79,8 @@ export const useFiles = create<FilesStore>((set, get) => ({
     const env = await sendRequest(FilesMethod.Read, {
       workspace_id: get().workspaceId ?? '',
       path,
+      length: CHUNK_BYTES,
+      max_bytes: CHUNK_BYTES,
     });
     const res = env.payload as FilesReadResponse;
     const text = res.is_binary ? null : decodeUtf8(base64ToBytes(res.data ?? ''));

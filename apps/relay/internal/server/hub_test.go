@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,36 @@ func TestHubBroadcastDaemonToClient(t *testing.T) {
 	var echo wire.Envelope
 	if err := wsjson.Read(deadlineCtx, daemon, &echo); err == nil {
 		t.Fatalf("daemon received echo: %+v", echo)
+	}
+}
+
+func TestHubBroadcastAcceptsMultiMiBEnvelope(t *testing.T) {
+	hs, srv := newTestServer(t)
+	daemon := dialWS(t, hs.URL, srv.Signer(), "acc-1", "dev-daemon", auth.DeviceDaemon)
+	client := dialWS(t, hs.URL, srv.Signer(), "acc-1", "dev-client", auth.DeviceClient)
+	client.SetReadLimit(wire.MaxEnvelopeBytes)
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	body := strings.Repeat("x", 2<<20)
+	ev, err := wire.MakeEvent("evt-large", wire.ChannelFiles, "preview", map[string]string{"data": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wsjson.Write(ctx, daemon, ev); err != nil {
+		t.Fatalf("daemon Write: %v", err)
+	}
+	var got wire.Envelope
+	if err := wsjson.Read(ctx, client, &got); err != nil {
+		t.Fatalf("client Read: %v", err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["data"] != body {
+		t.Fatalf("large payload was corrupted: got %d bytes", len(payload["data"]))
 	}
 }
 

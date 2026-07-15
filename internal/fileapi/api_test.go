@@ -117,6 +117,21 @@ func TestReadTruncatesAtMaxBytes(t *testing.T) {
 	}
 }
 
+func TestReadClampsOversizedMaxBytes(t *testing.T) {
+	a, dir := mkRoot(t)
+	big := strings.Repeat("a", 5<<20)
+	if err := os.WriteFile(filepath.Join(dir, "huge.txt"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Read("huge.txt", fileapi.ReadOptions{MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || len(res.Bytes) != 4<<20 {
+		t.Fatalf("unexpected: truncated=%v len=%d", res.Truncated, len(res.Bytes))
+	}
+}
+
 func TestReadOffsetAndLength(t *testing.T) {
 	a, _ := mkRoot(t)
 	res, err := a.Read("hello.txt", fileapi.ReadOptions{Offset: 3, Length: 5})

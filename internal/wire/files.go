@@ -101,9 +101,9 @@ type FilesStatResponse struct {
 
 // --- write ---
 //
-// Uploads stream as a sequence of write calls because the WS transport caps
-// a single message at 1 MiB: the first chunk sets truncate (replacing any
-// existing file), subsequent chunks carry an increasing offset.
+// Uploads stream as a sequence of write calls to stay under the WS transport
+// message cap: the first chunk sets truncate (replacing any existing file),
+// subsequent chunks carry an increasing offset.
 
 type FilesWriteRequest struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`

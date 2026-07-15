@@ -9,9 +9,10 @@ import (
 type EnvelopeType string
 
 const (
-	TypeRequest  EnvelopeType = "req"
-	TypeResponse EnvelopeType = "res"
-	TypeEvent    EnvelopeType = "event"
+	TypeRequest      EnvelopeType = "req"
+	TypeResponse     EnvelopeType = "res"
+	TypeEvent        EnvelopeType = "event"
+	MaxEnvelopeBytes              = 8 << 20
 )
 
 // Channel namespaces the envelope payload. The set must stay in sync with

@@ -78,12 +78,16 @@ type Entry struct {
 // ListOptions tweaks List behaviour.
 type ListOptions struct {
 	IncludeHidden bool
-	MaxEntries    int // 0 = no limit
+	MaxEntries    int // 0 uses the bounded default
 }
 
 // List enumerates direct children of `relPath` (relative to root). The
 // listing is non-recursive; clients drill in by repeating List on a child.
 func (a *API) List(relPath string, opts ListOptions) ([]Entry, error) {
+	const maxEntries = 1_000
+	if opts.MaxEntries <= 0 || opts.MaxEntries > maxEntries {
+		opts.MaxEntries = maxEntries
+	}
 	abs, err := a.resolve(relPath)
 	if err != nil {
 		return nil, err
@@ -140,7 +144,8 @@ type ReadResult struct {
 
 // ReadOptions tweaks Read behaviour.
 type ReadOptions struct {
-	// MaxBytes caps how many bytes we read. Zero means a 1 MiB default.
+	// MaxBytes caps how many bytes we read. Zero defaults to 1 MiB; larger
+	// requests are clamped to 4 MiB.
 	MaxBytes int64
 	// Offset / Length read a slice of the file (Length == 0 → to EOF).
 	Offset int64
@@ -168,6 +173,8 @@ func (a *API) Read(relPath string, opts ReadOptions) (*ReadResult, error) {
 	maxBytes := opts.MaxBytes
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
+	} else if maxBytes > 4<<20 {
+		maxBytes = 4 << 20
 	}
 
 	f, err := os.Open(abs)
@@ -251,8 +258,8 @@ func (a *API) Stat(relPath string) (Entry, error) {
 // WriteOptions tweaks Write behaviour.
 type WriteOptions struct {
 	// Offset is the byte position to write `data` at. Callers stream large
-	// uploads as a sequence of Write calls with increasing offsets (the WS
-	// transport caps a single message at 1 MiB).
+	// uploads as a sequence of Write calls with increasing offsets to stay
+	// under the WS transport's per-message cap.
 	Offset int64
 	// Truncate clears any existing file before writing. Set it on the first
 	// chunk of an upload (offset 0) so a re-upload replaces, not appends.

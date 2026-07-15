@@ -97,6 +97,30 @@ export interface ChatCloseSessionRequest {
   session_id: string;
 }
 
+export interface ChatGetHistoryRequest {
+  session_id: string;
+  after_sequence_id?: number;
+}
+
+export interface ChatHistoryPromptEntry {
+  text: string;
+  created_at: string;
+  sequence_id?: number;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatGetHistoryResponse {
+  session: ChatSession;
+  updates?: Array<Record<string, unknown>>;
+  update_sequence_ids?: number[];
+  user_prompts?: ChatHistoryPromptEntry[];
+  available_modes?: SessionMode[];
+  current_mode_id?: string;
+  has_more?: boolean;
+  next_sequence_id?: number;
+  omitted_sequence_ids?: number[];
+}
+
 export interface ChatResolvePermissionRequest {
   request_id: string;
   decision: unknown;

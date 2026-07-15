@@ -162,21 +162,25 @@ type ChatSetConfigOptionRequest struct {
 	Value     string `json:"value"`
 }
 
-// ChatGetHistoryRequest fetches the daemon's persisted snapshot of one
-// session — every session/update we've seen, replayed in order. The web
-// UI calls this on attach so a refresh / new browser doesn't lose state.
+// ChatGetHistoryRequest fetches one page of the daemon's persisted snapshot.
+// AfterSequenceID is an exclusive cursor shared by updates and user prompts.
 type ChatGetHistoryRequest struct {
-	SessionID string `json:"session_id"`
+	SessionID       string `json:"session_id"`
+	AfterSequenceID uint64 `json:"after_sequence_id,omitempty"`
 }
 
-// ChatGetHistoryResponse carries the persisted snapshot. Updates are the
-// raw `update` bodies we forwarded as ChatEventUpdate, in order.
+// ChatGetHistoryResponse carries one bounded page of persisted state. Updates
+// are raw ACP bodies; UpdateSequenceIDs is the parallel timeline ordering.
 type ChatGetHistoryResponse struct {
-	Session        ChatSession       `json:"session"`
-	Updates        []json.RawMessage `json:"updates"`
-	AvailableModes []SessionMode     `json:"available_modes,omitempty"`
-	CurrentModeID  string            `json:"current_mode_id,omitempty"`
-	UserPrompts    []ChatPromptEntry `json:"user_prompts,omitempty"`
+	Session            ChatSession       `json:"session"`
+	Updates            []json.RawMessage `json:"updates"`
+	UpdateSequenceIDs  []uint64          `json:"update_sequence_ids,omitempty"`
+	AvailableModes     []SessionMode     `json:"available_modes,omitempty"`
+	CurrentModeID      string            `json:"current_mode_id,omitempty"`
+	UserPrompts        []ChatPromptEntry `json:"user_prompts,omitempty"`
+	HasMore            bool              `json:"has_more,omitempty"`
+	NextSequenceID     uint64            `json:"next_sequence_id,omitempty"`
+	OmittedSequenceIDs []uint64          `json:"omitted_sequence_ids,omitempty"`
 }
 
 // ChatPromptEntry is a persisted user turn. We replay these alongside

@@ -68,6 +68,7 @@ const fakeClient = {
           workspace_id: 'default',
           path: p.path,
           size: full.length,
+          truncated: end < full.length,
           data: bytesToBase64(slice),
         });
       } else if (env.method === 'delete') {
@@ -137,6 +138,14 @@ describe('useFiles', () => {
     const second = await useFiles.getState().list('');
     expect(second.map((e) => e.name)).toEqual(['a.txt', 'b.txt']);
     expect(useFiles.getState().listings['default|']).toEqual(second);
+  });
+
+  it('caps file previews to one transport-safe chunk', async () => {
+    fakeFiles.set('large.txt', new Uint8Array(600 * 1024).fill(97));
+    const { text, res } = await useFiles.getState().readFile('large.txt');
+    expect(text).toHaveLength(256 * 1024);
+    expect(res.truncated).toBe(true);
+    expect(res.size).toBe(600 * 1024);
   });
 
   it('uploads into a directory and rounds back the exact bytes (chunked)', async () => {

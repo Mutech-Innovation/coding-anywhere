@@ -16,6 +16,7 @@ package relayclient
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -115,9 +116,20 @@ func (c *Client) Handle(ch wire.Channel, h Handler) {
 	c.handlers[ch] = h
 }
 
-// Send enqueues env for transmission to the relay. Drops to the logger if the
-// outbound buffer is full so callers don't block.
+// Send enqueues env for transmission to the relay. Oversized envelopes and
+// full-buffer writes are logged and dropped so callers never block.
 func (c *Client) Send(env wire.Envelope) bool {
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		c.logger.Warn("outbound envelope encode failed, dropping",
+			"channel", env.Channel, "method", env.Method, "err", err)
+		return false
+	}
+	if len(encoded) > wire.MaxEnvelopeBytes {
+		c.logger.Warn("outbound envelope too large, dropping",
+			"channel", env.Channel, "method", env.Method, "bytes", len(encoded))
+		return false
+	}
 	select {
 	case c.outbound <- env:
 		return true
@@ -206,7 +218,7 @@ func (c *Client) session(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-	ws.SetReadLimit(1 << 20)
+	ws.SetReadLimit(wire.MaxEnvelopeBytes)
 
 	c.markConnected()
 	c.logger.Info("relay connected")

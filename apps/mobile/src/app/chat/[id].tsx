@@ -66,13 +66,14 @@ export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const modesFetchedRef = useRef<string | null>(null);
 
-  // Pull history once for sessions learned via broadcast (no modes/config yet).
+  // Pull history once for sessions learned via list/broadcast.
   useEffect(() => {
-    if (!id || !session || session.session.origin === 'guest') return;
-    if (session.modes.length > 0) return;
+    if (!id || !session || session.historyLoaded || session.historyLoading) return;
     if (modesFetchedRef.current === id) return;
     modesFetchedRef.current = id;
-    void refreshHistory(id).catch(() => {});
+    void refreshHistory(id).catch(() => {
+      if (modesFetchedRef.current === id) modesFetchedRef.current = null;
+    });
   }, [id, session, refreshHistory]);
 
   const transcriptItems = useMemo(() => {

@@ -212,6 +212,19 @@ func TestRelayClientBackoffResetsAfterHealthySession(t *testing.T) {
 	t.Fatalf("expected >= 8 connects within 4s (backoff should have reset), got %d", mock.connects.Load())
 }
 
+func TestRelayClientRejectsOversizedEnvelope(t *testing.T) {
+	cli := relayclient.New(relayclient.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env, err := wire.MakeEvent("oversized", wire.ChannelChat, "update", map[string]string{
+		"data": strings.Repeat("x", wire.MaxEnvelopeBytes),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cli.Send(env) {
+		t.Fatal("oversized envelope should be rejected before it reaches the relay")
+	}
+}
+
 func TestRelayClientReconnects(t *testing.T) {
 	mock := &mockRelay{t: t}
 	mock.closeOnPing.Store(true)

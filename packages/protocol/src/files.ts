@@ -84,9 +84,9 @@ export const FilesStatResponse = z.object({
 export type FilesStatResponse = z.infer<typeof FilesStatResponse>;
 
 // --- write ---
-// Uploads stream as a sequence of write calls because the relay caps a single
-// WS message at 1 MiB: the first chunk sets `truncate` (replacing any existing
-// file), later chunks carry an increasing `offset`. `data` is base64.
+// Uploads stream as a sequence of write calls to stay under the relay's WS
+// message cap: the first chunk sets `truncate` (replacing any existing file),
+// later chunks carry an increasing `offset`. `data` is base64.
 export interface FilesWriteRequest {
   workspace_id?: string;
   path: string;

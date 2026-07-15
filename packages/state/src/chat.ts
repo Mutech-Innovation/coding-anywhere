@@ -4,6 +4,7 @@ import {
   type ChatAttachment,
   type ChatConfigOption,
   ChatEvent,
+  type ChatGetHistoryResponse,
   ChatMethod,
   type ChatPermissionRequestEvent,
   type ChatSession,
@@ -82,6 +83,8 @@ export interface SessionState {
   usage: ChatUsage | null;
   configOptions: ChatConfigOption[];
   permissions: Record<string, ChatPermission>;
+  historyLoaded: boolean;
+  historyLoading: boolean;
   // Convenience: id of the in-progress streaming agent message (if any) so we
   // know which one to append to.
   liveAgentMessageId: string | null;
@@ -294,17 +297,6 @@ export const useChat = create<ChatStore>((set, get) => ({
         list.map((sess) => [sess.id, s.sessions[sess.id] ?? emptySession(sess)]),
       ),
     }));
-    // Eagerly fetch the snapshot for any session we don't have content for
-    // yet — covers the "open another browser tab" case. Failures are
-    // non-fatal; we just keep the empty placeholder.
-    const tasks = list
-      .filter((sess) => (get().sessions[sess.id]?.messages.length ?? 0) === 0)
-      .map((sess) =>
-        get()
-          .refreshHistory(sess.id)
-          .catch(() => {}),
-      );
-    await Promise.all(tasks);
   },
 
   async createSession({ cwd, agentId = 'devin', title }) {
@@ -327,7 +319,7 @@ export const useChat = create<ChatStore>((set, get) => ({
       sessions: {
         ...s.sessions,
         [payload.session.id]: {
-          ...emptySession(payload.session),
+          ...emptySession(payload.session, true),
           modes: payload.available_modes ?? [],
           currentModeId: payload.current_mode_id ?? null,
         },
@@ -344,6 +336,12 @@ export const useChat = create<ChatStore>((set, get) => ({
 
   setActive(id) {
     set({ activeId: id });
+    const session = id ? get().sessions[id] : undefined;
+    if (id && session && !session.historyLoaded && !session.historyLoading) {
+      void get()
+        .refreshHistory(id)
+        .catch(() => {});
+    }
   },
 
   async sendPrompt(sessionId, text, attachments = []) {
@@ -491,46 +489,83 @@ export const useChat = create<ChatStore>((set, get) => ({
   },
 
   async refreshHistory(sessionId) {
-    const env = await sendRequest(ChatMethod.GetHistory, { session_id: sessionId });
-    const hist = env.payload as {
-      session: ChatSession;
-      updates?: Array<Record<string, unknown>>;
-      user_prompts?: Array<{
-        text: string;
-        created_at: string;
-        sequence_id?: number;
-        attachments?: ChatAttachment[];
-      }>;
-      available_modes?: SessionMode[];
-      current_mode_id?: string;
-    };
-    set((s) => ({
-      sessions: {
-        ...s.sessions,
-        [sessionId]: {
-          ...emptySession(hist.session),
-          modes: hist.available_modes ?? [],
-          currentModeId: hist.current_mode_id ?? null,
+    set((s) => {
+      const cur = s.sessions[sessionId];
+      if (!cur) return {};
+      return {
+        sessions: {
+          ...s.sessions,
+          [sessionId]: { ...cur, historyLoading: true },
         },
-      },
-    }));
-    // Replay user prompts and updates in order using the sequence id where
-    // available so the timeline is reconstructed faithfully.
-    const promptEvents = (hist.user_prompts ?? []).map((p) => ({
-      kind: 'prompt' as const,
-      seq: p.sequence_id ?? 0,
-      text: p.text,
-      attachments: p.attachments?.length ? p.attachments : undefined,
-      createdAt: Date.parse(p.created_at) || Date.now(),
-    }));
-    const updateEvents = (hist.updates ?? []).map((u, i) => ({
-      kind: 'update' as const,
-      seq: ((u as { sequence_id?: number }).sequence_id as number | undefined) ?? i + 1,
-      update: u,
-    }));
-    const merged = [...promptEvents, ...updateEvents].sort((a, b) => a.seq - b.seq);
-    for (const ev of merged) {
-      if (ev.kind === 'prompt') {
+      };
+    });
+    const replay: Array<
+      | {
+          kind: 'prompt';
+          seq: number;
+          text: string;
+          attachments?: ChatAttachment[];
+          createdAt: number;
+        }
+      | { kind: 'update'; seq: number; update: Record<string, unknown> }
+      | { kind: 'omitted'; seq: number }
+    > = [];
+    let first: ChatGetHistoryResponse | null = null;
+    let after = 0;
+    try {
+      for (let page = 0; page < 10_000; page++) {
+        const env = await sendRequest(ChatMethod.GetHistory, {
+          session_id: sessionId,
+          after_sequence_id: after,
+        });
+        const hist = env.payload as ChatGetHistoryResponse;
+        first ??= hist;
+        for (const prompt of hist.user_prompts ?? []) {
+          replay.push({
+            kind: 'prompt',
+            seq: prompt.sequence_id ?? 0,
+            text: prompt.text,
+            attachments: prompt.attachments?.length ? prompt.attachments : undefined,
+            createdAt: Date.parse(prompt.created_at) || Date.now(),
+          });
+        }
+        for (const [index, update] of (hist.updates ?? []).entries()) {
+          replay.push({
+            kind: 'update',
+            seq:
+              hist.update_sequence_ids?.[index] ??
+              ((update as { sequence_id?: number }).sequence_id as number | undefined) ??
+              after + index + 1,
+            update,
+          });
+        }
+        for (const seq of hist.omitted_sequence_ids ?? []) {
+          replay.push({ kind: 'omitted', seq });
+        }
+        if (!hist.has_more) break;
+        const next = hist.next_sequence_id ?? 0;
+        if (next <= after) throw new Error('chat.get_history returned an invalid cursor');
+        after = next;
+        if (page === 9_999) throw new Error('chat.get_history exceeded the page limit');
+      }
+      if (!first) throw new Error('chat.get_history returned no pages');
+      const initial = first;
+      set((s) => ({
+        sessions: {
+          ...s.sessions,
+          [sessionId]: {
+            ...emptySession(initial.session, true),
+            modes: initial.available_modes ?? [],
+            currentModeId: initial.current_mode_id ?? null,
+          },
+        },
+      }));
+      replay.sort((a, b) => a.seq - b.seq);
+      for (const ev of replay) {
+        if (ev.kind === 'update') {
+          ingestUpdate(set, get, { session_id: sessionId, update: ev.update });
+          continue;
+        }
         set((s) => {
           const cur = s.sessions[sessionId];
           if (!cur) return {};
@@ -544,10 +579,13 @@ export const useChat = create<ChatStore>((set, get) => ({
                   ...cur.messages,
                   {
                     id: newId(),
-                    role: 'user',
-                    text: ev.text,
-                    attachments: ev.attachments,
-                    createdAt: ev.createdAt,
+                    role: ev.kind === 'prompt' ? 'user' : 'system',
+                    text:
+                      ev.kind === 'prompt'
+                        ? ev.text
+                        : 'An oversized history item was omitted to keep the connection stable.',
+                    attachments: ev.kind === 'prompt' ? ev.attachments : undefined,
+                    createdAt: ev.kind === 'prompt' ? ev.createdAt : Date.now(),
                     order,
                   },
                 ],
@@ -556,9 +594,19 @@ export const useChat = create<ChatStore>((set, get) => ({
             },
           };
         });
-      } else {
-        ingestUpdate(set, get, { session_id: sessionId, update: ev.update });
       }
+    } catch (err) {
+      set((s) => {
+        const cur = s.sessions[sessionId];
+        if (!cur) return {};
+        return {
+          sessions: {
+            ...s.sessions,
+            [sessionId]: { ...cur, historyLoading: false },
+          },
+        };
+      });
+      throw err;
     }
   },
 
@@ -570,7 +618,7 @@ export const useChat = create<ChatStore>((set, get) => ({
         sessions: {
           ...s.sessions,
           [sessionId]: {
-            ...emptySession(cur.session),
+            ...emptySession(cur.session, true),
             modes: cur.modes,
             currentModeId: cur.currentModeId,
             availableCommands: cur.availableCommands,
@@ -595,7 +643,7 @@ export const useChat = create<ChatStore>((set, get) => ({
   },
 }));
 
-function emptySession(session: ChatSession): SessionState {
+function emptySession(session: ChatSession, historyLoaded = false): SessionState {
   return {
     session,
     messages: [],
@@ -608,6 +656,8 @@ function emptySession(session: ChatSession): SessionState {
     usage: null,
     configOptions: [],
     permissions: {},
+    historyLoaded,
+    historyLoading: false,
     liveAgentMessageId: null,
   };
 }

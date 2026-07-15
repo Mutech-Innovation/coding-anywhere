@@ -31,7 +31,7 @@ interface FilesStore {
   list(path: string, opts?: { includeHidden?: boolean }): Promise<FilesEntry[]>;
   readFile(path: string): Promise<{ text: string | null; res: FilesReadResponse }>;
   setActivePath(path: string | null): void;
-  // Upload a browser File into `dirPath`, chunked under the 1 MiB WS cap.
+  // Upload a browser File into `dirPath`, chunked under the WS message cap.
   uploadFile(dirPath: string, file: File): Promise<void>;
   // Download the file at `path` as assembled bytes (chunked read).
   downloadFile(path: string): Promise<{ bytes: Uint8Array; contentType?: string }>;
@@ -44,8 +44,7 @@ interface FilesStore {
 }
 
 // Chunk size for upload/download. 256 KiB of raw bytes is ~341 KiB once
-// base64-encoded — comfortably under the relay's 1 MiB per-message read limit
-// even with envelope overhead.
+// base64-encoded, leaving ample room for envelope overhead.
 const CHUNK_BYTES = 256 * 1024;
 
 const pending = new Map<
@@ -101,6 +100,8 @@ export const useFiles = create<FilesStore>((set, get) => ({
     const env = await sendRequest(FilesMethod.Read, {
       workspace_id: get().workspaceId ?? '',
       path,
+      length: CHUNK_BYTES,
+      max_bytes: CHUNK_BYTES,
     });
     const res = env.payload as FilesReadResponse;
     const text = res.is_binary ? null : TEXT_DECODER.decode(base64ToBytes(res.data ?? ''));

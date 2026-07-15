@@ -386,8 +386,8 @@ authenticated-client-only.
   `move` refuses to overwrite an existing destination. All paths are confined
   to the root (`ErrEscapesRoot`). Pinned by `internal/fileapi/api_test.go` and
   the relay e2e `files_e2e_test.go`.
-- **Chunking**: the relay caps a single WS message at 1 MiB
-  (`ws.SetReadLimit`), so uploads/downloads stream in 256 KiB chunks. `write`
+- **Chunking**: the relay caps a single WS message at 8 MiB
+  (`wire.MaxEnvelopeBytes`), while uploads/downloads stream in 256 KiB chunks. `write`
   carries `offset` + base64 `data` + `truncate` (set on the first chunk);
   `read` is ranged via `offset`/`length`. The web store
   (`apps/web/src/store/files.ts`) does the chunk loops in `uploadFile` /

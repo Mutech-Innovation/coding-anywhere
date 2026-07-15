@@ -31,6 +31,8 @@ function seedSession() {
         usage: null,
         configOptions: [],
         permissions: {},
+        historyLoaded: true,
+        historyLoading: false,
         liveAgentMessageId: null,
       },
     },
@@ -445,5 +447,50 @@ describe('chat store ingestUpdate', () => {
     expect(msgs.map((m) => m.text)).toEqual(['look at this', 'plain follow-up']);
     expect(msgs[0]!.attachments).toEqual([image]);
     expect(msgs[1]!.attachments).toBeUndefined();
+    expect(useChat.getState().sessions['sess-1']!.historyLoaded).toBe(true);
+  });
+
+  it('refreshHistory follows paginated history cursors', async () => {
+    seedSession();
+    attachOnce();
+    const cursors: number[] = [];
+    const respondingClient = {
+      handle: () => {},
+      send: (env: { id: string; payload?: { after_sequence_id?: number } }) => {
+        const after = env.payload?.after_sequence_id ?? 0;
+        cursors.push(after);
+        queueMicrotask(() =>
+          chatHandler?.({
+            type: 'res',
+            id: env.id,
+            payload: {
+              session: { ...baseSession },
+              updates: [],
+              user_prompts: [
+                {
+                  text: after === 0 ? 'first page' : 'second page',
+                  created_at: new Date(after).toISOString(),
+                  sequence_id: after + 1,
+                },
+              ],
+              has_more: after === 0,
+              next_sequence_id: after + 1,
+            },
+          }),
+        );
+      },
+    };
+    useConnection.setState({ client: respondingClient as never });
+    try {
+      await useChat.getState().refreshHistory('sess-1');
+    } finally {
+      useConnection.setState({ client: null });
+    }
+
+    expect(cursors).toEqual([0, 1]);
+    expect(useChat.getState().sessions['sess-1']!.messages.map((m) => m.text)).toEqual([
+      'first page',
+      'second page',
+    ]);
   });
 });

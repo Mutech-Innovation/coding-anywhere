@@ -180,16 +180,82 @@ func (s *session) appendPrompt(text string, attachments []wire.Attachment) uint6
 	return s.seq
 }
 
-func (s *session) snapshot() ([]json.RawMessage, []wire.ChatPromptEntry) {
+const (
+	historyPageTargetBytes  = 512 << 10
+	historyPageMaxItemBytes = wire.MaxEnvelopeBytes - 64<<10
+)
+
+func (s *session) historyPage(after uint64) (wire.ChatGetHistoryResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	upd := make([]json.RawMessage, len(s.updates))
-	for i, u := range s.updates {
-		upd[i] = append([]byte(nil), u...)
+
+	res := wire.ChatGetHistoryResponse{
+		Updates:           make([]json.RawMessage, 0),
+		UpdateSequenceIDs: make([]uint64, 0),
+		UserPrompts:       make([]wire.ChatPromptEntry, 0),
 	}
-	prompts := make([]wire.ChatPromptEntry, len(s.prompts))
-	copy(prompts, s.prompts)
-	return upd, prompts
+	updateIndex := 0
+	for updateIndex < len(s.updateSeq) && s.updateSeq[updateIndex] <= after {
+		updateIndex++
+	}
+	promptIndex := 0
+	for promptIndex < len(s.prompts) && s.prompts[promptIndex].SequenceID <= after {
+		promptIndex++
+	}
+
+	used := 0
+	for updateIndex < len(s.updates) || promptIndex < len(s.prompts) {
+		isPrompt := updateIndex >= len(s.updates) ||
+			(promptIndex < len(s.prompts) && s.prompts[promptIndex].SequenceID < s.updateSeq[updateIndex])
+		var sequenceID uint64
+		var itemBytes int
+		if isPrompt {
+			sequenceID = s.prompts[promptIndex].SequenceID
+			encoded, err := json.Marshal(s.prompts[promptIndex])
+			if err != nil {
+				return wire.ChatGetHistoryResponse{}, err
+			}
+			itemBytes = len(encoded) + 1
+		} else {
+			sequenceID = s.updateSeq[updateIndex]
+			itemBytes = len(s.updates[updateIndex]) + 32
+		}
+
+		if itemBytes > historyPageMaxItemBytes {
+			res.OmittedSequenceIDs = append(res.OmittedSequenceIDs, sequenceID)
+			res.NextSequenceID = sequenceID
+			used += 24
+			if isPrompt {
+				promptIndex++
+			} else {
+				updateIndex++
+			}
+			if used >= historyPageTargetBytes {
+				break
+			}
+			continue
+		}
+		if used > 0 && used+itemBytes > historyPageTargetBytes {
+			break
+		}
+		if isPrompt {
+			prompt := s.prompts[promptIndex]
+			prompt.Attachments = append([]wire.Attachment(nil), prompt.Attachments...)
+			res.UserPrompts = append(res.UserPrompts, prompt)
+			promptIndex++
+		} else {
+			res.Updates = append(res.Updates, append([]byte(nil), s.updates[updateIndex]...))
+			res.UpdateSequenceIDs = append(res.UpdateSequenceIDs, sequenceID)
+			updateIndex++
+		}
+		res.NextSequenceID = sequenceID
+		used += itemBytes
+		if used >= historyPageTargetBytes {
+			break
+		}
+	}
+	res.HasMore = updateIndex < len(s.updates) || promptIndex < len(s.prompts)
+	return res, nil
 }
 
 type pendingPermission struct {
@@ -1264,19 +1330,25 @@ func (r *Router) handleSetConfigOption(env wire.Envelope, req wire.ChatSetConfig
 func (r *Router) handleGetHistory(env wire.Envelope, req wire.ChatGetHistoryRequest) {
 	r.mu.Lock()
 	s, ok := r.sessions[req.SessionID]
-	r.mu.Unlock()
 	if !ok {
+		r.mu.Unlock()
 		r.respondErr(env, "not_found", "unknown session")
 		return
 	}
-	updates, prompts := s.snapshot()
-	r.respondOK(env, wire.ChatGetHistoryResponse{
-		Session:        s.ChatSession,
-		Updates:        updates,
-		AvailableModes: s.modes,
-		CurrentModeID:  s.currentModeID,
-		UserPrompts:    prompts,
-	})
+	session := s.ChatSession
+	modes := append([]wire.SessionMode(nil), s.modes...)
+	currentModeID := s.currentModeID
+	r.mu.Unlock()
+
+	history, err := s.historyPage(req.AfterSequenceID)
+	if err != nil {
+		r.respondErr(env, "history_failed", err.Error())
+		return
+	}
+	history.Session = session
+	history.AvailableModes = modes
+	history.CurrentModeID = currentModeID
+	r.respondOK(env, history)
 }
 
 // modelConfigID is the session-scoped config option id Devin uses for the

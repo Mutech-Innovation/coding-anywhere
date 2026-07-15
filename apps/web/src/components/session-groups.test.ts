@@ -30,6 +30,8 @@ function state(args: {
     usage: null,
     configOptions: [],
     permissions: {},
+    historyLoaded: false,
+    historyLoading: false,
     liveAgentMessageId: null,
   };
 }
