@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useChat } from './chat.js';
 import { useConnection } from './connection.js';
@@ -448,6 +448,46 @@ describe('chat store ingestUpdate', () => {
     expect(msgs[0]!.attachments).toEqual([image]);
     expect(msgs[1]!.attachments).toBeUndefined();
     expect(useChat.getState().sessions['sess-1']!.historyLoaded).toBe(true);
+  });
+
+  it('waits for long-running prompts instead of reporting a false timeout', async () => {
+    vi.useFakeTimers();
+    seedSession();
+    attachOnce();
+    let requestId = '';
+    const respondingClient = {
+      handle: () => {},
+      send: (env: { id: string }) => {
+        requestId = env.id;
+      },
+    };
+    useConnection.setState({ client: respondingClient as never });
+    try {
+      const prompt = useChat.getState().sendPrompt('sess-1', 'take your time');
+      let settled = false;
+      void prompt.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(settled).toBe(false);
+      expect(requestId).not.toBe('');
+
+      chatHandler?.({
+        type: 'res',
+        id: requestId,
+        payload: { stop_reason: 'end_turn' },
+      });
+      await expect(prompt).resolves.toBeUndefined();
+    } finally {
+      useConnection.setState({ client: null });
+      vi.useRealTimers();
+    }
   });
 
   it('refreshHistory follows paginated history cursors', async () => {

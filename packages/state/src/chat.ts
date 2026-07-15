@@ -382,7 +382,11 @@ export const useChat = create<ChatStore>((set, get) => ({
       setTimeout(() => get().resetLocalSession(sessionId), 0);
     }
     try {
-      await sendRequest(ChatMethod.Prompt, { session_id: sessionId, text, attachments });
+      await sendRequest(
+        ChatMethod.Prompt,
+        { session_id: sessionId, text, attachments },
+        { timeoutMs: null },
+      );
     } finally {
       // The session/prompt response arriving means Devin has finished
       // this turn. Close the live assistant bubble so the next prompt
@@ -909,23 +913,31 @@ function closeLiveMessage(cur: SessionState): SessionState {
   };
 }
 
-async function sendRequest(method: string, payload: unknown = {}): Promise<Envelope> {
+async function sendRequest(
+  method: string,
+  payload: unknown = {},
+  options: { timeoutMs?: number | null } = {},
+): Promise<Envelope> {
   const client = getClient();
   if (!client) throw new Error('not connected');
   const id = newId();
   const env = makeRequest({ id, channel: 'chat', method, payload });
   return new Promise<Envelope>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`chat.${method} timed out`));
-    }, 60_000);
+    const timeoutMs = options.timeoutMs === undefined ? 60_000 : options.timeoutMs;
+    const timer =
+      timeoutMs === null
+        ? null
+        : setTimeout(() => {
+            pending.delete(id);
+            reject(new Error(`chat.${method} timed out`));
+          }, timeoutMs);
     pending.set(id, {
       resolve: (e) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         resolve(e);
       },
       reject: (err) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(err);
       },
     });
